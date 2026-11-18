@@ -178,6 +178,7 @@ import { storedBackgroundPreparationEvidence } from "./delivery-preparation-evid
 import { storedDevelopmentDrivers } from "./agent-execution-drivers.mjs";
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
 import {archivedSyncSqlInput,selectedSyncSqlInput,syncSqlArchiveCandidates} from './sync-sql-archive.mjs';
+import {listTradingCalendars,readTradingCalendar,resolveTradingCalendar} from './trading-calendar.mjs';
 import {
   LocalArtifactStore,
   deliveryArtifactValue,
@@ -5481,6 +5482,16 @@ export function createV2Server(options = {}) {
           );
         }
       }
+      const calendarRead=path.match(/^\/api\/v2\/calendars(?:\/([a-z0-9-]{1,80})(?:\/(resolve))?)?$/);
+      if(calendarRead&&method==='GET'){
+        if(!local||options.ingress||!isLoopbackRequest(req))throw fail(403,'交易日历预检目前仅在本机工作台开放');
+        if(calendarRead[2]){
+          if([...url.searchParams.keys()].some(key=>!['date','calendarDigest'].includes(key))||url.searchParams.size!==new Set(url.searchParams.keys()).size)throw fail(422,'日历预检只接受日期与版本摘要');
+          return json(res,200,resolveTradingCalendar(calendarRead[1],url.searchParams.get('date'),url.searchParams.get('calendarDigest')??undefined));
+        }
+        if(url.searchParams.size)throw fail(422,'日历读取不接受附加参数');
+        return json(res,200,calendarRead[1]?readTradingCalendar(calendarRead[1]):listTradingCalendars());
+      }
       if (path === "/api/v2/delivery/packages" && method === "POST") {
         const body = await readBody(req),
           sourceRun = get("run", text(body.sourceRunId, 1, 80)),
@@ -5489,6 +5500,7 @@ export function createV2Server(options = {}) {
         if (sourceRun.syncInput || sourceRevision.syncInput) requireDevelopmentOwner("run", sourceRun, req);
         if (sourceRevision.fundPreparation) throw fail(409, "已保存口径的基金交付请从原 Agent 任务准备");
         if (isFundContext(sourceRevision.contextId) && !localClassicSpark) throw fail(422, "基金交付仅支持本机文件演练");
+        if(body.calendarSelection!==undefined&&(!localClassicSpark||options.ingress||!isLoopbackRequest(req)))throw fail(403,'公告日历选择目前仅供本机新交付');
         const family = validationFamilyForRun(sourceRun);
         const name =
           body.name === undefined ? "客户资产 T+1" : text(body.name, 1, 80);
@@ -5499,26 +5511,23 @@ export function createV2Server(options = {}) {
           ...syncDeliveryInputs(sourceRun, sourceRevision),
           manualAuthor:Boolean(getContext(sourceRevision.contextId)?.outputContractId&&sourceRevision.source==='MANUAL'&&!sourceRevision.manualProvenance?.originAgentTaskId),
           name,
-        }),
-          artifact = await artifactStore.put(
+          ...(body.calendarSelection===undefined?{}:{calendarSelection:body.calendarSelection}),
+        });
+        const key=text(req.headers['idempotency-key'],1,100),namespace=PROJECT+':delivery:'+key,
+          signature=hash(JSON.stringify({sourceRunId:sourceRun.id,name,validationContractId:family.id,
+            ...(body.calendarSelection===undefined?{}:{calendarSelection:{calendarId:JSON.parse(bundle.files['calendar.json']).reference.id,calendarDigest:JSON.parse(bundle.files['calendar.json']).reference.digest}}),
+            ...(bundle.manifest.source.requirement?{requirement:bundle.manifest.source.requirement}:{})}));
+        const previous=store.deduplicatedId(namespace);
+        if(previous){if(store.deduplicatedId(namespace,signature)!==previous)throw Object.assign(fail(409,'同一请求编号不能更换运行、交付名称或日历版本'),{code:'IDEMPOTENCY_CONFLICT'});const saved=get('delivery_package',previous);await ensureDeliveryArtifact(saved);return json(res,200,protectedDeliveryPayload(get('delivery_package',previous)));}
+        const artifact = await artifactStore.put(
             "delivery-package",
             bundle.digest,
             bundle,
           );
         assertRequirementSource(bundle); // Re-read after artifact I/O; never freeze stale understanding.
-        const key = text(req.headers["idempotency-key"], 1, 100);
         const existing = bundle.manifest.source.syncInput && store.list("delivery_package", PROJECT)
           .find(item => item.sourceRunId === sourceRun.id && item.digest === bundle.digest);
-        const dedup = store.deduplicate(
-          PROJECT + ":delivery:" + key,
-          hash(
-            JSON.stringify({
-              sourceRunId: sourceRun.id,
-              name,
-              validationContractId: family.id,
-              ...(bundle.manifest.source.requirement?{requirement:bundle.manifest.source.requirement}:{}),
-            }),
-          ),
+        const dedup = store.deduplicate(namespace,signature,
           () =>
             existing ?? store.create("delivery_package", PROJECT, {
               ...bundle,

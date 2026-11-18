@@ -1,0 +1,205 @@
+{
+  "format": "shuduo-calendar-sources/v1",
+  "calendars": [
+    {
+      "id": "sse-equities-2025-2026-v1",
+      "market": "SSE",
+      "name": "上交所A股交易日历（公告推导）",
+      "version": "20261119.1",
+      "scope": "CN_EXCHANGE_EQUITIES_DAY",
+      "timezone": "Asia/Shanghai",
+      "range": {
+        "start": "2025-01-01",
+        "end": "2026-12-31"
+      },
+      "checkedOn": "2026-11-19",
+      "weeklyClosedDays": [
+        0,
+        6
+      ],
+      "sources": [
+        {
+          "year": 2025,
+          "publisher": "SSE",
+          "publishedOn": "2024-12-23",
+          "url": "https://www.sse.com.cn/disclosure/dealinstruc/closed/c/c_20241223_10767110.shtml"
+        },
+        {
+          "year": 2026,
+          "publisher": "SSE",
+          "publishedOn": "2025-12-22",
+          "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml"
+        }
+      ],
+      "weeklyRuleSource": "https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20260424_10816482.shtml",
+      "holidayClosures": [
+        {
+          "code": "NEW_YEAR",
+          "start": "2025-01-01",
+          "end": "2025-01-01"
+        },
+        {
+          "code": "SPRING_FESTIVAL",
+          "start": "2025-01-28",
+          "end": "2025-02-04"
+        },
+        {
+          "code": "QINGMING",
+          "start": "2025-04-04",
+          "end": "2025-04-06"
+        },
+        {
+          "code": "LABOUR_DAY",
+          "start": "2025-05-01",
+          "end": "2025-05-05"
+        },
+        {
+          "code": "DRAGON_BOAT",
+          "start": "2025-05-31",
+          "end": "2025-06-02"
+        },
+        {
+          "code": "NATIONAL_MID_AUTUMN",
+          "start": "2025-10-01",
+          "end": "2025-10-08"
+        },
+        {
+          "code": "NEW_YEAR",
+          "start": "2026-01-01",
+          "end": "2026-01-03"
+        },
+        {
+          "code": "SPRING_FESTIVAL",
+          "start": "2026-02-15",
+          "end": "2026-02-23"
+        },
+        {
+          "code": "QINGMING",
+          "start": "2026-04-04",
+          "end": "2026-04-06"
+        },
+        {
+          "code": "LABOUR_DAY",
+          "start": "2026-05-01",
+          "end": "2026-05-05"
+        },
+        {
+          "code": "DRAGON_BOAT",
+          "start": "2026-06-19",
+          "end": "2026-06-21"
+        },
+        {
+          "code": "MID_AUTUMN",
+          "start": "2026-09-25",
+          "end": "2026-09-27"
+        },
+        {
+          "code": "NATIONAL_DAY",
+          "start": "2026-10-01",
+          "end": "2026-10-07"
+        }
+      ],
+      "notice": "按所列年度休市公告及周末规则推导；仅覆盖登记日期，不含后续临时调整、个股停牌、港股通或清算交收日。"
+    },
+    {
+      "id": "szse-equities-2025-2026-v1",
+      "market": "SZSE",
+      "name": "深交所A股交易日历（公告推导）",
+      "version": "20261119.1",
+      "scope": "CN_EXCHANGE_EQUITIES_DAY",
+      "timezone": "Asia/Shanghai",
+      "range": {
+        "start": "2025-01-01",
+        "end": "2026-12-31"
+      },
+      "checkedOn": "2026-11-19",
+      "weeklyClosedDays": [
+        0,
+        6
+      ],
+      "sources": [
+        {
+          "year": 2025,
+          "publisher": "SZSE",
+          "publishedOn": "2024-12-23",
+          "url": "https://www.szse.cn/disclosure/notice/general/t20241223_611283.html"
+        },
+        {
+          "year": 2026,
+          "publisher": "SZSE",
+          "publishedOn": "2025-12-22",
+          "url": "https://www.szse.cn/disclosure/notice/t20251222_618087.html"
+        }
+      ],
+      "weeklyRuleSource": "https://docs.static.szse.cn/www/lawrules/rule/trade/current/W020260424690713155663.pdf",
+      "holidayClosures": [
+        {
+          "code": "NEW_YEAR",
+          "start": "2025-01-01",
+          "end": "2025-01-01"
+        },
+        {
+          "code": "SPRING_FESTIVAL",
+          "start": "2025-01-28",
+          "end": "2025-02-04"
+        },
+        {
+          "code": "QINGMING",
+          "start": "2025-04-04",
+          "end": "2025-04-06"
+        },
+        {
+          "code": "LABOUR_DAY",
+          "start": "2025-05-01",
+          "end": "2025-05-05"
+        },
+        {
+          "code": "DRAGON_BOAT",
+          "start": "2025-05-31",
+          "end": "2025-06-02"
+        },
+        {
+          "code": "NATIONAL_MID_AUTUMN",
+          "start": "2025-10-01",
+          "end": "2025-10-08"
+        },
+        {
+          "code": "NEW_YEAR",
+          "start": "2026-01-01",
+          "end": "2026-01-03"
+        },
+        {
+          "code": "SPRING_FESTIVAL",
+          "start": "2026-02-15",
+          "end": "2026-02-23"
+        },
+        {
+          "code": "QINGMING",
+          "start": "2026-04-04",
+          "end": "2026-04-06"
+        },
+        {
+          "code": "LABOUR_DAY",
+          "start": "2026-05-01",
+          "end": "2026-05-05"
+        },
+        {
+          "code": "DRAGON_BOAT",
+          "start": "2026-06-19",
+          "end": "2026-06-21"
+        },
+        {
+          "code": "MID_AUTUMN",
+          "start": "2026-09-25",
+          "end": "2026-09-27"
+        },
+        {
+          "code": "NATIONAL_DAY",
+          "start": "2026-10-01",
+          "end": "2026-10-07"
+        }
+      ],
+      "notice": "按所列年度休市公告及周末规则推导；仅覆盖登记日期，不含后续临时调整、个股停牌、港股通或清算交收日。"
+    }
+  ]
+}

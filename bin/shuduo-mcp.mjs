@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {readTradingCalendars,readTradingCalendarVersion,readTradingDay} from '../src/v2/trading-calendar-client.mjs';
 import {readQualityVersionRequest,qualityVersionRequestPath} from '../src/v2/quality-version-request.mjs';
 import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
 import {readSyncSqlArchives,readArchivedSyncedPositions} from '../src/v2/sync-sql-output-schema-client.mjs';
@@ -162,7 +163,10 @@ const tools = [
   { name: "release_runs_list", description: "列出真实调度发布批次及验证证据。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_list", description: "列出交付包摘要、源代码版本和发布状态，不返回文件正文。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_detail", description: "读取指定不可变交付包、文件与可信摘要。", inputSchema: { type: "object", properties: { packageId: { type: "string" } }, required: ["packageId"] } },
-  { name: "delivery_package_create", description: "从真实Spark且独立断言通过的代码运行生成交付包；只生成文件，不审批或发布。", inputSchema: { type: "object", properties: { sourceRunId: { type: "string" }, name: { type: "string" } }, required: ["sourceRunId", "name"] } },
+  {name:'trading_calendar_list',description:'列出本机登记的沪深A股公告推导交易日历、覆盖和来源，不推断范围外日期。',inputSchema:{type:'object',properties:{}},annotations:{readOnlyHint:true}},
+  {name:'trading_calendar_detail',description:'读取确切日历版本及日期，只读。',inputSchema:{type:'object',properties:{calendarId:{type:'string'}},required:['calendarId']},annotations:{readOnlyHint:true}},
+  {name:'trading_calendar_resolve',description:'按登记版本预检交易日和T+1，不触发计算、调度或发布；范围不足明确拒绝。',inputSchema:{type:'object',properties:{calendarId:{type:'string'},date:{type:'string'},calendarDigest:{type:'string'}},required:['calendarId','date']},annotations:{readOnlyHint:true}},
+  { name: "delivery_package_create", description: "从真实Spark且独立断言通过的代码运行生成交付包；只生成文件，不审批或发布。", inputSchema: { type: "object", properties: { sourceRunId: { type: "string" }, name: { type: "string" }, calendarSelection:{type:"object",properties:{calendarId:{type:"string"},calendarDigest:{type:"string"}},required:["calendarId","calendarDigest"],additionalProperties:false} }, required: ["sourceRunId", "name"] } },
   { name: "delivery_package_verify", description: "按包内DAG和样例交易日实际执行文件演练；不是发布。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, scheduledFor: { type: "string" } }, required: ["packageId", "scheduledFor"] } },
   { name: "delivery_verification_list", description: "列出交付包文件演练状态与证据。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_verification_detail", description: "读取指定文件演练的步骤和验证证据。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
@@ -556,10 +560,13 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(
       `/delivery/packages/${encodeURIComponent(args.packageId)}`,
     );
+  if(name==='trading_calendar_list')return readTradingCalendars(client);
+  if(name==='trading_calendar_detail')return readTradingCalendarVersion(client,args.calendarId);
+  if(name==='trading_calendar_resolve')return readTradingDay(client,args);
   if (name === "delivery_package_create")
     return client.request("/delivery/packages", {
       method: "POST",
-      body: { sourceRunId: args.sourceRunId, name: args.name },
+      body: { sourceRunId: args.sourceRunId, name: args.name,...(args.calendarSelection===undefined?{}:{calendarSelection:args.calendarSelection}) },
     });
   if (name === "delivery_package_verify")
     return client.request(

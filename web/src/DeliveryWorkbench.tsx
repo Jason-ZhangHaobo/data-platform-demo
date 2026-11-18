@@ -1,4 +1,6 @@
 import { fundRehearsalAt } from "../../src/v2/fund-contexts.mjs";
+import {TradingCalendarPanel} from "./TradingCalendarPanel";
+import type {CalendarSelection} from '../../src/v2/trading-calendar-client.mjs';
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type {ServiceSourceBinding} from "./service-source-binding";
 import type {PublishedReportSource} from "./published-report-read";
@@ -27,7 +29,7 @@ import {
   AlertCircle,
   ChevronRight,
 } from "lucide-react";
-type Api = <T>(path: string, body?: unknown) => Promise<T>;
+type Api = <T>(path: string, body?: unknown,options?:{idempotencyKey?:string}) => Promise<T>;
 type Run = {
   id: string;
   status: string;
@@ -298,6 +300,7 @@ export function DeliveryWorkbench({
   onBack,
   onOpenServices,
   lockSource = false,
+  calendarEnabled = false,
 }: {
   api: Api;
   runs: Run[];
@@ -307,6 +310,7 @@ export function DeliveryWorkbench({
   onBack: () => void;
   onOpenServices?: (source: ServiceSourceBinding) => void;
   lockSource?: boolean;
+  calendarEnabled?: boolean;
 }) {
   const [currentSource, setSource] = useState(""),
     [name, setName] = useState("客户资产 T+1");
@@ -357,6 +361,8 @@ export function DeliveryWorkbench({
   const [file, setFile] = useState("schedule.json"),
     [busy, setBusy] = useState(""),
     [error, setError] = useState("");
+  const [calendarSelection,setCalendarSelection]=useState<CalendarSelection>();
+  const packageRequest=useRef<{signature:string;key:string}|undefined>(undefined);
   const ticket = useRef(0);
   const editReviewDraft = (edit: (draft: ReviewDraft) => ReviewDraft) => {
     if (!reviewTarget) return;
@@ -541,10 +547,13 @@ export function DeliveryWorkbench({
     setBusy("create");
     setError("");
     try {
-      const bundle = await api<Bundle>("/delivery/packages", {
+      const body={
         sourceRunId: source,
         name,
-      });
+        ...(calendarSelection?{calendarSelection}:{}),
+      };
+      const signature=JSON.stringify(body);if(packageRequest.current?.signature!==signature)packageRequest.current={signature,key:crypto.randomUUID()};
+      const bundle = await api<Bundle>("/delivery/packages",body,{idempotencyKey:packageRequest.current.key});
       if (bundle.manifest.source.runId !== source || !matchesSnapshot(bundle)) throw Error("交付包与所选运行或原快照不一致");
       rememberPackage(bundle);
       setSelected(bundle);
@@ -868,6 +877,7 @@ export function DeliveryWorkbench({
           </button>
         </div>
       </details>
+      {calendarEnabled&&<TradingCalendarPanel api={api} selection={calendarSelection} onSelect={setCalendarSelection} canSelect={canWrite&&!busy}/>}
       {!selected ? (
         <div className="delivery-empty">
           <Package size={32} />
