@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## 确切原包的调度只读预检（2026-11-19）
+
+GET `/delivery/packages/:id/schedule-preview`要求`packageDigest`，可选`scheduledFor`（北京时间原09:00时刻）。按原来源身份、摘要及完整文件校验后返回绑定包/版本/运行的只读回执，包含包内日历、部署依赖及日期关系。错业务日、休市和覆盖不足不标为可执行；响应未知清旧，不创建资源。CLI/MCP共用同一路径，详情见[原包预检](securities-trading-calendar.md#agent内的原包调度预检)。
+
 ## 交易日历与交付版本（2026-11-19，本机）
 
 新增GET `/calendars`、`/calendars/:id`、`/calendars/:id/resolve?date=YYYY-MM-DD&calendarDigest=SHA256`，仅本机开发回环。POST `/delivery/packages`可带精确两字段`calendarSelection:{calendarId,calendarDigest}`；同幂等编号不能换市场版本。预检不写、不计算，CLI／MCP共用同一契约。`calendar.json` v2仍受原包校验及登记版本核对，旧v1保持。见[完整边界](securities-trading-calendar.md)。

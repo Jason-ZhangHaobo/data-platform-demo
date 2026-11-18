@@ -1,3 +1,4 @@
+import {frozenSchedulePreview} from './frozen-schedule-preview.mjs';
 import {runBudgetedPlanning} from './budgeted-planning.mjs';
 import{readReportClarification,deriveReportClarification,assertReportClarificationPlan,reportProposalHash,reportClarificationSignature}from'./report-clarification.mjs';
 import {sourceReportInitial,sourceReportMayStart,sourceReportProjection,runSourceReportPlan} from './source-report-execution.mjs';
@@ -5546,7 +5547,7 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/delivery/reviews" && method === "GET")
         return json(res, 200, visibleDelivery("delivery_review"));
       const deliveryRecord = path.match(
-        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|review|approve|review-evidence))?$/,
+        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|review|approve|review-evidence|schedule-preview))?$/,
       );
       if (deliveryRecord) {
         const kind =
@@ -5555,6 +5556,13 @@ export function createV2Server(options = {}) {
             : "delivery_verification";
         const item = get(kind, deliveryRecord[2]);
         requireDeliveryEvidence(kind, item);
+        if(method==='GET'&&kind==='delivery_package'&&deliveryRecord[3]==='schedule-preview'){
+          if([...url.searchParams.keys()].some(key=>!['packageDigest','scheduledFor'].includes(key))||url.searchParams.size!==new Set(url.searchParams.keys()).size)throw fail(422,'调度预检只接受原包摘要和计划时点');
+          const digest=url.searchParams.get('packageDigest');
+          if(!digest||!(/^[a-f0-9]{64}$/).test(digest))throw fail(422,'请提供完整原包摘要');
+          if(digest!==item.digest)throw fail(409,'交付包摘要与所选版本不一致');
+          return json(res,200,frozenSchedulePreview(item,validateAnyDeliveryPackage(item),url.searchParams.get('scheduledFor')??undefined));
+        }
         if (method === "GET" && kind === "delivery_verification" && deliveryRecord[3] === "review-evidence") {
           if (url.searchParams.size) throw fail(422, "审阅导出仅接受原演练编号");
           const bundle = get("delivery_package",item.packageId);
