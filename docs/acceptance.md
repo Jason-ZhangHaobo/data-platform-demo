@@ -1097,6 +1097,8 @@ node scripts/verify-saved-fund-lifecycle.mjs --agent \
 
 ### 冻结持仓的八文件交付
 
+Agent 内嵌交付工作台应在标题和说明下方使用容器的完整内容宽度。桌面及窄屏分别核对八份文件的预览、单文件下载和完整包下载，内容与同一已保存版本一致。只读检查后，原演练、文件审阅及发布状态保持各自的实际结果。
+
 在原任务或人工保存的已核验版本打开「冻结持仓交付」。生成包时锁定该 SQL 运行、同步批次、元数据版本及快照。交付包的 `fixtures.json` 保留原输入，`tests.sql` 根据该输入的独立预期生成。在工作台选择「本机按文件演练」，调度文件的样例时刻应解出原业务日，Spark 实际执行主 SQL、测试 SQL 及五场景断言。审阅绑定包摘要与成功演练回执，范围为 `LOCAL_FILE_REVIEW`。
 
 同一操作也可用 `shuduo delivery create`、`shuduo delivery verify` 与 `shuduo delivery review`，均按原编号定位。导出的 JSON 可用 `shuduo-package unpack` 解包，并以从原项目取得的可信摘要运行 `plan` 或 `run`。验证重算内部文件摘要后，仍拒绝替换冻结输入、使用恒真测试、换错交易日或换成云端执行目标。本机计时发布及授权接口沿用同一包与原演练。

@@ -822,7 +822,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     {task?.sourceKind==='MANUAL'&&(task.executionMode==='DURABLE_SQL_AGENT_V1'&&task.status==='SUCCEEDED'&&run?.id===task.runId&&run?.agentTaskId===task.id&&baselineRevisionId===task.revisionId&&run?.revisionId===baselineRevisionId?
       <AgentDeliveryPanel key={`assisted-${task.id}-${run.id}`} manual assisted api={api} taskId={task.id} contextId={task.contextId} revisionId={baselineRevisionId} runId={run.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} canPublish={canPublish&&!sourceReturnActive} publicationTarget={publicationTarget} expectedSourceBinding={expectedSourceBinding} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />:
       <section id="agent-delivery" className="agent-dev-context" aria-label="人工辅助开发交付边界"><h3>人工辅助开发结果</h3><p>先完成持久修正任务并查看其当前已核验代码和运行。交付将独立记录人工辅助来源，不继承历史基线的批准。</p><button className="button" disabled={!run||working} onClick={()=>setTab('校验')}>查看当前独立核验</button></section>)}
-    {frozenInput && <section id="agent-delivery" className="agent-dev-notice" aria-label="冻结持仓交付">
+    {frozenInput && <section id="agent-delivery" className="agent-dev-context" aria-label="冻结持仓交付">
       <strong>冻结持仓交付</strong><p>按已核验的代码版本生成调度与部署文件，使用原持仓快照演练。</p>
       {!task&&originTaskId&&<button className="button" disabled={working||manualUnconfirmed} onClick={()=>void selectTask(originTaskId)}>返回原 Agent 任务</button>}
       {!manualDeliveryOpen&&<button className="button" disabled={dirty||working||manualUnconfirmed||schemaBlocksDelivery||run?.status!=="SUCCEEDED"||!run.syncInput||run.revisionId!==baselineRevisionId}
