@@ -12,6 +12,7 @@ export function qualityRunView(run) {
   return run;
 }
 export function qualityRecoveryMatches(source,recovery,versionFor){
+  if(source?.archiveSource||recovery?.archiveSource)return false;
   if(!source||!nonemptyQualityPass(recovery)||recovery.ruleId!==source.ruleId)return false;
   const before=versionFor(source.ruleVersionId),after=versionFor(recovery.ruleVersionId);
   return Boolean(before&&after&&before.ruleId===source.ruleId&&after.ruleId===source.ruleId&&['assetId','field','type'].every(field=>before[field]===after[field]));

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {qualityRunBody,qualityArchiveInputsPath,qualityRunRequestPath} from '../src/v2/quality-input-client.mjs';
 import {readFrozenSchedule} from '../src/v2/frozen-schedule-client.mjs';
 import {readTradingCalendars,readTradingCalendarVersion,readTradingDay} from '../src/v2/trading-calendar-client.mjs';
 import {readQualityVersionRequest,qualityVersionRequestPath} from '../src/v2/quality-version-request.mjs';
@@ -250,7 +251,9 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo quality create --name 名称 --code holding_value_range --asset-id landing:raw_positions --field market_value --type value-range --min 0.00 --max 5000.00 --description "持仓市值范围"
   shuduo quality version --id RULE_ID [--field FIELD] [--expected-version-id VERSION_ID] [--request-id UUID] --type value-range --min 0.00 --max 10000.00 --description "校准范围"
   shuduo quality version-request --id RULE_ID --request-id UUID
-  shuduo quality run --id RULE_ID [--expected-version-id VERSION_ID]
+  shuduo quality archive-inputs --id RULE_ID
+  shuduo quality run-request --id RULE_ID --request-id UUID
+  shuduo quality run --id RULE_ID [--expected-version-id VERSION_ID] [--archive-task-id ID --archive-run-id ID --archive-metadata-version-id ID --archive-snapshot-hash SHA256] [--request-id UUID]
   shuduo quality plan --message "为证券代码生成非空规则"
   shuduo quality plans
   shuduo quality apply-plan --id PLAN_ID
@@ -1469,11 +1472,17 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           ...(parsed.options.request_id!==undefined?{idempotencyKey:parsed.options.request_id}:{}),
         },
       );
-    } else if (resource === "quality" && action === "run")
-      result = await client.request(
-        `/quality/rules/${encodeURIComponent(required(parsed.options, "id"))}/run`,
-        { method: "POST", body:parsed.options.expected_version_id!==undefined?{expectedVersionId:parsed.options.expected_version_id}:{} },
-      );
+    } else if(resource==='quality'&&action==='archive-inputs')result=await client.request(qualityArchiveInputsPath(required(parsed.options,'id')));
+    else if(resource==='quality'&&action==='run-request')result=await client.request(qualityRunRequestPath(required(parsed.options,'id'),required(parsed.options,'request_id')));
+    else if (resource === "quality" && action === "run") {
+      const allowed=new Set(['id','expected_version_id','archive_task_id','archive_run_id','archive_metadata_version_id','archive_snapshot_hash','request_id','base_url','help']),seen=new Set();if(parsed.positionals.length!==2)throw Error('检测命令包含额外参数');for(const token of argv.filter(v=>v.startsWith('--'))){const key=token.slice(2).replaceAll('-','_');if(!allowed.has(key)||seen.has(key))throw Error('检测包含未知或重复参数');seen.add(key);}
+      if(parsed.options.request_id!==undefined)qualityRunRequestPath(required(parsed.options,'id'),parsed.options.request_id);
+
+      if(['sync_task_id','sync_run_id','snapshot_hash','metadata_version_id','source_selection'].some(key=>parsed.options[key]!==undefined))throw Error('请使用完整--archive-*参数，不能静默忽略批次选择');
+      const keys=['archive_task_id','archive_run_id','archive_metadata_version_id','archive_snapshot_hash'],selected=keys.some(key=>parsed.options[key]!==undefined);
+      const body=qualityRunBody({...('expected_version_id' in parsed.options?{expectedVersionId:parsed.options.expected_version_id}:{}),...(selected?{sourceSelection:{kind:'SYNC_RUN_ARCHIVE_V1',taskId:parsed.options.archive_task_id,runId:parsed.options.archive_run_id,metadataVersionId:parsed.options.archive_metadata_version_id,snapshotHash:parsed.options.archive_snapshot_hash}}:{})});
+      result=await client.request(`/quality/rules/${encodeURIComponent(required(parsed.options,'id'))}/run`,{method:'POST',body,...(parsed.options.request_id!==undefined?{idempotencyKey:parsed.options.request_id}:{})});
+    }
     else if (resource === "quality" && action === "plan")
       result = await client.request("/quality/agent/plans", {
         method: "POST",

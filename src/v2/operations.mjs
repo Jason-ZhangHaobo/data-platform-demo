@@ -27,7 +27,7 @@ const FAILURE_SOURCES = [
   {
     kind: "quality_run",
     domain: "数据质量",
-    failed: (item) => item.status === "FAILED",
+    failed: (item) => !item.archiveSource && item.status === "FAILED",
     resource: (item) => ({ type: "quality_rule", id: item.ruleId }),
   },
   {
@@ -237,6 +237,7 @@ export class OperationsManager {
       for (const item of this.store.list(kind, this.project)) {
         if (!canRead(kind, item)) continue;
         const status=kind==='quality_run'?qualityRunView(item).status:item.status;
+        if(kind==='quality_run'&&item.archiveSource)continue;
         if (["FAILED", "VALIDATION_FAILED"].includes(status))
           domainCounts[domain].failures++;
         else if (["RUNNING", "QUEUED", "SCHEDULED"].includes(status))

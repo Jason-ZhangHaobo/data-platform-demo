@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## 质量检测的确切归档来源（2026-11-19，本机）
+
+POST `/quality/rules/:id/run`可带sourceSelection（kind、taskId、runId、metadataVersionId、snapshotHash五项）及必需expectedVersionId，请求键须UUID；原当前表无来源响应保持。GET `/quality/rules/:id/archive-inputs`列候选，GET `/quality/rules/:id/run-requests/:UUID`回读确切运行及原规则版本。历史结果不更新当前健康或恢复，未知顶层来源字段422；版本/摘要/损坏拒绝不回退。CLI／MCP共用[完整契约](quality-archive-input.md)。
+
 ## 确切原包的调度只读预检（2026-11-19）
 
 GET `/delivery/packages/:id/schedule-preview`要求`packageDigest`，可选`scheduledFor`（北京时间原09:00时刻）。按原来源身份、摘要及完整文件校验后返回绑定包/版本/运行的只读回执，包含包内日历、部署依赖及日期关系。错业务日、休市和覆盖不足不标为可执行；响应未知清旧，不创建资源。CLI/MCP共用同一路径，详情见[原包预检](securities-trading-calendar.md#agent内的原包调度预检)。

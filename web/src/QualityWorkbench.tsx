@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, useRef } from "react";
 import {QualityConfigFields} from './QualityConfigFields';
 import {QualityVersionEditor} from './QualityVersionEditor';
 import type {PendingQualityVersion} from './QualityVersionEditor';
@@ -23,6 +23,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 
+const QualityArchiveRun=lazy(async()=>({default:(await import("./QualityArchiveRun")).QualityArchiveRun}));
 type Api = <T>(path: string, body?: unknown,options?:{idempotencyKey?:string}) => Promise<T>;
 type Asset = {
   id: string;
@@ -34,6 +35,7 @@ type Asset = {
 };
 type QualityRun = {
   id: string;
+  archiveSource?:{runId:string;snapshotHash:string};
   status: string;
   ruleVersionId: string;
   evaluatedCount: number;
@@ -344,15 +346,16 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
         </aside>
         <section className="quality-detail-v2">
           {selectedRule ? <>
-            <header><div><span className="eyebrow">{selectedRule.code} · V{selectedRule.currentVersion.versionNumber}</span><h3>{selectedRule.name}</h3><p>{selectedRule.assetId}</p></div><button className="button primary" onClick={runRule} disabled={!canWrite || !!busy}>{busy === "run" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际检测</button></header>
+            <header><div><span className="eyebrow">{selectedRule.code} · V{selectedRule.currentVersion.versionNumber}</span><h3>{selectedRule.name}</h3><p>{selectedRule.assetId}</p></div><button className="button primary" onClick={runRule} disabled={!canWrite || !!busy}>{busy === "run" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际检测当前表</button></header>
             <div className="quality-proof-v2"><div><span>最近结论</span><strong>{labels[selectedRule.health ?? selectedRule.status] ?? selectedRule.health ?? selectedRule.status}</strong></div><div><span>规则表达</span><strong>{configText(selectedRule.currentVersion)}</strong></div><div><span>版本</span><strong>{selectedRule.versions.length}</strong></div><div><span>检测</span><strong>{selectedRule.runs.length}</strong></div><div><span>开放告警</span><strong>{selectedRule.alerts.filter((item) => item.status === "OPEN").length}</strong></div></div>
             {selectedRule.alerts[0] && <div className={`quality-alert-v2 ${selectedRule.alerts[0].status.toLowerCase()}`}>{selectedRule.alerts[0].status === "OPEN" ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}<div><strong>{selectedRule.alerts[0].message}</strong><p>{selectedRule.alerts[0].recoveryUnconfirmed?"原恢复回执没有非空通过证据，当前按待恢复处理":selectedRule.alerts[0].status === "OPEN" ? `失败批次 ${selectedRule.alerts[0].runId.slice(0, 8)}` : `恢复批次 ${selectedRule.alerts[0].recoveryRunId?.slice(0, 8)}`}</p></div><span>{labels[selectedRule.alerts[0].status]}</span></div>}
+            {local&&<Suspense fallback={<p role="status">正在读取原批次复检…</p>}><QualityArchiveRun key={selectedRule.id} api={api} ruleId={selectedRule.id} versionId={selectedRule.currentVersionId} versionNumber={selectedRule.currentVersion.versionNumber} canWrite={canWrite&&!busy} onSaved={reload}/></Suspense>}
             <div className="quality-evidence-v2">
               <section><header><div><History size={15} /><h4>运行历史</h4></div><span>{selectedRule.runs.length}</span></header>{selectedRule.runs.map((run) => <article key={run.id}><span className={`status-pill ${run.status.toLowerCase()}`}>{labels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><strong>{run.status==='NO_DATA'?'无数据，未给出通过率':run.status==='UNCONFIRMED'?'回执待核对，未确认通过':`${run.passedCount}/${run.evaluatedCount}通过`}</strong><p>{run.status==='NO_DATA'?'请检查数据范围；未解除原告警':run.status==='UNCONFIRMED'?'未计为健康或告警恢复依据':`失败${run.failedCount} · ${run.passRate===null?'通过率待核对':(run.passRate*100).toFixed(1)+'%'} · ${run.durationMs}ms`}</p>
                 {Boolean(run.missingFieldCount)&&<p>有{run.missingFieldCount}行缺少检测字段，按未通过处理。</p>}
                 {run.reasonCode==='QUALITY_LEGACY_EMPTY_PASS'&&<p>原回执记录通过，但检测行数为0；历史原值保留，不作为恢复证据。</p>}
                 {run.reasonCode==='QUALITY_PASS_UNPROVEN'&&<p>原通过回执的执行或计数待核对，未计为健康或恢复依据。</p>}
-                <small>规则V{selectedRule.versions.find(version=>version.id===run.ruleVersionId)?.versionNumber??'待核对'} · {run.syncRunId?`同步批次 ${run.syncRunId.slice(0,8)}`:'未记录已核对的同步批次'} · 数据摘要 {run.assetEvidenceHash?.slice(0,12)??'未记录'}</small></div></article>)}</section>
+                <small>{run.archiveSource?"历史复检（不更新当前健康） · ":"当前表检测 · "}规则V{selectedRule.versions.find(version=>version.id===run.ruleVersionId)?.versionNumber??'待核对'} · {run.syncRunId?`同步批次 ${run.syncRunId.slice(0,8)}`:'未记录已核对的同步批次'} · 数据摘要 {run.assetEvidenceHash?.slice(0,12)??'未记录'}</small></div></article>)}</section>
               <section><header><div><RefreshCw size={15} /><h4>版本历史</h4></div><span>{selectedRule.versions.length}</span></header>{selectedRule.versions.map((version) => <article key={version.id}><span className={`status-pill ${version.status.toLowerCase()}`}>V{version.versionNumber}</span><div><strong>{configText(version)}</strong><p>{version.description}</p><code>{version.configHash.slice(0, 12)}</code></div></article>)}</section>
             </div>
             <QualityVersionEditor key={selectedRule.id} current={selectedRule.currentVersion} fields={assets.find(asset=>asset.id===selectedRule.assetId)?.fields.map(field=>field.name)??[]}
