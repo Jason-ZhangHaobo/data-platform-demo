@@ -1,7 +1,7 @@
 import test from'node:test';import assert from'node:assert/strict';
 import{MetadataStore}from'../../src/v2/store.mjs';import{BusinessQueryStore,DataServiceManager}from'../../src/v2/data-services.mjs';
 import{createV2Server,PROJECT}from'../../src/v2/server.mjs';import{localTaskPublication}from'../../src/v2/local-task-publication.mjs';import{localTaskConsumption}from'../../src/v2/local-task-consumption.mjs';
-import{seedLocalServiceSource}from'./fixtures/local-service-sources.mjs';import{checkedAgentPublication,checkedAgentConsumption}from'../../web/src/agent-delivery-evidence-read.ts';
+import{seedLocalServiceSource}from'./fixtures/local-service-sources.mjs';import{checkedAgentPublication,checkedAgentConsumption,checkedLocalSyncBatchConsumption}from'../../web/src/agent-delivery-evidence-read.ts';
 
 test('local publication keeps the original interrupted batch visible with a scoped unknown result flag',async t=>{
  const f=await fixture(t);
@@ -49,6 +49,35 @@ test('pending and failed evidence remains readable without inventing successful 
  const failed={...empty,services:[{serviceId:foreign,versionId:foreign,serviceType:'XAPI',name:'虚构接口',configHash:'a'.repeat(64),status:'NEEDS_ATTENTION',sourceRunIds:[],notice:'版本未核验',code:'SOURCE_MISMATCH'}],matchingCount:1};assert.equal(checkedAgentConsumption(failed,f.binding,f.publication.runs),failed);
  assert.throws(()=>checkedAgentConsumption({...empty,status:'VERIFIED'},f.binding,f.publication.runs),/未确认/);
  assert.throws(()=>checkedAgentConsumption({...f.consumption,truncated:true},f.binding,f.publication.runs),/未确认/);
+});
+test('local batch presentation requires matching monitoring and both whole-batch service types',async t=>{
+ const f=await fixture(t),batchId=f.batches[0].id,snapshotHash='1'.repeat(64);
+ const monitoring={eventId:foreign,observedAt:new Date().toISOString(),sequence:1,businessDate:'2026-09-10'};
+ const proof={...f.consumption,sourceReleaseRunId:batchId,snapshotHash,monitoring,verifiedBatchIds:[],status:'PENDING'};
+ const check=value=>checkedLocalSyncBatchConsumption(value,f.binding,batchId,snapshotHash,1);
+ assert.deepEqual(check(proof),{proof,monitor:monitoring});
+ assert.throws(()=>check({...proof,status:'VERIFIED',verifiedBatchIds:[batchId]}),/未确认/);
+ assert.throws(()=>check({...proof,sourceReleaseRunId:f.batches[1].id}),/未确认/);
+ assert.throws(()=>check({...proof,monitoring:{...monitoring,sequence:2}}),/未确认/);
+ const dapi=f.manager.list().find(item=>item.serviceType==='DAPI'&&item.slug==='proof-holdings');
+ const issued=f.manager.createApplication({name:'虚构整批核对',serviceIds:[dapi.id]});
+ await f.manager.invoke('DAPI','proof-holdings','Bearer '+issued.token,{});
+ f.manager.revokeApplication(issued.application.id);
+ const both=await localTaskConsumption({store:f.store,project:PROJECT,agent:f.agent,packageDigest:f.bundle.digest,releaseId:f.release.id,manager:f.manager});
+ const exact={...proof,services:both.services,verifiedBatchIds:[batchId],status:'VERIFIED'};
+ assert.throws(()=>check(exact),/未确认/); // An individually checked call does not attest complete page coverage.
+ const frozenFixture={...exact,services:exact.services.map(entry=>entry.call
+   ? {...entry,paginationCoverage:{status:'COMPLETE',applicationId:entry.call.applicationId,pageSize:1,totalPages:2,verifiedPages:[1,2]}} : entry)};
+ assert.equal(check(frozenFixture).proof.status,'VERIFIED');
+ assert.throws(()=>check({...frozenFixture,services:frozenFixture.services.map(entry=>entry.paginationCoverage?
+   {...entry,paginationCoverage:{...entry.paginationCoverage,verifiedPages:[1,1]}}:entry)}),/未确认/);
+ assert.throws(()=>check({...frozenFixture,services:frozenFixture.services.map(entry=>({...entry,sourceRunIds:[f.batches[1].id]}))}),/未确认/);
+ const old=frozenFixture.services.find(entry=>entry.serviceType==='XAPI');
+ const retained=frozenFixture.services.map(entry=>entry===old?{...entry,versionStatus:'RETIRED'}:entry);
+ const replacement={...old,versionId:foreign,versionStatus:'PUBLISHED',status:'PENDING',call:undefined};
+ const history={...frozenFixture,services:[...retained,replacement],matchingCount:retained.length+1};
+ assert.equal(check(history).proof.status,'VERIFIED');
+ assert.throws(()=>check({...history,services:[...retained,{...replacement,versionId:old.versionId}]}),/未确认/);
 });
 test('manual private projections preserve attribution and require published batches rather than development runs',async t=>{
  const f=await fixture(t),value=structuredClone(f.consumption),binding={...f.binding,sourceKind:'MANUAL',scope:'PRIVATE_CLOUD_TEST'};

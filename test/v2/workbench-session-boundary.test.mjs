@@ -1,11 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import {createScopedWorkbenchApi, workbenchSessionScope} from "../../web/src/workbench-session-boundary.ts";
 import {createAssetReader} from "../../web/src/asset-read.ts";
 
 const engineer = {authenticated:true,user:{id:"fictional-engineer"},role:"ENGINEER",permissions:["DELIVERY","ASSETS"]};
 const scope = session => workbenchSessionScope({mode:"PUBLIC_INVITATION"},session);
 const deferred = () => { let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject}; };
+
+test("guest login can open during a scope check while the member's recheck control is guarded",()=>{
+  const source=readFileSync(new URL("../../web/src/AuthDialog.tsx",import.meta.url),"utf8");
+  const guest=source.match(/if \(!session\.authenticated\) return (<button[^>]+>)/)?.[1];
+  assert.match(guest??"",/type="button".*onClick=\{onLogin\}/);
+  assert.doesNotMatch(guest??"",/disabled/);
+  assert.match(source,/<button[^>]*disabled=\{!ready\} onClick=\{onRecheck\}>核对权限<\/button>/);
+});
 
 test("effective identity changes on same-user role and scoped target changes, but equivalent grants keep the view",()=>{
   assert.equal(scope(engineer),scope({...engineer,permissions:["ASSETS","DELIVERY","DELIVERY"]}));

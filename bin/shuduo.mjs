@@ -3,13 +3,14 @@ import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/de
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
 import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
+import { readFrozenAssetQuality } from "../src/v2/frozen-asset-quality-client.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import { fileURLToPath } from "node:url";
 import { linkSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
-import {readSyncSqlOutputSchema} from "../src/v2/sync-sql-output-schema-client.mjs";
+import {readSyncSqlOutputSchema,readSyncedPositions,readSyncReviewEvidence} from "../src/v2/sync-sql-output-schema-client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import {readReportProvenance,checkedReportProvenance,downloadReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
@@ -17,13 +18,15 @@ import { readWealthConsumption } from '../src/v2/wealth-report-consumption-clien
 import {checkedPrivateBatchReport, readPrivateBatchSummary} from "../src/v2/private-batch-report-client.mjs";
 import {checkedBatchArchive, prepareBatchArchive, readBatchArchive, submitBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
-import {agentReviewEvidencePath,publicationSelectorInput,publicationPreflightPath,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {agentReviewEvidencePath,publicationApprovalStep,publicationSelectorInput,publicationPreflightPath,
+  publicationReadPath,publicationRequestReceiptPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
 import {advanceCloudV3Rehearsal,bindCloudV3Consumption,checkCloudV3PreparedEntry,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,prepareCloudV3Next,rebindCloudV3PreparedSource,settleCloudV3Failure,submitCloudV3Publication,verifyCloudV3Completion} from "../scripts/start-cloud-v3-case.mjs";
 import {readCloudV3Run} from "../scripts/cloud-v3-run.mjs";
 import {cloudWindowCheckpointBinding} from "../scripts/first-cloud-v3-window.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
+import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} from '../src/v2/agent-consumption-request.mjs';
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -43,6 +46,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo status
   shuduo sql compare-candidates --run-id RUN_ID
   shuduo sql output-schema --run-id RUN_ID
+  shuduo sql synced-positions
   shuduo sql compare-runs --run-id RUN_ID --baseline-run-id RUN_ID
   shuduo budget
   shuduo manual publication --source-run-id RUN_ID --id MANUAL_DELIVERY_ID --package-digest SHA256 --verification-id ID [--release-id ID]
@@ -84,7 +88,9 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --reconcile
   shuduo agent v3-publish --checkpoint ABSOLUTE_PATH --reconcile --workbench
   shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --batch-id ID --out-file ABSOLUTE_PATH
-  shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256
+  shuduo agent v3-consumption --checkpoint ABSOLUTE_PATH --plan ABSOLUTE_PATH --call-id-digest SHA256 [--agent-request-id UUID]
+  shuduo agent consume-services --file EXACT_SOURCE_AND_VERSIONS_JSON --request-id UUID --confirm
+  shuduo agent consumption-request --request-id UUID
   shuduo agent v3-complete --checkpoint ABSOLUTE_PATH --first-plan ABSOLUTE_PATH --second-plan ABSOLUTE_PATH --out-file ABSOLUTE_PATH
   shuduo agent v3-settle-failure --checkpoint ABSOLUTE_PATH --out-file ABSOLUTE_PATH
   shuduo agent v3-run --checkpoint ABSOLUTE_PATH [--completion-file ABSOLUTE_PATH [--case-records ABSOLUTE_PATH]]
@@ -107,21 +113,24 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent repair-compare --source-run-id FAILED_RUN_ID --baseline-run-id SUCCEEDED_RUN_ID --message "参考基线修正" --request-id UUID --confirm
   shuduo agent derive --task-id TASK_ID --revision-id REVISION_ID --run-id RUN_ID --revision-hash SHA256 --context stock-cash-t1 --message "改为股票持仓和现金口径" --request-id UUID --confirm
     从原成功版本创建独立任务，可能执行模型与Spark；原批准不继承。未知结果先用 agent request 查询，不换请求编号重试。
-  shuduo services task-evidence [--task-id AGENT_TASK_ID | --manual-delivery-task-id MANUAL_DELIVERY_ID] --package-digest SHA256 [--release-id RELEASE_ID [--call-id-digest SHA256]]
+  shuduo services task-evidence [--task-id AGENT_TASK_ID | --manual-delivery-task-id MANUAL_DELIVERY_ID] --package-digest SHA256 [--release-id RELEASE_ID [--batch-id BATCH_ID] [--call-id-digest SHA256]]
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-delivery --id AGENT_TASK_ID
   shuduo agent prepare-delivery --id TASK_ID --source-file SOURCE_JSON --request-id UUID --confirm
   shuduo agent prepare-delivery --id TASK_ID --source-kind MANUAL --source-run-id RUN_ID --request-id UUID --confirm
   shuduo agent delivery --id DELIVERY_TASK_ID
   shuduo agent recheck-delivery-receipt --id DELIVERY_TASK_ID --version CURRENT_VERSION
-  shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION [--package-id UUID --package-digest SHA256 --verification-id UUID --confirm]
+  shuduo agent advance-delivery --id DELIVERY_TASK_ID --version CURRENT_VERSION [--package-id UUID --package-digest SHA256 --confirm] [--verification-id UUID | --dispatch-in-background]
   shuduo agent background --id TASK_ID
-  shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm
+  shuduo agent enable-background --id TASK_ID --version CURRENT_VERSION --confirm [--prepare-files]
   shuduo agent resume-background --id TASK_ID --version CURRENT_VERSION --confirm [--confirm-model-retry]
   shuduo agent stop-background --id TASK_ID --confirm
   shuduo agent publication --id AGENT_TASK_ID [--source-kind AGENT|MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
   shuduo agent publication-preflight --id AGENT_TASK_ID --source-kind AGENT --source-run-id RUN_ID --package-digest SHA256 --verification-id ID
   shuduo agent publish --id AGENT_TASK_ID --file REVIEW_JSON [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --request-id ORIGINAL_REQUEST_ID]
+  shuduo agent publish --id AGENT_TASK_ID --file EXACT_REVIEW_JSON --request-id ORIGINAL_REQUEST_ID --approve-only
+  shuduo agent publish --id AGENT_TASK_ID --file EXACT_REVIEW_JSON --request-id ORIGINAL_REQUEST_ID --approval-id ORIGINAL_APPROVAL_ID [--dispatch-in-background]
+  shuduo agent publication-request --id AGENT_TASK_ID --request-id ORIGINAL_REQUEST_ID
   shuduo agent stop-publication --id AGENT_TASK_ID [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
     人工来源必须指定运行、包摘要和演练；停止还须指定发布编号。四项审阅来自 REVIEW_JSON，不自动批准或重试；发布重试沿用 --request-id。
   shuduo agent cancel-delivery --id DELIVERY_TASK_ID
@@ -140,7 +149,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo delivery verification --id VERIFICATION_ID
   shuduo delivery cancel --id VERIFICATION_ID
   shuduo delivery reviews
-  shuduo delivery review --id PACKAGE_ID --package-digest SHA256 --verification-id VERIFICATION_ID --note "已核对" --attest-code --attest-assertions --attest-delivery-files --attest-local-scope
+  shuduo delivery review-evidence --verification-id VERIFICATION_ID
+  shuduo delivery review --id PACKAGE_ID --package-digest SHA256 --verification-id VERIFICATION_ID [--sync-rehearsal-digest SHA256] --note "已核对" --attest-code --attest-assertions --attest-delivery-files --attest-local-scope
   分布批准/回滚需 --distribution-consent 已审阅确认JSON文件；读取不自动确认。
   shuduo releases approvals
   shuduo releases approve --package-id PACKAGE_ID --package-digest SHA256 --review-id REVIEW_ID
@@ -173,7 +183,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services calls [--id ID]
   shuduo services invoke --type dapi|xapi --slug path [--client-id CLIENT-001 | --portfolio-id ID --trade-date YYYY-MM-DD --asset-class 类别] [--page N --page-size N]
   shuduo apps list
-  shuduo apps create --name 名称 --service-ids ID,ID
+  shuduo apps create --name 名称 --service-ids ID,ID [--customer-id CLIENT-001 --mask-fields client_id,available_cash]
   shuduo apps revoke --id ID
   shuduo sources list
   shuduo sources create --name 名称 --file positions_baseline.csv
@@ -183,6 +193,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo sync list
   shuduo sync create --name 名称 --source-id ID --target-table raw_positions --mode full|incremental --mapping from:to,... --keys position_id [--watermark trade_date]
   shuduo sync run --id ID
+  shuduo sync recovery-preview --id OLD_TASK_ID
+  shuduo sync recovery-save --id OLD_TASK_ID --basis-digest SHA256 --mapping SOURCE:TARGET,SOURCE:TARGET --confirm
   shuduo sync rows --table raw_positions
   shuduo sync plan --message "同步需求"
   shuduo sync apply-plan --id PLAN_ID
@@ -199,6 +211,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo streams plans
   shuduo streams apply-plan --id PLAN_ID
   shuduo assets list [--query 持仓] [--kind LANDING_TABLE]
+  shuduo assets quality --id 资产编号
   shuduo assets show|lineage|impact --id ASSET_ID
   shuduo assets annotate --id ASSET_ID --business-name 名称 --description 说明 --domain 财富管理 --owner 负责人 [--tags 持仓,T+1]
   shuduo assets annotation-submit --id ASSET_ID --file 完整标注请求.json
@@ -314,7 +327,9 @@ const jsonObject = (value, name) => {
 };
 const publicationCliFields={source_kind:"sourceKind",source_run_id:"sourceRunId",package_digest:"packageDigest",verification_id:"verificationId",release_id:"releaseId"};
 function publicationCliOptions(argv,options,action){
-  const allowed=new Set(["id","base_url","help",...Object.keys(publicationCliFields),...(action==="publish"?["file","request_id"]:[])]),seen=new Set();
+  const actionFlags=action==="publish"?["file","request_id","approve_only","approval_id","dispatch_in_background"]:
+    action==="publication-request"?["request_id"]:[];
+  const allowed=new Set(["id","base_url","help",...Object.keys(publicationCliFields),...actionFlags]),seen=new Set();
   for(const token of argv.filter(value=>value.startsWith("--"))){
     const key=token.slice(2).replaceAll("-","_");
     if(!allowed.has(key)||seen.has(key))throw Error("发布命令包含未知或重复参数；不能指定执行者或覆盖审阅范围");
@@ -325,19 +340,21 @@ function publicationCliOptions(argv,options,action){
 }
 function reviewedPublication(input){
   if(!input||typeof input!=="object"||Array.isArray(input))throw Error("发布审阅必须为JSON对象");
-  const {attestations,...selector}=input;
+  const {attestations,reviewDigest,...selector}=input;
   const required=["code","assertions","deliveryFiles","cloudScope"];
   if(!attestations||typeof attestations!=="object"||Array.isArray(attestations)||Object.keys(attestations).length!==required.length||!required.every(key=>attestations[key]===true))throw Error("必须逐项确认代码、断言、交付文件和云端测试范围，不自动代批");
   const selected=publicationSelectorInput(selector);
   if(!selected.packageDigest||!selected.verificationId||selected.releaseId)throw Error("发布必须绑定包摘要和演练，不能提供已有发布编号");
-  return {...selected,attestations:Object.fromEntries(required.map(key=>[key,true]))};
+  if(reviewDigest!==undefined&&(typeof reviewDigest!=="string"||!/^[a-f0-9]{64}$/.test(reviewDigest)))
+    throw Error("确切审阅摘要不合法");
+  return {...selected,attestations:Object.fromEntries(required.map(key=>[key,true])),...(reviewDigest?{reviewDigest}:{})};
 }
 function serviceQueryOptions(options) {
   const flags = ["client_id", "portfolio_id", "trade_date", "asset_class", "page", "page_size"];
   return Object.fromEntries(flags.filter(flag => options[flag] !== undefined).map(flag => [flag, required(options, flag)]));
 }
 function serviceReadCliOptions(argv,options,action){
-  const taskFlag=action==='sources'?'agent_task_id':'task_id',fields={[taskFlag]:'agentTaskId',manual_delivery_task_id:'manualDeliveryTaskId',package_digest:'packageDigest',release_id:'releaseId',...(action==='task-evidence'?{call_id_digest:'callIdDigest'}:{})},
+  const taskFlag=action==='sources'?'agent_task_id':'task_id',fields={[taskFlag]:'agentTaskId',manual_delivery_task_id:'manualDeliveryTaskId',package_digest:'packageDigest',release_id:'releaseId',...(action==='task-evidence'?{call_id_digest:'callIdDigest',batch_id:'batchId'}:{})},
     allowed=new Set(['base_url','help',...Object.keys(fields)]),seen=new Set();
   for(const token of argv.filter(value=>value.startsWith('--'))){
     const key=token.slice(2).replaceAll('-','_');
@@ -467,6 +484,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "status") result = await client.request("/status");
     else if(resource==='sql'&&action==='compare-candidates')result=await readRunComparisonCandidates(client,{runId:required(parsed.options,'run_id')});
     else if(resource==='sql'&&action==='output-schema')result=await readSyncSqlOutputSchema(client,{runId:required(parsed.options,'run_id')});
+    else if(resource==='sql'&&action==='synced-positions')result=await readSyncedPositions(client);
     else if(resource==='sql'&&action==='compare-runs')result=await readSqlRunComparison(client,{runId:required(parsed.options,'run_id'),baselineRunId:required(parsed.options,'baseline_run_id')});
     else if (resource === "budget" && !action)
       result = await client.request("/budget");
@@ -676,15 +694,27 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         await submitCloudV3Publication(checkpoint,client,reconcile?{reconcile:true,workbench}:{reviewPath:required(args,"review_file"),
           billPath:required(args,"bill_file")});
     }
+    else if (resource==='agent'&&['consume-services','consumption-request'].includes(action)) {
+      const creating=action==='consume-services',flags=parsed.options;
+      const allowed=['request_id','base_url',...(creating?['file','confirm']:[])];
+      if (parsed.positionals.length!==2||Object.keys(flags).some(key=>!allowed.includes(key))||
+          argv.filter(value=>value.startsWith('--')).length!==Object.keys(flags).length||creating&&flags.confirm!==true)
+        throw Error('须确认确切批次与应用的单次消费，查回只使用原请求编号');
+      const requestId=required(flags,'request_id');
+      result=creating?await client.request(agentConsumptionPath,{method:'POST',idempotencyKey:requestId,
+        body:readAgentConsumption(jsonObject(readFileSync(required(flags,'file'),'utf8'),'消费委托'),requestId)}):
+        await client.request(agentConsumptionReceiptPath(requestId));
+    }
     else if (resource === "agent" && action === "v3-consumption") {
       const args=parsed.options, flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
       const exporting=Object.hasOwn(args,"out_file");
-      const allowed=["checkpoint","base_url",...(exporting?["out_file","batch_id"]:["plan","call_id_digest"])];
+      const allowed=["checkpoint","base_url",...(exporting?["out_file","batch_id"]:["plan","call_id_digest","agent_request_id"])];
       if (parsed.positionals.length!==2 || new Set(flags).size!==flags.length || flags.some(flag=>!allowed.includes(flag)))
         throw Error("消费核验仅接受原批次导出或原报告与调用摘要");
       result=await bindCloudV3Consumption(required(args,"checkpoint"),client,exporting?
         {batchId:required(args,"batch_id"),outFile:required(args,"out_file")}:
-        {planPath:required(args,"plan"),callIdDigest:required(args,"call_id_digest")});
+        {planPath:required(args,"plan"),callIdDigest:required(args,"call_id_digest"),
+          ...(args.agent_request_id===undefined?{}:{agentRequestId:required(args,'agent_request_id')})});
     }
     else if (resource === "agent" && action === "v3-settle-failure") {
       const flags=argv.filter(value=>value.startsWith("--")).map(value=>value.slice(2).replaceAll("-","_"));
@@ -750,10 +780,14 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       validateManualDeliveryFlags(parsed,argv);
       result = parsed.options.source_kind==='MANUAL'?await readManualDeliveryWorkflow(client,{taskId:required(parsed.options,'id'),sourceRunId:required(parsed.options,'source_run_id')}):await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
     }
-    else if (resource === "agent" && ["publication","publication-preflight","publish","stop-publication"].includes(action)) {
+    else if (resource === "agent" && ["publication","publication-preflight","publication-request","publish","stop-publication"].includes(action)) {
       const flags=publicationCliOptions(argv,parsed.options,action),taskId=required(parsed.options,"id");
       if(action==="publication")result=await client.request(publicationReadPath(taskId,publicationSelectorInput(flags)));
       else if(action==="publication-preflight")result=await client.request(publicationPreflightPath(taskId,publicationSelectorInput(flags)));
+      else if(action==="publication-request"){
+        if(Object.keys(flags).length)throw Error("回执读取只接受原任务和原请求编号");
+        result=await client.request(publicationRequestReceiptPath(taskId,required(parsed.options,"request_id")));
+      }
       else if(action==="stop-publication"){
         const selector=publicationSelectorInput(flags);
         if(Object.keys(selector).length&&!selector.releaseId)throw Error("停止指定版本必须提供 --release-id，不选择其他历史发布");
@@ -765,7 +799,10 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         }
         const body=reviewedPublication({...reviewed,...flags}),requestId=parsed.options.request_id;
         if(requestId!==undefined&&(typeof requestId!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(requestId)))throw Error("原发布请求编号不合法");
-        result=await client.request(publicationReadPath(taskId),{method:"POST",body,...(requestId===undefined?{}:{idempotencyKey:requestId})});
+        const step=publicationApprovalStep({approvalOnly:parsed.options.approve_only,approvalId:parsed.options.approval_id,dispatchInBackground:parsed.options.dispatch_in_background,
+          reviewDigest:body.reviewDigest,requestId,selector:body});
+        result=await client.request(publicationReadPath(taskId),{method:"POST",body:{...body,...step},
+          ...(requestId===undefined?{}:{idempotencyKey:requestId})});
       }
     }
     else if (resource === "agent" && action === "deliveries") {
@@ -798,11 +835,11 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "agent" && action === "advance-delivery") {
       const flags=parsed.options, expectedVersion=Number(required(flags,"version"));
-      const selected=["package_id","package_digest","verification_id","confirm"].some(key=>flags[key]!==undefined);
+      const selected=["package_id","package_digest","verification_id","confirm","dispatch_in_background"].some(key=>flags[key]!==undefined);
       if (selected && (flags.confirm!==true || parsed.positionals.length!==2 ||
-          Object.keys(flags).some(key=>!["id","version","package_id","package_digest","verification_id","confirm","base_url"].includes(key)) ||
+          Object.keys(flags).some(key=>!["id","version","package_id","package_digest","verification_id","confirm","base_url","dispatch_in_background"].includes(key)) ||
           argv.filter(value=>value.startsWith("--")).length!==Object.keys(flags).length)) throw Error("演练须确认当前包及原批次");
-      const body={expectedVersion,...(selected?{rehearsal:{packageId:flags.package_id,packageDigest:flags.package_digest,
+      const body={expectedVersion,...(flags.dispatch_in_background!==undefined?{dispatchInBackground:flags.dispatch_in_background}:{}),...(selected?{rehearsal:{packageId:flags.package_id,packageDigest:flags.package_digest,
         ...(flags.verification_id===undefined?{}:{verificationId:flags.verification_id})}}:{})};
       readDeliveryAdvance(body);
       result=await client.request(`/agent/deliveries/${encodeURIComponent(required(flags,"id"))}/advance`,{method:"POST",body});
@@ -813,7 +850,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if(resource==="agent"&&action==="background")result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background`);
     else if(resource==="agent"&&action==="enable-background"){
       if(parsed.options.confirm!==true)throw new Error("云后台可能调用模型和Spark，须先确认范围并提供--confirm");
-      result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background`,{method:"POST",body:{expectedVersion:Number(required(parsed.options,"version"))}});
+      if(parsed.options.prepare_files!==undefined && parsed.options.prepare_files!==true)throw new Error("准备交付文件须使用 --prepare-files 开关");
+      result=await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options,"id"))}/background`,{method:"POST",body:{
+        expectedVersion:Number(required(parsed.options,"version")),...(parsed.options.prepare_files?{prepareFiles:true}:{})}});
     }
     else if(resource==="agent"&&action==="resume-background"){
       if(parsed.options.confirm!==true)throw new Error("恢复原任务须审阅剩余次数与预算并提供--confirm；未知模型结果另须--confirm-model-retry");
@@ -893,6 +932,8 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "delivery" && action === "reviews")
       result = await client.request("/delivery/reviews");
+    else if (resource === "delivery" && action === "review-evidence")
+      result = await readSyncReviewEvidence(client,{verificationId:required(parsed.options,"verification_id")});
     else if (resource === "delivery" && action === "review")
       result = await client.request(
         `/delivery/packages/${encodeURIComponent(required(parsed.options, "id"))}/review`,
@@ -901,6 +942,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: {
             packageDigest: required(parsed.options, "package_digest"),
             verificationId: required(parsed.options, "verification_id"),
+            ...(parsed.options.sync_rehearsal_digest ? {syncRehearsalDigest:parsed.options.sync_rehearsal_digest} : {}),
             reviewNote: required(parsed.options, "note"),
             attestations: {
               code: parsed.options.attest_code === true,
@@ -1043,7 +1085,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     } else if (resource === "apps" && action === "list")
       result = await client.request("/data-services/applications");
-    else if (resource === "apps" && action === "create")
+    else if (resource === "apps" && action === "create") {
+      const customer = parsed.options.customer_id, masks = parsed.options.mask_fields;
+      if (masks !== undefined && customer === undefined) throw new Error("--mask-fields 需要 --customer-id");
       result = await client.request("/data-services/applications", {
         method: "POST",
         body: {
@@ -1052,9 +1096,13 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
             required(parsed.options, "service_ids"),
             "--service-ids",
           ),
+          ...(customer === undefined ? {} : { customerAccess: {
+            clientId: required(parsed.options, "customer_id"),
+            maskedFields: masks === undefined ? [] : list(masks, "--mask-fields"),
+          } }),
         },
       });
-    else if (resource === "apps" && action === "revoke")
+    } else if (resource === "apps" && action === "revoke")
       result = await client.request(
         `/data-services/applications/${encodeURIComponent(required(parsed.options, "id"))}/revoke`,
         { method: "POST", body: {} },
@@ -1097,6 +1145,15 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "sync" && action === "list")
       result = await client.request("/sync/tasks");
+    else if (resource === "sync" && ["recovery-preview","recovery-save"].includes(action)) {
+      const path = `/sync/tasks/${encodeURIComponent(required(parsed.options,"id"))}/recovery`;
+      if (action === "recovery-preview") result = await client.request(path);
+      else {
+        if (parsed.options.confirm !== true) throw Error("请先审阅恢复映射，再明确确认保存草稿");
+        result = await client.request(path, { method:"POST", body:{ confirm:true,
+          basisDigest:required(parsed.options,"basis_digest"), mapping:mapping(required(parsed.options,"mapping")) } });
+      }
+    }
     else if (resource === "sync" && action === "create") {
       const mode = required(parsed.options, "mode");
       if (!["full", "incremental"].includes(mode))
@@ -1229,7 +1286,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         assetResourcePath(required(parsed.options, "id"), action === "show" ? undefined : action),
       );
-    } else if (resource === "assets" && action === "annotation-submit")
+    } else if (resource === "assets" && action === "quality")
+      result = await readFrozenAssetQuality(client, {assetId:required(parsed.options,"id")});
+    else if (resource === "assets" && action === "annotation-submit")
       result = await submitAssetAnnotation(client, required(parsed.options,"id"), jsonObject(readFileSync(required(parsed.options,"file"),"utf8"),"标注请求"));
     else if (resource === "assets" && action === "annotation-request")
       result = await readAssetAnnotationRequest(client, required(parsed.options,"id"), required(parsed.options,"request_id"));

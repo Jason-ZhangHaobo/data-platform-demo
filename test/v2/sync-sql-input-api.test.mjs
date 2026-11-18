@@ -8,6 +8,7 @@ import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
 import { getContext, referenceSql, contextIds } from "../../src/v2/context.mjs";
 import { identityPositionMapping } from "../../src/v2/ingestion.mjs";
 import { readSyncSqlInput, syncSqlOutputSchemaDetails } from "../../src/v2/sync-sql-input.mjs";
+import { checkedSqlRunComparison } from "../../src/v2/run-comparison-client.mjs";
 import { checkedSyncSqlOutputSchema, checkedSyncSqlRehearsalSchema, checkedSyncSqlScheduledSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import { runV2Cli } from "../../bin/shuduo.mjs";
 import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
@@ -27,6 +28,14 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
   sample("first.csv", "1245.07");
   sample("later.csv", "4000.00");
   sample("bad.csv", "0.001");
+  const captured = readFileSync(join(fixtureRoot, "first.csv"), "utf8").split("\n");
+  writeFileSync(join(fixtureRoot, "currency.csv"), captured.map((line, index) =>
+    line + (index === 0 ? ",currency" : ",CNY")).join("\n"));
+  writeFileSync(join(fixtureRoot, "mixed.csv"), captured.map((line, index) =>
+    line + (index === 0 ? ",currency" : index === 1 ? ",USD" : ",CNY")).join("\n"));
+  writeFileSync(join(fixtureRoot, "unknown.csv"), captured.map((line, index) =>
+    line + (index === 0 ? ",unregistered" : ",test")).join("\n"));
+  cpSync(join(fixtureRoot,"currency.csv"),join(fixtureRoot,"missing.csv"));
   const columns = [
     {name:"client_id",type:"string"}, {name:"holding_market_value",type:"decimal(18,2)"},
     {name:"available_cash",type:"decimal(18,2)"}, {name:"total_assets",type:"decimal(18,2)"},
@@ -56,6 +65,7 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
           status: "SUCCEEDED", mainSqlExecuted: true, engine: "Apache Spark", engineVersion: "3.5.9",
           mode: "LOCAL_FILE_REHEARSAL", published: false, schedulerTriggered: false,
           packageDigest: expectedDigest, source: plan.source, occurrence: resolveDeliverySchedule(plan, scheduledFor),
+          workflowTrace:plan.order.map(({id,kind})=>({id,kind,status:"SUCCEEDED"})),
           fileHashes: Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, file]) => [name, file.sha256])),
           testSqlValidation: { passed: true, sqlHash: sha256(bundle.files["tests.sql"]) },
           validation: JSON.parse(bundle.files["validation.json"]).report, rows: plan.fixtures.context.expected, columns: rehearsalColumns,
@@ -95,12 +105,12 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     }
     assert.fail("Execution did not settle");
   }
-  function sync(fileName) {
+  function sync(fileName, mapping = identityPositionMapping) {
     const source = app.ingestion.createSource({ name: "虚构证券源 " + fileName, sourceType: "LOCAL_CSV", fileName });
     app.ingestion.testConnection(source.id);
     const metadata = app.ingestion.collectMetadata(source.id);
     const task = app.ingestion.createTask({ name: "虚构持仓同步 " + fileName, sourceId: source.id, targetTable: "raw_positions",
-      mode: "FULL", mapping: identityPositionMapping, keyFields: ["position_id"] });
+      mode: "FULL", mapping, keyFields: ["position_id"] });
     return { run: app.ingestion.runTask(task.id), metadata };
   }
   try {
@@ -160,16 +170,48 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
       issues:["TYPE"],
     }]);
     assert.equal(schema.source.snapshotHash, run.syncInput.snapshotHash);
+    const input = schema.inputMetadata;
+    assert.equal(input.syncRunId, first.run.id);
+    assert.equal(input.frozen.metadataVersionId, first.metadata.id);
+    assert.equal(input.frozen.sourceRevisionId, first.metadata.revisionId);
+    assert.equal(input.frozen.columns.length, 7);
+    assert.deepEqual(input.current, input.frozen);
+    assert.deepEqual(input.differences, []);
+    assert.equal(input.frozen.columns[0].distinctCount, undefined);
     assert.deepEqual((await request(schemaPath)).value, schema);
     assert.equal((await request(schemaPath + "?run_id=other")).status, 422);
-    const schemaClient = {request:async path => (await request(path)).value};
+    const sourceId = first.metadata.sourceId;
+    app.ingestion.createSourceRevision(sourceId, {fileName:"currency.csv"});
+    const missingCurrent = (await request(schemaPath)).value.inputMetadata;
+    assert.equal(missingCurrent.current, null);
+    assert.deepEqual(missingCurrent.frozen, input.frozen);
+    app.ingestion.testConnection(sourceId);
+    const currentMetadata = app.ingestion.collectMetadata(sourceId);
+    const report = (await request(schemaPath)).value;
+    assert.deepEqual(report.differences, schema.differences);
+    assert.deepEqual(report.inputMetadata.frozen, input.frozen);
+    assert.equal(report.inputMetadata.current.metadataVersionId, currentMetadata.id);
+    assert.deepEqual(report.inputMetadata.differences, [
+      {name:"currency",before:null,after:{name:"currency",type:"string",position:8,nullable:false}},
+    ]);
+    assert.deepEqual((await request("/runs/"+failedDevelopment.id)).value.syncOutputSchema, report);
+    app.store.update("ingestion_source", sourceId, PROJECT, {currentMetadataId:latest.metadata.id});
+    assert.equal((await request(schemaPath)).value.inputMetadata.current,null);
+    app.store.update("ingestion_source", sourceId, PROJECT, {currentMetadataId:currentMetadata.id});
+    app.store.update("source_metadata", first.metadata.id, PROJECT, {schemaHash:"0".repeat(64)});
+    assert.equal((await request(schemaPath)).value.inputMetadata,null);
+    app.store.update("source_metadata", first.metadata.id, PROJECT, {schemaHash:first.metadata.schemaHash});
+    let adapterRequest = 0;
+    const schemaClient = {request:async (path, options) => (await request(path, options?.body,
+      options?.body === undefined ? undefined : "adapter-"+(++adapterRequest))).value};
     const stdout = [];
     assert.equal(await runV2Cli(["sql","output-schema","--run-id",failedDevelopment.id],{},
       {client:schemaClient,output:line=>stdout.push(line),error:()=>{}}),0);
-    assert.deepEqual(JSON.parse(stdout.join("")),schema);
+    assert.deepEqual(JSON.parse(stdout.join("")),report);
     const mcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",
       params:{name:"sql_run_output_schema",arguments:{runId:failedDevelopment.id}}},{client:schemaClient}));
-    assert.deepEqual(mcp.result.structuredContent,schema);
+    assert.deepEqual(mcp.result.structuredContent,report);
+    assert.throws(() => checkedSyncSqlOutputSchema(report,{...schema.source,metadataVersionId:currentMetadata.id}),/原运行/);
     assert.throws(() => checkedSyncSqlOutputSchema(schema,{runId:run.id}),/原运行/);
     assert.throws(() => checkedSyncSqlOutputSchema({...schema,differences:[{}]},schema.source),/原运行/);
     const {rows:ignored, ...safeSchema} = checkedSyncSqlOutputSchema({...schema,rows:failedDevelopment.rows},schema.source);
@@ -193,6 +235,35 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(checked.syncOutputSchema.status,"MATCHED");
     assert.equal(checked.rows[0].total_assets, "2045.07");
     assert.deepEqual(checked.syncInput, run.syncInput);
+    const comparisonPath = "/runs/"+checked.id+"/comparison";
+    const candidatesPath = comparisonPath+"-candidates";
+    const failureComparison = comparisonPath+"?baseline_run_id="+failedDevelopment.id;
+    const candidates = (await request(candidatesPath)).value;
+    assert.equal(candidates.snapshotHash,run.syncInput.snapshotHash);
+    assert.ok(candidates.candidates.some(candidate=>candidate.runId===failedDevelopment.id));
+    const compared = (await request(failureComparison)).value;
+    assert.equal(compared.frozenInput.baseline.output.status,"MISMATCH");
+    assert.equal(compared.frozenInput.current.output.status,"MATCHED");
+    assert.equal(compared.frozenInput.baseline.selectedRows,"MATCHED");
+    assert.equal(compared.frozenInput.current.selectedRows,"MATCHED");
+    assert.equal(compared.frozenInput.syncRunId,first.run.id);
+    assert.equal(compared.frozenInput.metadataVersionId,first.metadata.id);
+    assert.equal(compared.readOnly,true);
+    assert.equal(compared.frozenInput.current.rows,undefined);
+    const compareArgs = {runId:checked.id,baselineRunId:failedDevelopment.id,snapshotHash:run.syncInput.snapshotHash};
+    assert.throws(()=>checkedSqlRunComparison({...compared,frozenInput:{...compared.frozenInput,
+      baseline:compared.frozenInput.current}},compareArgs),/原运行/);
+    const swapped = app.store.create("run",PROJECT,{...originalFailure,syncInput:{...originalFailure.syncInput,snapshotHash:"0".repeat(64)}});
+    assert.ok(!(await request(candidatesPath)).value.candidates.some(candidate=>candidate.runId===swapped.id));
+    assert.equal((await request(comparisonPath+"?baseline_run_id="+swapped.id)).value.code,"FROZEN_RUN_COMPARISON_SCOPE");
+    assert.equal((await request(comparisonPath+"?baseline_run_id="+checked.id)).status,409);
+    const cliCompare = [];
+    assert.equal(await runV2Cli(["sql","compare-runs","--run-id",checked.id,"--baseline-run-id",failedDevelopment.id],{},
+      {client:schemaClient,output:line=>cliCompare.push(line),error:()=>{}}),0);
+    assert.deepEqual(JSON.parse(cliCompare.join("")),compared);
+    const mcpCompare = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",
+      params:{name:"sql_run_compare",arguments:{runId:checked.id,baselineRunId:failedDevelopment.id}}},{client:schemaClient}));
+    assert.deepEqual(mcpCompare.result.structuredContent,compared);
     const syncContext = readSyncSqlInput({ store: app.store, project: PROJECT, actorId: revision.value.author, binding: run.syncInput });
     const exampleReceipt = { ...checked, mainSqlExecuted: true, testDouble: false, validation: {
       ...checked.validation, selectedPassed: true, regressions: contextIds.map(contextId => ({ contextId, passed: true })),
@@ -270,17 +341,96 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(verified.status, "SUCCEEDED");
     assert.equal(verified.rehearsalOutputSchema,undefined);
     assert.deepEqual((await request(failedRehearsalPath)).value.rehearsalOutputSchema,rehearsalSchema);
-    const reviewed = await request(packagePath + "/review", { packageDigest: stored.digest, verificationId: verified.id,
-      reviewNote: "隔离环境的测试审阅", attestations: { code: true, assertions: true, deliveryFiles: true, localScope: true } });
-    assert.equal(reviewed.status, 201);
+    const verifiedPath = `/delivery/verifications/${verified.id}`;
+    const reviewInput = { packageDigest: stored.digest, verificationId: verified.id,
+      reviewNote: "隔离环境的测试审阅", attestations: { code: true, assertions: true, deliveryFiles: true, localScope: true } };
+    for (const change of [
+      {occurrence:{...verified.occurrence,timezone:"UTC"}},
+      {scheduledFor:undefined},
+      {workflowTrace:verified.workflowTrace.slice(0,-1)},
+      {fileHashes:{...verified.fileHashes,"tests.sql":"0".repeat(64)}},
+    ]) {
+      app.store.update("delivery_verification",verified.id,PROJECT,change);
+      const doubtful = await request(verifiedPath);
+      assert.equal(doubtful.value.status,"UNCONFIRMED");
+      assert.equal(doubtful.value.storedStatus,"SUCCEEDED");
+      assert.equal(doubtful.value.workflowTrace,undefined);
+      assert.equal((await request("/delivery/verifications")).value.find(item=>item.id===verified.id).status,"UNCONFIRMED");
+      assert.equal((await request(packagePath+"/review",reviewInput)).value.code,"SYNC_SQL_REHEARSAL_UNPROVEN");
+      assert.equal((await request(packagePath+"/verify",{scheduledFor},"doubtful-replay")).value.code,"SYNC_SQL_REHEARSAL_UNPROVEN");
+      assert.equal(app.store.get("delivery_verification",verified.id,PROJECT).status,"SUCCEEDED");
+      app.store.update("delivery_verification",verified.id,PROJECT,Object.fromEntries(Object.keys(change).map(key=>[key,verified[key]])));
+    }
+    const repeatVerification = await request(packagePath+"/verify",{scheduledFor},"verified-replay");
+    assert.equal(repeatVerification.value.id,verified.id);
     const scheduleSpec = { triggerAfterSeconds: 5, intervalSeconds: 45, runCount: 2 };
     const syncConsent = { scope: "LOCAL_TEST_RELEASE", packageDigest: stored.digest, verificationId: verified.id,
       businessDate: "2026-09-10", snapshotHash: run.syncInput.snapshotHash, scheduleSpec, confirmFrozenFictionalData: true };
-    const approvalBody = { packageDigest: stored.digest, reviewId: reviewed.value.id, syncConsent };
+    const reviewPath = packagePath+"/review";
+    const currentReviewDigest = repeatVerification.value.syncRehearsalDigest;
+    assert.match(currentReviewDigest,/^[a-f0-9]{64}$/);
+    assert.equal((await request(verifiedPath)).value.syncRehearsalDigest,currentReviewDigest);
+    const exportPath = verifiedPath+"/review-evidence";
+    const changesBeforeExport = app.store.db.prepare("SELECT total_changes() AS count").get().count;
+    const exportResponse = await request(exportPath);
+    assert.equal(exportResponse.status,200);
+    const exported = exportResponse.value;
+    assert.equal(exported.readOnly,true);
+    assert.equal(exported.verificationId,verified.id);
+    assert.equal(exported.syncRehearsalDigest,currentReviewDigest);
+    assert.equal(exported.source.snapshotHash,run.syncInput.snapshotHash);
+    assert.equal(exported.source.syncRunId,first.run.id);
+    assert.equal(exported.rehearsal.businessDate,"2026-09-10");
+    assert.deepEqual(exported.fileHashes,verified.fileHashes);
+    assert.ok(!JSON.stringify(exported).includes("CLIENT-001"));
+    assert.equal(exported.files,undefined);
+    assert.equal(exported.rehearsal.rows,undefined);
+    const outputEvidence = [];
+    assert.equal(await runV2Cli(["delivery","review-evidence","--verification-id",verified.id],{},
+      {client:schemaClient,output:line=>outputEvidence.push(line),error:()=>{}}),0);
+    assert.deepEqual(JSON.parse(outputEvidence.join("")),exported);
+    const exportMcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:4,method:"tools/call",
+      params:{name:"sync_review_evidence_read",arguments:{verificationId:verified.id}}},{client:schemaClient}));
+    assert.deepEqual(exportMcp.result.structuredContent,exported);
+    assert.equal(app.store.db.prepare("SELECT total_changes() AS count").get().count,changesBeforeExport);
+    assert.equal((await request(exportPath+"?package_id="+stored.id)).status,422);
+    assert.equal((await request(failedRehearsalPath+"/review-evidence")).status,409);
+    assert.equal((await request(reviewPath,reviewInput,"missing-reviewed-receipt")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
+    const oldReviewInput = {...reviewInput,syncRehearsalDigest:exported.syncRehearsalDigest};
+    const reviewOutput = [];
+    assert.equal(await runV2Cli(["delivery","review","--id",stored.id,"--package-digest",stored.digest,"--verification-id",verified.id,
+      "--sync-rehearsal-digest",currentReviewDigest,"--note",reviewInput.reviewNote,
+      "--attest-code","--attest-assertions","--attest-delivery-files","--attest-local-scope"],{},
+      {client:schemaClient,output:line=>reviewOutput.push(line),error:()=>{}}),0);
+    const oldReview = JSON.parse(reviewOutput.join(""));
+    assert.equal(oldReview.syncRehearsalDigest,currentReviewDigest);
+    assert.equal((await request(reviewPath,oldReviewInput,"retry-same-reviewed-evidence")).value.id,oldReview.id);
+    app.store.update("delivery_verification",verified.id,PROJECT,{notice:"隔离测试中同编号且有效的另一份执行说明"});
+    const changedReceipt = (await request(verifiedPath)).value;
+    assert.equal(changedReceipt.id,verified.id);
+    assert.equal(changedReceipt.status,"SUCCEEDED");
+    assert.notEqual(changedReceipt.syncRehearsalDigest,currentReviewDigest);
+    assert.equal((await request(exportPath)).value.syncRehearsalDigest,changedReceipt.syncRehearsalDigest);
+    const approvalFor = reviewId => ({packageDigest:stored.digest,reviewId,syncConsent});
+    assert.equal((await request(reviewPath,oldReviewInput,"old-browser-review")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
+    assert.equal((await request(packagePath+"/approve",approvalFor(oldReview.id),"approve-stale-review")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
+    const legacyReview = app.store.create("delivery_review",PROJECT,{...oldReview,syncRehearsalDigest:undefined});
+    assert.equal((await request(packagePath+"/approve",approvalFor(legacyReview.id),"approve-legacy-unapproved")).value.code,"SYNC_REHEARSAL_REVIEW_CHANGED");
+    assert.equal(app.store.list("release_approval",PROJECT).length,0);
+    const updatedReviewInput = {...reviewInput,syncRehearsalDigest:changedReceipt.syncRehearsalDigest};
+    const reviewMcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:3,method:"tools/call",
+      params:{name:"delivery_review_create",arguments:{...updatedReviewInput,packageId:stored.id}}},{client:schemaClient}));
+    const reviewed = reviewMcp.result.structuredContent;
+    assert.equal(reviewed.status,"REVIEWED");
+    assert.equal(reviewed.syncRehearsalDigest,changedReceipt.syncRehearsalDigest);
+    assert.notEqual(reviewed.id,oldReview.id);
+    assert.deepEqual(app.store.get("delivery_review",oldReview.id,PROJECT),oldReview);
+    const approvalBody = approvalFor(reviewed.id);
     for (const replacement of [undefined, {...syncConsent, businessDate:"2026-09-11"}, {...syncConsent, snapshotHash:"0".repeat(64)}])
       assert.equal((await request(packagePath + "/approve", { ...approvalBody, syncConsent: replacement })).status, 409);
     const firstApproval = await request(packagePath + "/approve", approvalBody, "sync-approve-first");
     assert.equal(firstApproval.status, 201);
+    assert.equal(firstApproval.value.syncRehearsalDigest,changedReceipt.syncRehearsalDigest);
     clock = Date.parse(firstApproval.value.expiresAt);
     const expired = await request("/releases", { approvalId: firstApproval.value.id, ...scheduleSpec });
     assert.equal(expired.value.code, "SYNC_RELEASE_APPROVAL_EXPIRED");
@@ -406,7 +556,17 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     app.store.create("auth_session", PROJECT, { userId:otherEngineer.id, tokenHash:sha256(otherCookie),
       status:"ACTIVE",expiresAt:new Date(clock+60000).toISOString() });
     const otherIdentity = { Cookie:"shuduo_session="+otherCookie };
-    assert.equal((await request(schemaPath, undefined, undefined, otherIdentity)).status, 403);
+    for (const path of [schemaPath, "/runs/"+failedDevelopment.id, failureComparison, candidatesPath, "/revisions/"+revision.value.id]) {
+      assert.equal((await request(path,undefined,undefined,otherIdentity)).status,403);
+      assert.equal((await request(path,undefined,undefined,bearer)).status,403);
+      assert.equal((await request(path,undefined,undefined,{Cookie:"shuduo_session=expired-fixture"})).status,403);
+    }
+    for (const headers of [otherIdentity,bearer,{Cookie:"shuduo_session=expired-fixture"}])
+      assert.equal((await request(exportPath,undefined,undefined,headers)).status,403);
+    for (const headers of [otherIdentity,bearer,{Cookie:"shuduo_session=expired-fixture"}]) {
+      assert.ok(!(await request("/runs",undefined,undefined,headers)).value.some(item=>item.id===checked.id));
+      assert.ok(!(await request("/revisions",undefined,undefined,headers)).value.some(item=>item.id===revision.value.id));
+    }
     assert.equal((await request(failedRehearsalPath, undefined, undefined, otherIdentity)).status, 403);
     assert.deepEqual((await request("/data-services/sources", undefined, undefined, otherIdentity)).value, []);
     assert.equal((await request(`/data-services/xapis/${xapi.id}`, undefined, undefined, otherIdentity)).status, 403);
@@ -431,6 +591,55 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal(asset.value.nodes.length,4);
     assert.ok(asset.value.nodes.every(node=>node.fields?.length&&node.evidenceHash));
     assert.equal((await request(assetPath, undefined, undefined, otherIdentity)).status, 403);
+    const upstreamId=asset.value.nodes.find(node=>node.id.startsWith("snapshot:sync-holdings:")).id;
+    const upstreamPath="/assets/"+encodeURIComponent(upstreamId);
+    const frozenSearch="/assets?kind=PUBLISHED_DATASET&q="+encodeURIComponent("冻结持仓客户资产");
+    assert.equal((await request(frozenSearch)).value.length,2);
+    assert.deepEqual((await request(frozenSearch,undefined,undefined,otherIdentity)).value,[]);
+    for(const path of [assetPath,assetPath+"/lineage",upstreamPath,upstreamPath+"/lineage"]){
+      assert.equal((await request(path)).status,200);
+      assert.equal((await request(path,undefined,undefined,otherIdentity)).status,403);
+      assert.equal((await request(path,undefined,undefined,{Cookie:"shuduo_session=expired-fixture"})).status,401);
+      const denied=await request(path,undefined,undefined,bearer);
+      assert.equal(denied.status,403);
+      assert.equal(denied.value.code,"ASSET_SERVICE_CREDENTIAL_FORBIDDEN");
+    }
+    assert.equal((await request(frozenSearch,undefined,undefined,bearer)).status,403);
+    assert.deepEqual((await request(frozenSearch,undefined,undefined,{Cookie:"shuduo_session=expired-fixture"})).value,[]);
+    assert.equal((await request("/assets/fixture:positions",undefined,undefined,otherIdentity)).status,200);
+    const qualityPath=assetPath+"/quality";
+    const pendingQuality=await request(qualityPath);
+    assert.equal(pendingQuality.status,200);
+    assert.equal(pendingQuality.value.status,"PENDING");
+    assert.equal(pendingQuality.value.actualExecution,false);
+    assert.equal(app.store.list("quality_frozen_asset_check",PROJECT).length,0);
+    const monitoringPath="/operations/overview";
+    const opsBefore=(await request(monitoringPath)).value;
+    const visibleBatches=opsBefore.recentActivity.filter(item=>item.frozenQualitySource);
+    assert.deepEqual(visibleBatches.map(item=>item.id).sort(),batches.map(batch=>batch.id).sort());
+    const matching=visibleBatches.find(item=>item.id===batches[0].id).frozenQualitySource;
+    for(const key of ["assetId","batchId","releaseId","snapshotHash","evidenceHash","rowCount"])
+      assert.equal(matching[key],pendingQuality.value[key]);
+    assert.equal(opsBefore.fullLifecycleE2E,false);
+    const otherOps=(await request(monitoringPath,undefined,undefined,otherIdentity)).value;
+    assert.ok(otherOps.recentActivity.every(item=>!item.frozenQualitySource));
+    assert.equal((await request(qualityPath,undefined,undefined,otherIdentity)).status,403);
+    assert.equal((await request(qualityPath,undefined,undefined,bearer)).status,403);
+    assert.equal((await request(qualityPath,{confirm:true,basisDigest:"0".repeat(64)})).status,409);
+    const runQuality=()=>request(qualityPath,{confirm:true,basisDigest:pendingQuality.value.basisDigest});
+    const inspected=await runQuality();
+    assert.equal(inspected.status,200);
+    assert.equal(inspected.value.status,"PASSED");
+    assert.equal(inspected.value.batchId,batches[0].id);
+    assert.equal(inspected.value.checks.length,3);
+    assert.ok(inspected.value.checks.every(check=>check.evaluatedCount===2&&check.passedCount===2&&!check.invalidRowHashes));
+    assert.deepEqual((await runQuality()).value,inspected.value);
+    assert.deepEqual((await request(qualityPath)).value,inspected.value);
+    assert.deepEqual((await request(monitoringPath)).value,opsBefore);
+    assert.equal(app.store.list("quality_frozen_asset_check",PROJECT).length,1);
+    const differentQuality=await request("/assets/"+encodeURIComponent("dataset:sync-holdings:"+batches[1].id)+"/quality");
+    assert.equal(differentQuality.value.status,"PENDING");
+    assert.ok(!JSON.stringify(inspected.value).includes("CLIENT-001"));
     const classic = await request("/reports/datasets", { name:"原批次资产数据集",code:"frozen_asset_report",assetId:lineage.value.snapshot.assetId,
       fields:asset.value.nodes.find(node=>node.id===lineage.value.snapshot.assetId).fields.map(field=>field.name) });
     assert.equal(classic.status,201,JSON.stringify(classic.value));
@@ -460,13 +669,59 @@ test("Agent binds a committed position snapshot across overwrite, retry and rest
     assert.equal((await request(`/data-services/applications/${issued.value.application.id}/revoke`, {})).status, 200);
     assert.equal((await request("/open/xapis/sync-assets", undefined, undefined, bearer)).status, 401);
     const record = app.store.get("sync_sql_input", completed.syncInput.snapshotId, PROJECT);
+    assert.equal(runs, 3);
+    assert.equal(modelCalls, 1);
+    const recoveredBatch = sync("currency.csv", {...identityPositionMapping,currency:"currency"});
+    const recoveredOffer = await request("/development/synced-positions");
+    assert.equal(recoveredOffer.status,200);
+    assert.equal(recoveredOffer.value.verifiedCurrency,"CNY");
+    assert.equal(recoveredOffer.value.selection.runId,recoveredBatch.run.id);
+    assert.equal(recoveredOffer.value.selection.targetHash,recoveredBatch.run.targetHash);
+    assert.equal(recoveredOffer.value.context,undefined);
+    assert.equal((await request("/development/synced-positions",undefined,undefined,bearer)).status,403);
+    const recoveredBody = {...body,syncInput:recoveredOffer.value.selection};
+    assert.equal((await request("/agent/tasks",recoveredBody,"forbidden-recovered",bearer)).status,403);
+    assert.equal((await request("/agent/tasks",recoveredBody,"expired-recovered",{Cookie:"shuduo_session=expired"})).status,403);
+    const stdoutRecovered = [];
+    assert.equal(await runV2Cli(["sql","synced-positions"],{},{client:schemaClient,output:line=>stdoutRecovered.push(line),error:()=>{}}),0);
+    assert.deepEqual(JSON.parse(stdoutRecovered.join("")),recoveredOffer.value);
+    const recoveredMcp = JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",
+      params:{name:"sql_synced_positions",arguments:{}}},{client:schemaClient}));
+    assert.deepEqual(recoveredMcp.result.structuredContent,recoveredOffer.value);
+    assert.equal((await request("/agent/tasks",{...recoveredBody,syncInput:{...recoveredBody.syncInput,targetHash:"0".repeat(64)}},"wrong-hash")).value.code,
+      "SYNC_SQL_INPUT_STALE");
+    const newTask = await request("/agent/tasks",recoveredBody,"new-frozen-currency");
+    assert.equal(newTask.status,202);
+    const newResult = await finished("/agent/tasks/"+newTask.value.id);
+    assert.equal(newResult.status,"SUCCEEDED");
+    assert.notEqual(newResult.syncInput.snapshotHash,completed.syncInput.snapshotHash);
+    assert.equal(newResult.syncInput.metadataVersionId,recoveredBatch.metadata.id);
+    const projected = readSyncSqlInput({store:app.store,project:PROJECT,actorId:revision.value.author,binding:newResult.syncInput});
+    assert.deepEqual(projected,syncContext);
+    const projectedReceipt = verifySavedSyncSqlInput({read:sourceRead,input:newResult.syncInput,context:projected,
+      csv:readFileSync(join(fixtureRoot,"currency.csv"),"utf8")});
+    assert.equal(projectedReceipt.targetHash,recoveredBatch.run.targetHash);
+    assert.deepEqual(app.store.get("sync_sql_input",record.id,PROJECT),record);
+    const actualMetadata = recoveredBatch.metadata;
+    app.store.update("source_metadata",actualMetadata.id,PROJECT,{schemaHash:"0".repeat(64)});
+    assert.equal((await request("/development/synced-positions")).value.code,"SYNC_SQL_INPUT_UNAVAILABLE");
+    app.store.update("source_metadata",actualMetadata.id,PROJECT,{schemaHash:actualMetadata.schemaHash});
+    sync("mixed.csv",{...identityPositionMapping,currency:"currency"});
+    const mixedCurrency = await request("/development/synced-positions");
+    assert.equal(mixedCurrency.status,422);
+    assert.equal(mixedCurrency.value.code,"SYNC_SQL_INPUT_INVALID");
+    sync("unknown.csv",{...identityPositionMapping,unregistered:"unregistered"});
+    assert.equal((await request("/development/synced-positions")).value.code,"SYNC_SQL_INPUT_UNAVAILABLE");
+    const {industry: omitted, ...missingField} = identityPositionMapping;
+    sync("missing.csv",{...missingField,currency:"currency"});
+    assert.equal((await request("/development/synced-positions")).value.code,"SYNC_SQL_INPUT_UNAVAILABLE");
     record.payload.context.expected[0].total_assets = "0.00";
     app.store.update("sync_sql_input", record.id, PROJECT, { payload: record.payload });
     assert.equal((await request("/runs", { revisionId: revision.value.id }, "tampered")).value.code, "SYNC_SQL_INPUT_CHANGED");
     assert.equal(sync("bad.csv").run.status, "SUCCEEDED");
     assert.equal((await request("/development/synced-positions")).status, 422);
-    assert.equal(runs, 3);
-    assert.equal(modelCalls, 1);
+    assert.equal(runs, 4);
+    assert.equal(modelCalls, 2);
   } finally {
     openModel();
     await stop();

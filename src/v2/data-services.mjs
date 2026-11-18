@@ -10,6 +10,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { validateDeliveryPackage, sha256, validationMatchesFamily } from "./delivery.mjs";
 import { syncServiceProtocol } from "./sync-sql-service-source.mjs";
+import { mask } from "./security.mjs";
+import {consumerParametersDigest,consumerWireQueryDigest} from './consumer-source.mjs';
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -85,6 +87,39 @@ const assetFields = [
   "total_assets",
   "security_count",
 ];
+function normalizeCustomerAccess(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).length !== 2 || !Object.hasOwn(value, "clientId") || !Object.hasOwn(value, "maskedFields") ||
+      !Array.isArray(value.maskedFields) || value.maskedFields.length > assetFields.length ||
+      new Set(value.maskedFields).size !== value.maskedFields.length || !value.maskedFields.every(field => assetFields.includes(field)))
+    throw fail(422, "客户授权需要一个客户编号及有效的脱敏字段列表", "INVALID_CUSTOMER_ACCESS");
+  const id = clientId(value.clientId);
+  if (!id) throw fail(422, "客户授权需要一个客户编号", "INVALID_CUSTOMER_ACCESS");
+  return { clientId: id, maskedFields: [...value.maskedFields].sort() };
+}
+
+function customerQuery(query, access) {
+  if (query.clientId && query.clientId !== access.clientId)
+    throw fail(403, "应用未获该客户的查询授权", "CUSTOMER_SCOPE_FORBIDDEN");
+  return { ...query, clientId: access.clientId };
+}
+
+function customerResponse(version, result, access) {
+  if (![0, 1].includes(result.pagination.total) || result.pagination.totalPages !== 1 ||
+      result.data.length > result.pagination.total || result.data.some(row => row?.client_id !== access.clientId))
+    throw fail(409, "查询结果与应用的客户范围不符", "CUSTOMER_RESULT_SCOPE_MISMATCH");
+  const project = row => Object.fromEntries(Object.entries(row).map(([field, value]) =>
+    [field, access.maskedFields.includes(field) ? mask(value, "MASK_FULL") : value]));
+  const data = result.data.map(row => {
+    if (version.serviceType === "DAPI") return project(row);
+    const output = project({ client_id: row.client_id });
+    for (const { alias } of version.steps) {
+      if (row[alias]) output[alias] = project(row[alias]);
+    }
+    return output;
+  });
+  return { ...result, data };
+}
 const normalizeFields = (value) => {
   const fields = value === undefined ? assetFields : value;
   if (
@@ -123,7 +158,7 @@ const queryFor = (contractId, input = {}) => {
 };
 const publicApp = (app, now = Date.now()) => {
   if (!app) return app;
-  const { tokenHash, ...safe } = app;
+  const { tokenHash, issuanceEvidence, ...safe } = app;
   if (safe.status === "ACTIVE" && Object.hasOwn(safe, "expiresAt") &&
       (!Number.isFinite(Date.parse(safe.expiresAt)) || now >= Date.parse(safe.expiresAt))) safe.status = "EXPIRED";
   return safe;
@@ -720,12 +755,20 @@ export class DataServiceManager {
       new Set(serviceIds).size !== serviceIds.length
     )
       throw fail(400, "应用必须授权1—20个不重复的数据服务", "INVALID_GRANTS");
-    const grants = [];
+    const customerAccess = Object.hasOwn(input, "customerAccess") ? normalizeCustomerAccess(input.customerAccess) : undefined;
+    const grants = [], customerVersions = {};
     for (const id of serviceIds) {
       const service = this.#service(id);
       if (service.status !== "PUBLISHED")
         throw fail(409, "应用只能授权已发布的数据服务", "UNPUBLISHED_GRANT");
       const version = this.#version(service.publishedVersionId);
+      if (customerAccess) {
+        const sources = version.serviceType === "DAPI" ? [version] : version.steps.map(step => this.#version(step.dapiVersionId));
+        if (sources.some(item => item.outputContractId || !item.sourceReleaseRunId ||
+            item.sourceReleaseRunId !== sources[0].sourceReleaseRunId || item.snapshotHash !== sources[0].snapshotHash))
+          throw fail(422, "客户范围与字段脱敏仅支持同批客户资产输出", "CUSTOMER_ACCESS_UNSUPPORTED");
+        customerVersions[id] = version.id;
+      }
       const proof = this.#syncVersion(version);
       if (this.scope==="PRIVATE_CLOUD_TEST" && version.outputContractId===fundDapiContract.id) {
         const children=version.serviceType==="DAPI" ? [version] : version.steps.map(step=>this.#version(step.dapiVersionId));
@@ -752,7 +795,8 @@ export class DataServiceManager {
         tokenPrefix: token.slice(0, 17),
         createdBy: "local-engineer",
         scope: this.scope,
-        ...(grants.length ? { versionGrants: Object.fromEntries(grants.map(grant => [grant.id, grant.versionId])) } : {}),
+        ...(customerAccess ? { customerAccess, versionGrants: customerVersions } :
+          grants.length ? { versionGrants: Object.fromEntries(grants.map(grant => [grant.id, grant.versionId])) } : {}),
         ...(expiresAt === undefined ? {} : { expiresAt }),
       });
     return { application: publicApp(app, this.now()), token, tokenShownOnce: true };
@@ -802,20 +846,28 @@ export class DataServiceManager {
         call.statusCode !== 200 || !Number.isSafeInteger(call.rowCount) || call.rowCount < 1 || !/^[a-f0-9]{64}$/.test(call.resultHash ?? ""))
       throw unavailable();
     const version = this.#version(call.serviceVersionId);
-    const historical = pinnedVersionId !== undefined || isSync(version);
+    const application = this.store.get("service_app", call.applicationId, this.project);
+    const access = application?.customerAccess === undefined ? undefined : normalizeCustomerAccess(application.customerAccess);
+    if (call.customerAccessHash !== (access && serviceHash(access)) ||
+        access && application.versionGrants?.[service.id] !== version.id) throw unavailable();
+    const historical = pinnedVersionId !== undefined || isSync(version) || Boolean(access);
     const children = historical ? this.#assertHistoricalCall(service, version, call) : [];
-    const response = await this.#execute(version, queryFor(version.outputContractId, call.parameters), Math.min(version.timeoutMs, 1000));
+    const query = queryFor(version.outputContractId, call.parameters);
+    const result = await this.#execute(version, access ? customerQuery(query, access) : query, Math.min(version.timeoutMs, 1000));
+    const response = access ? customerResponse(version, result, access) : result;
     if (historical) {
       const savedCall = this.store.get("service_call", call.id, this.project), savedVersion = this.#version(version.id);
       if (!savedCall || serviceHash(savedCall) !== serviceHash(call) || savedVersion.configHash !== version.configHash)
         throw unavailable();
       const savedChildren = this.#assertHistoricalCall(service, savedVersion, savedCall);
       if (children.some((child, index) => savedChildren[index]?.configHash !== child.configHash)) throw unavailable();
+      if (access && serviceHash(this.application(call.applicationId).customerAccess ?? null) !== call.customerAccessHash) throw unavailable();
     }
     const checkedSync = isSync(version) && this.application(call.applicationId).versionGrants?.[service.id] === version.id &&
       call.sourceEvidenceHash === serviceHash(version.sourceEvidence) && call.paginationHash === serviceHash(response.pagination);
     return { callId: call.id, versionId: version.id, configHash: version.configHash, rowCount: call.rowCount,
       resultHash: call.resultHash,
+      ...(access ? { coverage: "SINGLE_CUSTOMER" } : {}),
       ...(isSync(version) ? { independentResultVerified: checkedSync } : {}),
       verified: (!isSync(version) || checkedSync) && response.data.length === call.rowCount && serviceHash(response.data) === call.resultHash };
   }
@@ -920,9 +972,10 @@ export class DataServiceManager {
               { name: "page_size", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
             ],
             responses: {
-              200: { description: "查询成功",...(version.outputContractId?{content:{"application/json":{schema:distributionResponseSchema(version,(version.steps??[]).map(s=>this.#version(s.dapiVersionId)))}}}:{}) },
+              200: { description: version.outputContractId ? "查询成功" : "查询成功。单客户凭证自动使用其授权客户。已选择遮盖的字段返回 ******，含数值字段。",
+                ...(version.outputContractId?{content:{"application/json":{schema:distributionResponseSchema(version,(version.steps??[]).map(s=>this.#version(s.dapiVersionId)))}}}:{}) },
               401: { description: "应用令牌无效" },
-              403: { description: "应用未获服务授权" },
+              403: { description: "应用未获服务、版本或客户授权" },
               429: { description: "超过版本限流" },
               504: { description: "查询超过版本超时" },
             },
@@ -939,15 +992,29 @@ export class DataServiceManager {
     };
   }
 
-  async invoke(type, path, authorization, input = {}, { assertAccess } = {}) {
+  async invoke(type, path, authorization, input = {}, { assertAccess, ingress } = {}) {
     const service = this.store
       .list("data_service", this.project)
       .find((item) => item.slug === path && item.serviceType === type);
     if (!service || service.status !== "PUBLISHED" || !service.publishedVersionId)
       throw fail(404, "数据服务不存在或尚未发布", "SERVICE_NOT_FOUND");
-    const app = this.#authorize(authorization, service.id),
-      version = this.#version(service.publishedVersionId),
-      query = queryFor(version.outputContractId, input),
+    return this.#invokeAuthorized(service,this.#authorize(authorization,service.id),this.#version(service.publishedVersionId),input,{assertAccess,ingress});
+  }
+
+  async invokeDelegated({serviceId,versionId,applicationId},input,{assertAccess,assertResult,delegation}) {
+    const service=this.#service(serviceId),version=this.#version(versionId),app=this.store.get('service_app',applicationId,this.project);
+    if(this.scope!=='PRIVATE_CLOUD_TEST'||service.status!=='PUBLISHED'||service.publishedVersionId!==versionId||version.serviceId!==serviceId||
+       !app||app.scope!==this.scope||app.status!=='ACTIVE'||!(Date.parse(app.expiresAt)>this.now())||!app.serviceIds.includes(serviceId)||
+       Object.hasOwn(app,'customerAccess')||!app.issuanceEvidence||typeof assertAccess!=='function'||typeof assertResult!=='function'||
+       !delegation||Object.keys(delegation).length!==3||!['wakeId','stepId','requestId'].every(key=>typeof delegation[key]==='string'&&/^[a-f0-9-]{36}$/.test(delegation[key])))
+      throw fail(403,'原授权应用或发布版本已变化','AGENT_CONSUMPTION_GRANT_INVALID');
+    return this.#invokeAuthorized(service,app,version,input,{assertAccess,assertResult,delegation});
+  }
+
+  async #invokeAuthorized(service,app,version,input,{assertAccess,ingress,assertResult,delegation}) {
+    const access = Object.hasOwn(app, "customerAccess") ? normalizeCustomerAccess(app.customerAccess) : undefined;
+    let query = queryFor(version.outputContractId, input);
+    const
       windowStart = this.now() - 60_000,
       used = this.listCalls(service.id).filter(
         (call) =>
@@ -968,16 +1035,27 @@ export class DataServiceManager {
     const started = this.now();
     try {
       assertAccess?.({service,application:app,version});
-      const response = await this.#execute(version, query),
-        call = this.#callLog(service, version, app, query, started, {
+      if (access) query = customerQuery(query, access);
+      const result = await this.#execute(version, query);
+      const response = access ? customerResponse(version, result, access) : result;
+      if (assertResult) assertResult(response);
+      const call = this.#callLog(service, version, app, query, started, {
           outcome: "SUCCEEDED",
           statusCode: 200,
           rowCount: response.data.length,
           resultHash: serviceHash(response.data),
+          ...(access ? { customerAccessHash: serviceHash(access) } : {}),
+          ...(delegation?{invocationEvidence:{channel:'SIGNED_AGENT_CONSUMPTION',queryDigest:consumerWireQueryDigest(input),
+            parametersDigest:consumerParametersDigest(query),issuanceDigest:serviceHash(app.issuanceEvidence),delegation,
+            paginationDigest:serviceHash(response.pagination)}}:{}),
+          ...(ingress==='HTTP'||ingress==='INTERNAL'?{invocationEvidence:{channel:ingress==='HTTP'?'BEARER_HTTP':'BEARER_PRIVATE_BRIDGE',
+            queryDigest:consumerWireQueryDigest(input),parametersDigest:consumerParametersDigest(query),
+            ...(app.issuanceEvidence?{issuanceDigest:serviceHash(app.issuanceEvidence)}:{})}}:{}),
           ...(isSync(version) ? { sourceEvidenceHash: serviceHash(version.sourceEvidence), paginationHash: serviceHash(response.pagination) } : {}),
         });
       return {
         ...response,
+        ...(access ? { customerAccess: { maskedFields: access.maskedFields } } : {}),
         service: {
           id: service.id,
           type: service.serviceType,

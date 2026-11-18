@@ -11,15 +11,15 @@ const entry = {
   script: { path: "/v2/assets/index-fixture.js", bytes: 245000, digest: "c".repeat(64) },
 };
 
-function driverFixture(reportedBrowser) {
+function driverFixture(reportedBrowser, pageLoadStrategy = "none") {
   const requests = [];
   const fetchImpl = async (url, { method, body }) => {
     const path = new URL(url).pathname;
     requests.push([method, path, body && JSON.parse(body)]);
     const value = path === "/session" ? {
       sessionId: "browser-fixture",
-      capabilities: { browserName: reportedBrowser, browserVersion: "26.5", acceptInsecureCerts: false },
-    } : null;
+      capabilities: { browserName: reportedBrowser, browserVersion: "26.5", acceptInsecureCerts: false, pageLoadStrategy },
+    } : path.endsWith("/execute/sync") ? {timeOrigin:10, matches:true} : null;
     return Response.json({ value });
   };
   return { fetchImpl, requests };
@@ -31,18 +31,30 @@ test("startup WebDriver uses an isolated local session with certificate validati
   assert.deepEqual(session.browser, { name: "safari", version: "26.5" });
   await session.navigate(page);
   await session.refresh();
+  assert.deepEqual(await session.inspect(page), {timeOrigin:10, matches:true});
   await session.execute("return arguments[0]", ["fixture"]);
   await session.close();
   assert.deepEqual(requests, [
     ["POST", "/session", { capabilities: { alwaysMatch: {
-      browserName: "safari", pageLoadStrategy: "eager", acceptInsecureCerts: false,
+      browserName: "safari", pageLoadStrategy: "none", acceptInsecureCerts: false,
     } } }],
     ["POST", "/session/browser-fixture/timeouts", { script: 30000, pageLoad: 30000 }],
     ["POST", "/session/browser-fixture/url", { url: page }],
     ["POST", "/session/browser-fixture/refresh", {}],
+    ["POST", "/session/browser-fixture/execute/sync", {
+      script:"return { timeOrigin:performance.timeOrigin, matches:location.href === arguments[0] };", args:[page],
+    }],
     ["POST", "/session/browser-fixture/execute/async", { script: "return arguments[0]", args: ["fixture"] }],
     ["DELETE", "/session/browser-fixture", undefined],
   ]);
+});
+
+test("a driver that waits for document load is rejected and its session is closed", async () => {
+  const {fetchImpl,requests}=driverFixture("Safari","eager");
+  await assert.rejects(openStartupWebDriver({driver,browser:"safari",fetchImpl}),{
+    code:"WEBDRIVER_PAGE_LOAD_STRATEGY_MISMATCH",
+  });
+  assert.equal(requests.at(-1)[0],"DELETE");
 });
 
 test("wrong browser is closed and remote WebDriver never contacted", async () => {
@@ -61,18 +73,27 @@ test("wrong browser is closed and remote WebDriver never contacted", async () =>
 
 const first = {
   status: "OBSERVED", timeOrigin: 100000, htmlFirstByteMs: 100, viewport: { width: 1200, height: 800 },
+  observationStartedMs: 140, openingDocumentLoading: true,
   from: "holdings-t1", to: "stock-cash-t1", selectableMs: 500, changedMs: 550, stage: "PUBLIC_PREVIEW",
-  guestReadOnly: true, contextsEndMs: 320,
+  changedBeforeDOMContentLoaded: true, guestReadyMs: 5100, guestReadOnly: true, contextsEndMs: 320,
 };
-const revisit = { ...first, timeOrigin: 101000, stage: "WORKBENCH" };
+const revisit = { ...first, timeOrigin: 101000, stage: "WORKBENCH", changedBeforeDOMContentLoaded:false };
 const readback = { status: "MATCHED", requests: 2, htmlMatches: true, scriptMatches: true };
 
-function sampleFixture(responses = [first, revisit, readback]) {
+function sampleFixture(responses = [first, revisit, readback], inspectResponses = [
+  {timeOrigin:99000,matches:false},{timeOrigin:first.timeOrigin,matches:true},
+  {timeOrigin:first.timeOrigin,matches:true},{timeOrigin:revisit.timeOrigin,matches:true},
+]) {
   const steps = [];
   const session = {
     browser: { name: "chrome", version: "152.0" },
     navigate: async url => { steps.push(["navigate", url]); },
     refresh: async () => { steps.push(["refresh"]); },
+    inspect: async url => {
+      steps.push(["inspect",url]); const value=inspectResponses.shift();
+      if (value instanceof Error) throw value;
+      return value;
+    },
     execute: async (script, args) => {
       steps.push(["execute", args]);
       return responses.shift();
@@ -89,11 +110,63 @@ test("both document visits use the same exact entry and only a readback match ca
   assert.deepEqual(sample.reads.map(view => [view.visit, view.stage]), [
     ["FIRST", "PUBLIC_PREVIEW"], ["REVISIT", "WORKBENCH"],
   ]);
-  assert.deepEqual(steps.slice(0, 4), [
-    ["navigate", page], ["execute", [page, origin + entry.script.path, null]],
-    ["refresh"], ["execute", [page, origin + entry.script.path, first.timeOrigin]],
+  assert.equal(sample.protocol,"shuduo-v2-browser-startup-sample/v2");
+  assert.equal(sample.reads[0].guestReadyMs,5100);
+  assert.equal(sample.reads[0].changedBeforeDOMContentLoaded,true);
+  assert.deepEqual(steps.slice(0, 8), [
+    ["inspect",page], ["navigate", page], ["inspect",page], ["execute", [page, origin + entry.script.path, first.timeOrigin]],
+    ["inspect",page], ["refresh"], ["inspect",page], ["execute", [page, origin + entry.script.path, revisit.timeOrigin]],
   ]);
-  assert.deepEqual(steps[4][1].slice(0, 2), [page, entry]);
+  assert.deepEqual(steps[8][1].slice(0, 2), [page, entry]);
+  assert.equal(steps[8][1].at(-1),revisit.timeOrigin);
+});
+
+test("an empty document, destroyed context, or old same-URL document never triggers interaction or reload again", async () => {
+  const {session,steps} = sampleFixture([first,revisit,readback], [
+    {timeOrigin:99000,matches:false},{timeOrigin:99000,matches:false},
+    Object.assign(new Error("context changed"),{code:"WEBDRIVER_DOCUMENT_REPLACED"}),
+    {timeOrigin:first.timeOrigin,matches:true},{timeOrigin:first.timeOrigin,matches:true},
+    {timeOrigin:first.timeOrigin,matches:true},{timeOrigin:revisit.timeOrigin,matches:true},
+  ]);
+  const report=await measureAgentStartup(session,{origin, networkLabel:"wifi",entry});
+  assert.equal(report.threeSecondTargetMet,true);
+  assert.deepEqual(steps.map(([step])=>step),[
+    "inspect","navigate","inspect","inspect","inspect","execute","inspect","refresh","inspect","inspect","execute","execute",
+  ]);
+});
+
+test("the sample preserves only the public HTML handler timing and still applies the browser target", async () => {
+  const opening={phase:"opening",durationMs:1.2},ready={phase:"ready",durationMs:2.5};
+  const visits=[{...first,indexTiming:{...opening,ignored:"fixture"}},{...revisit,indexTiming:ready,changedMs:3500},readback];
+  const report=await measureAgentStartup(sampleFixture(visits).session,{origin,networkLabel:"wifi",entry});
+  assert.deepEqual(report.reads.map(view=>view.indexTiming),[opening,ready]);
+  assert.equal(report.threeSecondTargetMet,false);
+  for(const indexTiming of [{phase:"unknown",durationMs:0},{phase:"ready",durationMs:-1}]){
+    const {session}=sampleFixture([{...first,indexTiming}]);
+    await assert.rejects(measureAgentStartup(session,{origin,networkLabel:"wifi",entry}),{code:"BROWSER_SAMPLE_INVALID"});
+  }
+});
+
+test("an entry mismatch stops without refreshing or reading from the wrong bytes", async () => {
+  const {session,steps}=sampleFixture([{...first,status:"ENTRY_SCRIPT_MISMATCH"}]);
+  const report=await measureAgentStartup(session,{origin,networkLabel:"wifi",entry});
+  assert.equal(report.threeSecondTargetMet,false);
+  assert.equal(report.entryReadback.requests,0);
+  assert.equal(steps.at(-1)[0],"execute");
+  assert.equal(steps.filter(([step])=>step==="execute").length,1);
+});
+
+test("an intervening navigation does not refresh an unrelated page or fetch its bytes", async () => {
+  const {session,steps} = sampleFixture([first],[
+    {timeOrigin:99000,matches:false},{timeOrigin:first.timeOrigin,matches:true},
+    {timeOrigin:100500,matches:false},
+  ]);
+  const report=await measureAgentStartup(session,{origin,networkLabel:"wifi",entry});
+  assert.equal(report.threeSecondTargetMet,false);
+  assert.equal(report.reads[1].status,"NAVIGATION_NOT_CONFIRMED");
+  assert.equal(report.entryReadback.requests,0);
+  assert.equal(steps.filter(([step])=>step==="execute").length,1);
+  assert.ok(!steps.some(([step])=>step==="refresh"));
 });
 
 test("slow, incomplete, and wrong-byte samples do not pass the startup target", async () => {
@@ -116,5 +189,9 @@ test("invalid navigation evidence and arbitrary entry paths are rejected", async
   assert.equal(steps.length, 0);
   await assert.rejects(measureAgentStartup(session, { origin, networkLabel: "wifi", entry }), {
     code: "BROWSER_SAMPLE_INVALID",
+  });
+  const impossible=sampleFixture([{...first,guestReadyMs:first.changedMs-1}]);
+  await assert.rejects(measureAgentStartup(impossible.session,{origin,networkLabel:"wifi",entry}),{
+    code:"BROWSER_SAMPLE_INVALID",
   });
 });

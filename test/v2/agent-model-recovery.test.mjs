@@ -67,6 +67,15 @@ test('permission, task completion, drafts, work in progress and unresolved recei
   }
 });
 
+test('explicit file-only continuation of a completed development never confirms a model retry',async()=>{
+  const state={...input(),task:{...input().task,status:'SUCCEEDED',stage:'SUCCEEDED'},filesOnly:true,retryConsent:true};
+  const calls=[];
+  assert.equal(await submitAgentResume(state,{submit:async value=>calls.push(value),explain:()=>assert.fail('approved file continuation')}),true);
+  assert.deepEqual(calls,[false]);
+  assert.ok(agentResumeDecision({...state,canWrite:false}).reason);
+  assert.ok(agentResumeDecision({...state,filesOnly:false}).reason);
+});
+
 test('both recovery stages stop automatic progression; explicit not-sent permission is not unknown cost consent',()=>{
   assert.equal(pauseModelRecovery('MODEL_NOT_SENT'),true);
   assert.equal(pauseModelRecovery('MODEL_NOT_SENT',{confirmModelRetry:true}),true);
@@ -89,7 +98,9 @@ test('actual workspace wires the explicit resume guard and stops its loop at bot
   assert.match(ui,/pauseModelRecovery\(current\.stage,\{explicitNotSentRetry,confirmModelRetry:confirmRetry\}\)/);
   assert.match(ui,/explicitNotSentRetry = false;\s*current = await api<Task>\(`\/agent\/tasks\/\$\{current\.id\}\/advance`/);
   assert.match(ui,/agentTaskFinished\(current\.status\) \|\| modelRecoveryNeedsAction\(current\.stage\)/);
-  assert.equal((ui.match(/submitAgentResume\(resumeInput/g)||[]).length,2);
+  assert.equal((ui.match(/submitAgentResume\(resumeInput/g)||[]).length,1);
+  assert.equal((ui.match(/submitAgentResume\(backgroundResumeInput/g)||[]).length,1);
+  assert.match(ui,/filesOnly:filesPending/);
   assert.match(ui,/<AgentModelRecovery stage=\{task\.stage\}/);
   assert.match(ui,/修复后重试原任务/);assert.match(ui,/修复后恢复后台/);
 });

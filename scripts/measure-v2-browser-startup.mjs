@@ -2,12 +2,14 @@ import { existsSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import { readCheckpoint } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { inspectedControlEntryScript, WEB_INDEX_LIMIT, WEB_ENTRY_SCRIPT_LIMIT } from "./control-web-entry.mjs";
 
 const loopback = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const digest = /^[a-f0-9]{64}$/;
 const browserNames = new Set(["safari", "chrome"]);
+const navigationProbeMs = 15000;
 const fail = code => Object.assign(Error(code), { code });
 function requireCondition(condition, code) {
   if (!condition) throw fail(code);
@@ -34,11 +36,14 @@ export async function openStartupWebDriver({ driver, browser, fetchImpl = fetch 
     } catch { throw fail("WEBDRIVER_TRANSPORT_FAILED"); }
     if (method === "DELETE" && response.ok) return undefined;
     const result = await response.json().catch(() => undefined);
+    if (path.endsWith("/execute/sync") && result?.value?.error === "unknown error" &&
+        /no such execution context|execution context was destroyed/i.test(result.value.message ?? ""))
+      throw fail("WEBDRIVER_DOCUMENT_REPLACED");
     requireCondition(response.ok && result && Object.hasOwn(result,"value") && !result.value?.error, "WEBDRIVER_COMMAND_FAILED");
     return result.value;
   };
   const created = await command("POST","/session",{
-    capabilities:{alwaysMatch:{browserName:browser,pageLoadStrategy:"eager",acceptInsecureCerts:false}},
+    capabilities:{alwaysMatch:{browserName:browser,pageLoadStrategy:"none",acceptInsecureCerts:false}},
   });
   const {sessionId, capabilities} = created ?? {};
   requireCondition(typeof sessionId === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(sessionId),"WEBDRIVER_SESSION_INVALID");
@@ -48,11 +53,16 @@ export async function openStartupWebDriver({ driver, browser, fetchImpl = fetch 
     requireCondition(typeof capabilities?.browserName === "string" && capabilities.browserName.toLowerCase() === browser &&
       typeof capabilities.browserVersion === "string" && /^[A-Za-z0-9_. -]{1,80}$/.test(capabilities.browserVersion) &&
       capabilities.acceptInsecureCerts !== true, "WEBDRIVER_BROWSER_MISMATCH");
+    requireCondition(capabilities.pageLoadStrategy === "none", "WEBDRIVER_PAGE_LOAD_STRATEGY_MISMATCH");
     await command("POST",session+"/timeouts",{script:30000,pageLoad:30000});
     return {
       browser:{name:browser,version:capabilities.browserVersion},
       navigate:url=>command("POST",session+"/url",{url}),
       refresh:()=>command("POST",session+"/refresh",{}),
+      inspect:expectedUrl=>command("POST",session+"/execute/sync",{
+        script:"return { timeOrigin:performance.timeOrigin, matches:location.href === arguments[0] };",
+        args:[expectedUrl],
+      },3000),
       execute:(script,args)=>command("POST",session+"/execute/async",{script,args}),
       close,
     };
@@ -62,17 +72,41 @@ export async function openStartupWebDriver({ driver, browser, fetchImpl = fetch 
   }
 }
 
-function observeInPage(expectedUrl, expectedScript, previousTimeOrigin, done) {
+async function waitForOpeningDocument(session, expectedUrl, previousTimeOrigin) {
+  const expires = performance.now() + navigationProbeMs;
+  do {
+    let page;
+    try { page = await session.inspect(expectedUrl); }
+    catch (error) { if (error.code !== "WEBDRIVER_DOCUMENT_REPLACED") throw error; }
+    if (page !== undefined) {
+      requireCondition(Number.isFinite(page?.timeOrigin) && page.timeOrigin > 0 &&
+        typeof page.matches === "boolean", "BROWSER_SAMPLE_INVALID");
+      if (page.matches && page.timeOrigin > previousTimeOrigin) return page.timeOrigin;
+    }
+    await delay(50);
+  } while (performance.now() < expires);
+}
+
+function observeInPage(expectedUrl, expectedScript, timeOrigin, done) {
   const deadline = performance.now() + 12000;
   const timing = performance.getEntriesByType("navigation")[0];
+  const indexTimings = Array.from(timing?.serverTiming ?? []).filter(entry =>
+    entry.name === "shuduo_index_opening" || entry.name === "shuduo_index_ready");
   const samples = { timeOrigin:performance.timeOrigin, htmlFirstByteMs:Math.round(timing?.responseStart ?? 0),
+    observationStartedMs:Math.round(performance.now()), openingDocumentLoading:document.readyState === "loading",
     viewport:{width:innerWidth,height:innerHeight} };
+  if (indexTimings.length === 1) {
+    const {name, duration}=indexTimings[0];
+    samples.indexTiming={phase:name.slice("shuduo_index_".length),durationMs:duration};
+  }
   let selected, initialDefinition;
   function tick() {
-    if (location.href !== expectedUrl || performance.timeOrigin === previousTimeOrigin)
+    if (location.href !== expectedUrl || performance.timeOrigin !== timeOrigin)
       return done({...samples,status:"NAVIGATION_NOT_CONFIRMED"});
-    if (![...document.scripts].some(script => script.src === expectedScript))
+    if (![...document.scripts].some(script => script.src === expectedScript)) {
+      if (document.readyState === "loading" && performance.now() < deadline) return setTimeout(tick,50);
       return done({...samples,status:"ENTRY_SCRIPT_MISMATCH"});
+    }
     const picker = document.querySelector('select[aria-label="Agent 验证数据"]');
     const panel = picker?.closest(".agent-startup-preview, .agent-dev");
     const task = panel && [...panel.querySelectorAll("button")].find(button => button.textContent.trim() === "新建任务");
@@ -93,10 +127,15 @@ function observeInPage(expectedUrl, expectedScript, previousTimeOrigin, done) {
           picker.dispatchEvent(new Event("change",{bubbles:true}));
         }
       } else if (selected && picker.value === selected.to && definition !== initialDefinition) {
-        selected.changedMs ??= Math.round(performance.now());
+        if (selected.changedMs === undefined) {
+          const changed = performance.now();
+          selected.changedMs = Math.round(changed);
+          selected.changedBeforeDOMContentLoaded = !timing?.domContentLoadedEventStart ||
+            changed < timing.domContentLoadedEventStart;
+        }
         if (!preview && document.body.innerText.includes("公开访客") &&
             panel.querySelector(".agent-dev-boundary")?.textContent.includes("只读验收"))
-          return done({...samples,...selected,status:"OBSERVED",guestReadOnly:true,contextsEndMs:
+          return done({...samples,...selected,status:"OBSERVED",guestReadOnly:true,guestReadyMs:Math.round(performance.now()),contextsEndMs:
             Math.round(performance.getEntriesByName(location.origin+"/api/v2/contexts")[0]?.responseEnd ?? 0)});
       }
     }
@@ -106,8 +145,9 @@ function observeInPage(expectedUrl, expectedScript, previousTimeOrigin, done) {
   tick();
 }
 
-async function checkEntryInPage(expectedUrl, entry, htmlLimit, scriptLimit, done) {
-  if (location.href !== expectedUrl) return done({status:"NAVIGATION_NOT_CONFIRMED",requests:0});
+async function checkEntryInPage(expectedUrl, entry, htmlLimit, scriptLimit, timeOrigin, done) {
+  if (location.href !== expectedUrl || performance.timeOrigin !== timeOrigin)
+    return done({status:"NAVIGATION_NOT_CONFIRMED",requests:0});
   let requests = 0;
   const matches = async (path, limit, expected, mime) => {
     requests++;
@@ -149,34 +189,61 @@ export async function measureAgentStartup(session, { origin, networkLabel, entry
     "BROWSER_INSPECTION_INVALID");
   const invoke = (fn,args) => session.execute(`(${fn.toString()})(...arguments)`,args);
   const reads = [];
-  await session.navigate(expectedUrl);
+  let readbackOrigin;
   for (const visit of ["FIRST","REVISIT"]) {
-    if (visit === "REVISIT") await session.refresh();
-    const view = await invoke(observeInPage,[expectedUrl,url.origin+entry.script.path,reads.at(-1)?.timeOrigin ?? null]);
+    const previous = await session.inspect(expectedUrl);
+    requireCondition(Number.isFinite(previous?.timeOrigin) && previous.timeOrigin > 0, "BROWSER_SAMPLE_INVALID");
+    if (visit === "REVISIT" && (!previous.matches || previous.timeOrigin !== readbackOrigin)) {
+      reads.push({visit,status:"NAVIGATION_NOT_CONFIRMED"});
+      readbackOrigin = undefined;
+      break;
+    }
+    if (visit === "FIRST") await session.navigate(expectedUrl); else await session.refresh();
+    const confirmed = await waitForOpeningDocument(session,expectedUrl,previous.timeOrigin);
+    readbackOrigin = undefined;
+    if (confirmed === undefined) {
+      reads.push({visit,status:"NAVIGATION_NOT_CONFIRMED"});
+      break;
+    }
+    const view = await invoke(observeInPage,[expectedUrl,url.origin+entry.script.path,confirmed]);
     requireCondition(view && ["OBSERVED","NAVIGATION_NOT_CONFIRMED","ENTRY_SCRIPT_MISMATCH",
       "SELECTION_OR_GUEST_UNCONFIRMED","FIRST_SCREEN_UNCONFIRMED"].includes(view.status),"BROWSER_SAMPLE_INVALID");
-    const {status,timeOrigin,htmlFirstByteMs,viewport,from,to,selectableMs,changedMs,stage,guestReadOnly,contextsEndMs}=view;
+    const {status,timeOrigin,htmlFirstByteMs,viewport,from,to,selectableMs,changedMs,stage,guestReadOnly,contextsEndMs,
+      observationStartedMs,openingDocumentLoading,changedBeforeDOMContentLoaded,guestReadyMs,indexTiming}=view;
     requireCondition(Number.isFinite(timeOrigin) && timeOrigin>0 && Number.isFinite(htmlFirstByteMs) && htmlFirstByteMs>=0 &&
+      Number.isFinite(observationStartedMs) && observationStartedMs>=0 && typeof openingDocumentLoading==="boolean" &&
       Number.isInteger(viewport?.width) && viewport.width>0 && Number.isInteger(viewport?.height) && viewport.height>0 &&
-      (status!=="OBSERVED" || timeOrigin!==reads.at(-1)?.timeOrigin && guestReadOnly===true &&
+      (indexTiming === undefined || ["opening","ready"].includes(indexTiming?.phase) &&
+        Number.isFinite(indexTiming.durationMs) && indexTiming.durationMs >= 0) &&
+      (status==="NAVIGATION_NOT_CONFIRMED" || timeOrigin===confirmed) &&
+      (status!=="OBSERVED" || guestReadOnly===true &&
         typeof from==="string" && /^[a-z0-9-]{1,100}$/.test(from) &&
         ["stock-cash-t1","holdings-t1"].includes(to) && from!==to && ["PUBLIC_PREVIEW","WORKBENCH"].includes(stage) &&
-        Number.isFinite(selectableMs) && selectableMs>=htmlFirstByteMs && Number.isFinite(changedMs) && changedMs>=selectableMs &&
+        Number.isFinite(selectableMs) && selectableMs>=Math.max(htmlFirstByteMs,observationStartedMs) &&
+        Number.isFinite(changedMs) && changedMs>=selectableMs && typeof changedBeforeDOMContentLoaded==="boolean" &&
+        Number.isFinite(guestReadyMs) && guestReadyMs>=changedMs &&
         Number.isFinite(contextsEndMs) && contextsEndMs>=0),
     "BROWSER_SAMPLE_INVALID");
-    reads.push({visit,status,timeOrigin,htmlFirstByteMs,viewport:{width:viewport?.width,height:viewport?.height},
-      from,to,selectableMs,changedMs,stage,guestReadOnly,contextsEndMs});
+    reads.push({visit,status,timeOrigin,htmlFirstByteMs,viewport:{width:viewport.width,height:viewport.height},
+      observationStartedMs,openingDocumentLoading,from,to,selectableMs,changedMs,stage,guestReadOnly,contextsEndMs,
+      changedBeforeDOMContentLoaded,guestReadyMs,...(indexTiming && {
+        indexTiming:{phase:indexTiming.phase,durationMs:indexTiming.durationMs},
+      })});
+    if (status==="NAVIGATION_NOT_CONFIRMED" || status==="ENTRY_SCRIPT_MISMATCH") break;
+    readbackOrigin = confirmed;
   }
-  const checked = await invoke(checkEntryInPage,[expectedUrl,entry,WEB_INDEX_LIMIT,WEB_ENTRY_SCRIPT_LIMIT]);
+  const checked = readbackOrigin === undefined
+    ? {status:reads.at(-1)?.status==="ENTRY_SCRIPT_MISMATCH" ? "MISMATCH" : "NAVIGATION_NOT_CONFIRMED",requests:0}
+    : await invoke(checkEntryInPage,[expectedUrl,entry,WEB_INDEX_LIMIT,WEB_ENTRY_SCRIPT_LIMIT,readbackOrigin]);
   requireCondition(checked && ["MATCHED","MISMATCH","UNCONFIRMED","NAVIGATION_NOT_CONFIRMED"].includes(checked.status) &&
     Number.isInteger(checked.requests) && checked.requests >= 0 && checked.requests <= 2,"BROWSER_SAMPLE_INVALID");
   const entryReadback = {status:checked.status,requests:checked.requests,htmlMatches:checked.htmlMatches,scriptMatches:checked.scriptMatches};
   const targetMet = entryReadback.status==="MATCHED" && entryReadback.requests===2 &&
     entryReadback.htmlMatches===true && entryReadback.scriptMatches===true &&
-    reads.every(view=>view.status==="OBSERVED" &&
+    reads.length===2 && reads[0].timeOrigin<reads[1].timeOrigin && reads.every(view=>view.status==="OBSERVED" &&
     view.guestReadOnly===true && Number.isFinite(view.changedMs) && view.changedMs>0 && view.changedMs<=3000);
   return {
-    protocol:"shuduo-v2-browser-startup-sample/v1",scope:loopback.has(url.hostname)?"LOOPBACK_DIAGNOSTIC":"HTTPS_TIMING_SAMPLE",
+    protocol:"shuduo-v2-browser-startup-sample/v2",scope:loopback.has(url.hostname)?"LOOPBACK_DIAGNOSTIC":"HTTPS_TIMING_SAMPLE",
     browser:session.browser,origin:url.origin,networkLabel,entry,reads,entryReadback,threeSecondTargetMet:targetMet,
   };
 }

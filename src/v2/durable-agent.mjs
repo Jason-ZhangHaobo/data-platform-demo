@@ -16,6 +16,7 @@ import {isDeepStrictEqual} from "node:util";
 import {isFundContext} from "./fund-contexts.mjs";
 import {createFundTestSql} from "./fund-delivery.mjs";
 import {createFundPreparations} from "./fund-preparation.mjs";
+import {agentExecutionTrigger} from "./agent-execution-drivers.mjs";
 
 export const durableSqlAgentMode = "DURABLE_SQL_AGENT_V1";
 const terminal = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -205,7 +206,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     await persist(); return publicDurableAgent(get(result.id));
   }
 
-  async function generate(task) {
+  async function generate(task, trigger) {
     if (task.fundPreparation) assertFundPreparation(task,store,project);
     if(task.clarification){try{assertSqlClarificationTask(task,{store,project});}catch(cause){return finish(change(task,{code:'CLARIFICATION_SOURCE_CHANGED'}),'FAILED',cause.message);}}
     if(task.manualContinuation)manualBasis(task);
@@ -227,7 +228,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     task = change(task, { status: "RUNNING", stage: "MODEL_IN_FLIGHT", error: undefined, startedAt: task.startedAt ?? stamp(),
       usedTokens: task.usedTokens + reserved,
       attempts: [...task.attempts, { attempt: task.attempts.length + 1, status: "MODEL_IN_FLIGHT", startedAt: stamp(),
-        model: "unconfirmed", usage: { total_tokens: reserved }, usageEstimated: true }],
+        model: "unconfirmed", modelTrigger: trigger, usage: { total_tokens: reserved }, usageEstimated: true }],
       durable: { ...task.durable, leaseToken: token, leaseExpiresAt: new Date(now() + modelLeaseMs).toISOString() } });
     await persist(); // Never call a model before its attempt and budget are durable.
     if (!ownedLease(task.id, token)) return publicDurableAgent(get(task.id));
@@ -359,7 +360,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     await persist(); return publicDurableAgent(get(task.id));
   }
 
-  async function runStep(task) {
+  async function runStep(task, trigger) {
     if (task.fundPreparation) assertFundPreparation(task,store,project);
     if(task.clarification&&task.stage==='READY_FOR_RUN'){try{assertSqlClarificationTask(task,{store,project});}catch(cause){return finish(change(task,{code:'CLARIFICATION_SOURCE_CHANGED'}),'FAILED',cause.message);}}
     if(task.manualContinuation&&task.stage==='READY_FOR_RUN')manualBasis(task);
@@ -380,7 +381,9 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
           const prepared = runner.prepare({ sql: rev.sql, context, validationContexts: family.contextIds.map(getContext),
             ...(task.fundPreparation?{testSql:createFundTestSql(context.expected,context.id)}:{}) }, run.id);
           if (prepared?.job?.jobId !== run.id) throw new Error("持久运行标识不一致");
-          store.update("run", run.id, project, { stage: "SUBMITTING", remoteSubmission: { prepared, submitted: false } });
+          store.update("run", run.id, project, {
+            stage: "SUBMITTING", remoteSubmission: { prepared, submitted: false, agentSubmissionTriggers: [] },
+          });
           change(task, { stage: "WAITING_FOR_RUN", runId: run.id,
             attempts: replaceAttempt(task, { runId: run.id, status: "QUEUED" }) });
           return run;
@@ -403,7 +406,8 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
       return runner.submit(p);
     }}:runner;
     if (task.fundPreparation && !isDeepStrictEqual(run.fundPreparation,task.fundPreparation)) throw fundPreparationChanged();
-    try{run = await reconcileDurableDevelopment(run, { runner:guarded, store, project, persist, contextIds:family.contextIds, contractId:family.id });}
+    try{run = await reconcileDurableDevelopment(run, { runner:guarded, store, project, persist, contextIds:family.contextIds,
+      contractId:family.id, agentSubmissionTrigger:trigger });}
     catch(cause){if(!String(cause.code??'').startsWith('CLARIFICATION_'))throw cause;
       task=change(get(task.id),{status:'INTERRUPTED',stage:'CLARIFICATION_SOURCE_CHANGED',code:'CLARIFICATION_SOURCE_CHANGED',
         error:'原澄清依据已变化，停止新增提交；原运行编号保留，请先查询已有回执，不能据此假定计算失败。'});await persist();return publicDurableAgent(task);}
@@ -414,7 +418,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     await persist(); return publicDurableAgent(saved);
   }
 
-  async function advance(id, { expectedVersion, confirmModelRetry = false } = {}) {
+  async function advance(id, { expectedVersion, confirmModelRetry = false, executionTrigger } = {}) {
     let task = get(id);
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)
       throw fail(422, "AGENT_VERSION_REQUIRED", "请提供已读取的任务版本");
@@ -438,8 +442,9 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     if (task.stage === "CANCELLING") return cancel(id);
     // Only an explicit advance reaches MODEL_NOT_SENT. Background callers must
     // leave it paused; generate rechecks all existing limits before mutation.
-    if (["READY_FOR_MODEL", "MODEL_NOT_SENT"].includes(task.stage)) return generate(task);
-    if (["READY_FOR_RUN", "WAITING_FOR_RUN"].includes(task.stage)) return runStep(task);
+    const trigger = agentExecutionTrigger(executionTrigger);
+    if (["READY_FOR_MODEL", "MODEL_NOT_SENT"].includes(task.stage)) return generate(task, trigger);
+    if (["READY_FOR_RUN", "WAITING_FOR_RUN"].includes(task.stage)) return runStep(task, trigger);
     throw fail(409, "AGENT_STAGE_INVALID", "无法自动推进当前阶段");
   }
 

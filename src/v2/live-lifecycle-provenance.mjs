@@ -21,8 +21,8 @@ const unknownReservation = value => value.model === "unconfirmed" && value.usage
 export const nonLiveModelLabel = value => typeof value === 'string' &&
   /test.?double|unconfirmed|fixture|stub|mock|synthetic/i.test(value);
 
-export function liveEvidenceProvenance(...roots) {
-  let synthetic = false, nonNative = false, unconfirmed = false;
+export function liveEvidenceAttribution(...roots) {
+  let synthetic = false, nonNative = false, unconfirmed = false, humanClarification = false, engineerRescue = false;
   const pending = [...roots], seen = new Set();
   while (pending.length) {
     const value = pending.pop();
@@ -32,6 +32,10 @@ export function liveEvidenceProvenance(...roots) {
     if (Array.isArray(value)) { pending.push(...value.slice(0, 4097)); if (value.length > 4096) unconfirmed = true; continue; }
     if (value.testDouble === true || value.synthetic === true || value.executionEvidenceMode === 'TEST_HARNESS' ||
         (nonLiveModelLabel(value.model) && !unknownReservation(value))) synthetic = true;
+    if (value.humanClarified===true || value.clarification!==undefined) humanClarification=true;
+    if (value.sourceAttribution==='ENGINEER_ASSISTED' || value.manualContinuation || value.assistedContinuation ||
+        value.attribution?.kind==='ENGINEER_ASSISTED' ||
+        value.manualProvenance?.kind==='ENGINEER_EDIT'&&value.manualProvenance.originAgentTaskId) engineerRescue=true;
     if (value.sourceKind !== undefined && value.sourceKind !== 'AGENT' ||
         value.humanClarified===true || value.clarification!==undefined ||
         value.source === 'MANUAL' || manualKinds.has(value.kind) ||
@@ -39,5 +43,10 @@ export function liveEvidenceProvenance(...roots) {
         value.executionMode === 'DURABLE_PRIVATE_SERVICE_AGENT_V1' || value.completionScope === 'DATA_SERVICE_DESIGN') nonNative = true;
     for (const key of receiptKeys) if (value[key] && typeof value[key] === 'object') pending.push(value[key]);
   }
-  return {synthetic, nonNative, unconfirmed};
+  return {synthetic, nonNative, unconfirmed, humanClarification, engineerRescue};
+}
+
+export function liveEvidenceProvenance(...roots) {
+  const {synthetic,nonNative,unconfirmed}=liveEvidenceAttribution(...roots);
+  return {synthetic,nonNative,unconfirmed};
 }

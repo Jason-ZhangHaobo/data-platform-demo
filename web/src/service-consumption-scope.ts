@@ -1,5 +1,6 @@
 export type ConsumptionPlan = {
   taskId?: string; manualDeliveryTaskId?:string; packageDigest: string; sourceReleaseRunId: string; outputContractId?:string;
+  agentConsumptionAvailable?:true;
   dapis: { name: string; slug: string; fields: string[]; timeoutMs: number; rateLimitPerMinute: number }[];
   xapi: { name: string; slug: string; timeoutMs: number; rateLimitPerMinute: number; steps: { alias: string; dapiSlug: string }[] };
   applicationName: string;

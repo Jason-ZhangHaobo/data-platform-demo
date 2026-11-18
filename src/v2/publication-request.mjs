@@ -44,6 +44,18 @@ export function publicationRequestReceiptPath(taskId, requestId) {
   return `/agent/tasks/${taskId}/publication/requests/${requestId}`;
 }
 
+export function publicationApprovalStep({approvalOnly,approvalId,reviewDigest,requestId,selector,dispatchInBackground}) {
+  if (dispatchInBackground!==undefined && (dispatchInBackground!==true || approvalId===undefined || approvalOnly!==undefined))
+    throw new Error("后台发起须使用原批准编号");
+  if (approvalOnly === undefined && approvalId === undefined) return {};
+  if (!exactPreflightSelector(selector) || typeof reviewDigest !== "string" || !/^[a-f0-9]{64}$/.test(reviewDigest) ||
+      !safeId(requestId) || (approvalOnly !== undefined && approvalOnly !== true) ||
+      (approvalId !== undefined && (typeof approvalId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(approvalId))) ||
+      (approvalOnly && approvalId))
+    throw new Error("须提供原发布请求、确切审阅摘要以及一个批准步骤");
+  return approvalOnly ? {approvalOnly:true} : {approvalId,...(dispatchInBackground?{dispatchInBackground:true}:{})};
+}
+
 export function publicationSelectorFromUrl(input) {
   let url;
   if (typeof input !== "string" && !(input instanceof URL) || /[\\#\s\u0000-\u001f\u007f]/.test(String(input))) throw invalid();

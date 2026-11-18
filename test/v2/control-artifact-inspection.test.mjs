@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
-import {resolve} from 'node:path';
+import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {dirname,resolve} from 'node:path';
+import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
-import {validateArtifactIdentity,verifyControlBuildBytes,controlArtifactSources,controlArtifactSourceChecks} from '../../scripts/inspect-control-artifact.mjs';
+import {validateArtifactIdentity,verifyControlBuildBytes,controlArtifactSources,controlArtifactSourceChecks,splitStartupArtifactSources,verifyControlArtifactSources} from '../../scripts/inspect-control-artifact.mjs';
 test('remote inspection requires a successful source-matched original build and unexpired matching artifact',()=>{
  const identity={source:'a'.repeat(40),buildRunId:'12345678',artifactId:'12345679'};
  const run={id:12345678,name:'Build V2 control plane package',head_sha:identity.source,status:'completed',conclusion:'success'};
@@ -42,14 +43,38 @@ test('readonly artifact source checks cover budget accounting, durable ownership
  assert.deepEqual(controlArtifactSources,[...prior,'budget','durable-agent','model','model-diagnostics','agent-event-driver','agent-development-workflow'].map(name=>`src/v2/${name}.mjs`));
  assert.equal(new Set(controlArtifactSources).size,23);assert.equal(Object.isFrozen(controlArtifactSources),true);
  const source=readFileSync(new URL('../../scripts/inspect-control-artifact.mjs',import.meta.url),'utf8');
- assert.match(source,/sha\(extract\(name\)\)===sha\(readFileSync\(resolve\('\.artifact-source',name\)\)\)/);
+ assert.match(source,/verifyControlArtifactSources\('\.artifact-source',extract\)/);
  assert.ok(!source.includes('execFileSync(extract('),'package source is inspected, never executed');
 });
 test('source checkout requires new repair and Worker evidence modules while preserving legacy application inspection',()=>{
  const root='/synthetic-source',modules=['sql-repair-feedback','sql-repair-progress','sql-repair-source','validation-details','publication-request','private-service-routes','private-task-consumption','consumer-source','agent-context-derivation','service-plan-source','service-plan-request','service-agent-context-client','service-plan-proposal','private-service-agent-policy','durable-service-agent','worker-result-evidence','cloud-release-evidence','agent-review-evidence','remote-spark','remote-spark-queue','cloud-execution-state','durable-development','fund-preparation','fund-preparation-request','delivery','fund-delivery','private-release-source','fund-agent-task-consumption','distribution-services','private-batch-report'].map(name=>`src/v2/${name}.mjs`);
  const queried=[];const checks=controlArtifactSourceChecks(root,path=>{queried.push(path);return true;});
- assert.deepEqual(checks,[...controlArtifactSources,...modules]);assert.equal(checks.length,53);assert.equal(Object.isFrozen(checks),true);
- assert.deepEqual(queried,modules.map(name=>resolve(root,name)));
+ assert.deepEqual(checks,[...controlArtifactSources,...modules,...splitStartupArtifactSources]);assert.equal(checks.length,59);assert.equal(Object.isFrozen(checks),true);
+ assert.deepEqual(queried,[...modules,...splitStartupArtifactSources].map(name=>resolve(root,name)));
+ assert.deepEqual(controlArtifactSourceChecks(root,path=>modules.some(name=>path===resolve(root,name))),[...controlArtifactSources,...modules]);
  assert.deepEqual(controlArtifactSourceChecks(root,()=>false),controlArtifactSources);
  assert.deepEqual(controlArtifactSourceChecks(root,path=>path.endsWith('/sql-repair-source.mjs')),[...controlArtifactSources,modules[2]]);
+});
+test('split startup artifacts require every new module and context byte while legacy inspection remains valid',()=>{
+ const root=mkdtempSync(resolve(tmpdir(),'shuduo-artifact-sources-'));
+ const expected=['src/v2/cloud-application.mjs','src/v2/request-scope.mjs','src/v2/context.mjs',
+  'fixtures/holdings/context.json','fixtures/holdings/reference.sql','fixtures/holdings/stock-cash-reference.sql'];
+ assert.deepEqual(splitStartupArtifactSources,expected);
+ assert.equal(Object.isFrozen(splitStartupArtifactSources),true);
+ assert.throws(()=>controlArtifactSourceChecks(root,path=>path.endsWith('/cloud-application.mjs')),/STARTUP_SOURCE_CHECKOUT_INCOMPLETE/);
+ const sources=controlArtifactSourceChecks(root,()=>true),archive=new Map();
+ try{
+  for(const name of sources){
+   const bytes=Buffer.from(`fictional source for ${name}\n`);
+   mkdirSync(dirname(resolve(root,name)),{recursive:true});
+   writeFileSync(resolve(root,name),bytes);archive.set(name,bytes);
+  }
+  assert.deepEqual(verifyControlArtifactSources(root,name=>archive.get(name)),sources);
+  for(const name of expected){
+   const extract=entry=>entry===name?Buffer.from('altered fictional source'):archive.get(entry);
+   assert.throws(()=>verifyControlArtifactSources(root,extract),/SOURCE_MISMATCH/);
+   const missing=entry=>entry===name?Buffer.alloc(0):archive.get(entry);
+   assert.throws(()=>verifyControlArtifactSources(root,missing),/SOURCE_MISMATCH/);
+  }
+ }finally{rmSync(root,{recursive:true,force:true});}
 });

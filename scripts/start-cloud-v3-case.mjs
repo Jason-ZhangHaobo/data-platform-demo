@@ -7,19 +7,25 @@ import { agentExecutionEvidencePath, validSettledDevelopmentFailure } from "../s
 import { agentContextDerivationBody, agentContextDerivationRequest } from "../src/v2/agent-context-derivation.mjs";
 import { durableDeliveryMode } from "../src/v2/agent-development-workflow.mjs";
 import { readCloudV3Review } from "../src/v2/cloud-v3-review.mjs";
-import { exactPublicationReviewBasis } from "../src/v2/cloud-release-evidence.mjs";
+import { exactPublicationReviewBasis, validStoredPublicationSchedule } from "../src/v2/cloud-release-evidence.mjs";
 import { cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
+import { bindCloudV3DevelopmentDrivers } from "../src/v2/cloud-v3-development-drivers.mjs";
 import { getContext, validationFamilyForContext } from "../src/v2/context.mjs";
 import { consumerDenialEvidence, validateConsumerSource } from "../src/v2/consumer-source.mjs";
 import { sha256, validateDeliveryPackage } from "../src/v2/delivery.mjs";
 import { deliveryPreparationBody, deliveryPreparationHashMatches, deliveryPreparationRequirement } from "../src/v2/delivery-preparation-request.mjs";
+import { validBackgroundPreparationEvidence } from "../src/v2/delivery-preparation-evidence.mjs";
+import {validBackgroundRehearsalEvidence} from '../src/v2/rehearsal-wake.mjs';
 import { bindExternalConsumption } from "../src/v2/external-consumption-binding.mjs";
+import {agentConsumptionReceiptPath} from '../src/v2/agent-consumption-request.mjs';
+import {agentConsumptionPair,storedAgentConsumptionProofs,verifyAgentConsumptionCall} from '../src/v2/cloud-v3-agent-consumption.mjs';
 import { liveAgentTaskUrl, readCheckpoint, stop, uuid } from "../src/v2/live-lifecycle-checkpoint.mjs";
 import { currentLiveLifecycleContract, liveCaseCheckpoint, liveLifecyclePlan, verifiedCloudV3TaskSnapshotBinding } from "../src/v2/live-lifecycle-evaluation.mjs";
 import { checkedLiveExecutionProjection } from "../src/v2/live-lifecycle-execution.mjs";
 import { privateReleasePendingStage } from "../src/v2/private-release-stage.mjs";
 import { liveEvidenceProvenance, nonLiveModelLabel } from "../src/v2/live-lifecycle-provenance.mjs";
 import { publicationAttestationKeys, publicationPreflightPath, publicationReadPath, publicationRequestReceiptPath, workbenchPublicationRequestKey } from "../src/v2/publication-request.mjs";
+import { validPublicationInitiation } from "../src/v2/publication-initiation-evidence.mjs";
 import { normalizeSessionBase } from "../src/v2/session-credential.mjs";
 import { serviceSourceReadPath } from "../src/v2/service-source-request.mjs";
 import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
@@ -189,6 +195,9 @@ export async function prepareCloudV3Next(path,client,{firstPath,completionPath,r
     if (!code || code.revisionId!==derivationSource.revisionId || code.runId!==derivationSource.runId ||
         code.revisionHash!==derivationSource.revisionHash || code.validationContractId!==derivationSource.validationContractId)
       stop("派生父版本或原 Spark 核验未通过");
+    if (sourceEntry.item.developmentDriverEvidence !== undefined &&
+        !isDeepStrictEqual(sourceEntry.item.developmentDriverEvidence,bindCloudV3DevelopmentDrivers(view.developmentDrivers,code,view.developmentAttemptRunIds)))
+      stop("派生父任务的原执行触发证据未通过");
     bodyHash=sha256(JSON.stringify(await readDerivationBody(client,definition,derivationSource)));
   }
   const previousCase={checkpointDigest:sha256(parent.checkpoint.text),completionDigest:parent.completion.completionDigest,
@@ -463,18 +472,22 @@ function verifiedDevelopmentCode(definition, view, execution) {
 
 const rehearsalStages = new Set(["FILE_REHEARSAL_SUBMITTING","FILE_REHEARSAL_RUNNING","FILE_REHEARSAL_FAILED","AWAITING_ENGINEER_REVIEW","CANCELLED"]);
 
-function bindRehearsal(item, receipt) {
+function bindRehearsal(item, code, receipt) {
   const rehearsal = receipt.rehearsal, old = item.rehearsal, action = item.actions.rehearsal;
-  if (!rehearsal) return !old && (!action || receipt.verificationId === undefined);
+  const initiationEvidence=old?.initiationEvidence!==undefined||!item.actions.publication?receipt.rehearsalInitiationEvidence:undefined;
+  if (!rehearsal) return !old && !initiationEvidence && (!action || receipt.verificationId === undefined);
   if (!id(rehearsal.id) || rehearsal.id !== receipt.verificationId || !rehearsalStages.has(receipt.stage) ||
       rehearsal.status !== receipt.status || !["RUNNING","SUCCEEDED","FAILED","CANCELLED"].includes(rehearsal.status) ||
       !Number.isFinite(rehearsal.reservedDurationMs) || rehearsal.reservedDurationMs <= 0 ||
       (rehearsal.status === "SUCCEEDED" && (receipt.stage !== "AWAITING_ENGINEER_REVIEW" || receipt.actualExecution !== true)) ||
       (old && (old.id !== rehearsal.id || old.reservedDurationMs !== rehearsal.reservedDurationMs ||
         (old.status !== "RUNNING" && old.status !== rehearsal.status))) ||
+      (initiationEvidence!==undefined && !validBackgroundRehearsalEvidence(initiationEvidence,code,receipt,rehearsal)) ||
+      (old?.initiationEvidence!==undefined && !isDeepStrictEqual(old.initiationEvidence,initiationEvidence)) ||
       (action?.id !== undefined && action.id !== rehearsal.id)) return false;
   item.rehearsal = {id:rehearsal.id, status:rehearsal.status, stage:receipt.stage,
     reservedDurationMs:rehearsal.reservedDurationMs,
+    ...(initiationEvidence?{initiationEvidence}:{}),
     ...(Number.isFinite(rehearsal.durationMs) && rehearsal.durationMs >= 0 ? {durationMs:rehearsal.durationMs} : {})};
   if (action) item.actions.rehearsal = {...action, id:rehearsal.id, status:"CONFIRMED"};
   return true;
@@ -483,6 +496,9 @@ function bindRehearsal(item, receipt) {
 function bindOriginalDelivery(item, code, receipt) {
   const action = item.actions.delivery;
   const proof = liveEvidenceProvenance(receipt);
+  const originalPreparation=action.preparationEvidence;
+  const preparing=!item.rehearsal && !item.actions.rehearsal && !item.actions.publication;
+  const preparationEvidence=originalPreparation!==undefined || preparing ? receipt?.preparationEvidence : undefined;
   if (proof.synthetic || proof.nonNative || proof.unconfirmed || !id(receipt?.id) || receipt.mode !== durableDeliveryMode ||
       (action.id !== undefined && action.id !== receipt.id) || receipt.sourceAgentTaskId !== item.taskId ||
       (action.origin === "WORKBENCH" && receipt.sourcePinned !== true) ||
@@ -491,15 +507,19 @@ function bindOriginalDelivery(item, code, receipt) {
       (action.packageId !== undefined && action.packageId !== receipt.packageId) ||
       (action.packageDigest !== undefined && action.packageDigest !== receipt.packageDigest) ||
       !isDeepStrictEqual(receipt.sourceRequirementBinding,deliveryPreparationRequirement(code)) ||
-      !bindRehearsal(item,receipt))
+      (preparationEvidence!==undefined && !validBackgroundPreparationEvidence(preparationEvidence,code,receipt)) ||
+      (originalPreparation!==undefined && !isDeepStrictEqual(originalPreparation,preparationEvidence)) ||
+      !bindRehearsal(item,code,receipt))
     return;
   item.actions.delivery = {...action, id:receipt.id, status:"CONFIRMED",
     packageId:receipt.packageId, packageDigest:receipt.packageDigest,
+    ...(preparationEvidence?{preparationEvidence}:{}),
     ...(receipt.status==="CANCELLED" ? {cancelled:true} : {})};
   return {status:"CONFIRMED", id:receipt.id, packageId:receipt.packageId, packageDigest:receipt.packageDigest,
     ...(Number.isSafeInteger(receipt.version) && receipt.version > 0 ? {version:receipt.version} : {}),
     ...(receipt.stage === "PACKAGE_PERSISTING" ? {storagePending:true} : {}),
     ...(receipt.stage === "PACKAGE_READY" ? {readyForRehearsal:true} : {}),
+    ...(preparationEvidence?{preparationEvidence}:{}),
     ...(item.rehearsal ? {rehearsal:item.rehearsal} : {})};
 }
 
@@ -742,17 +762,31 @@ function bindPublication(item, receipt) {
     verified=monitoring.batches.map(({batchId,eventId,observedAt})=>({batchId,eventId,observedAt}));
   }
   if (action.monitoring && !isDeepStrictEqual(action.monitoring,verified)) return;
+  // Bind the expanded evidence when monitoring is first verified. Older
+  // checkpoints already sealed with summary-only monitoring stay readable.
+  const batchIds=runs.map(run=>run.id);
+  const scheduledBatches=!action.monitoring || action.scheduledBatches!==undefined ? monitoring?.scheduledBatches : undefined;
+  if ((scheduledBatches!==undefined && !validStoredPublicationSchedule(scheduledBatches,{
+    batchIds,monitoring:verified,approvalTiming,
+  })) || (action.scheduledBatches!==undefined && !isDeepStrictEqual(action.scheduledBatches,scheduledBatches))) return;
+  const initiationEvidence = !action.id || action.initiationEvidence!==undefined ? release.initiationEvidence : undefined;
+  if ((initiationEvidence!==undefined && !validPublicationInitiation(initiationEvidence,item.code,{
+    ...action,id:release.id,approvalId:release.approvalId,approvalTiming,scheduledBatches,
+  })) || (action.initiationEvidence!==undefined && !isDeepStrictEqual(action.initiationEvidence,initiationEvidence))) return;
   const saved = {releaseId:release.id, reviewId:release.reviewId, approvalId:release.approvalId,
-    batchIds:runs.map(run=>run.id), status:release.status,
+    batchIds, status:release.status,
     batches:runs.map(run=>{
       const stage = privateReleasePendingStage(run);
       return {id:run.id,status:run.status,...(stage ? {stage} : {}),
         ...(Number.isFinite(run.reservedDurationMs)&&run.reservedDurationMs>0?{reservedDurationMs:run.reservedDurationMs}:{})};
     }),
     ...(["PENDING","NEEDS_ATTENTION","UNCONFIRMED","VERIFIED"].includes(monitoring?.status)?{monitoringStatus:monitoring.status}:{}),
-    ...(verified?{monitoring:verified}:{})};
+    ...(verified?{monitoring:verified}:{}),...(scheduledBatches?{scheduledBatches}:{}),
+    ...(initiationEvidence?{initiationEvidence}:{})};
   item.actions.publication = {...action,id:release.id,status:"CONFIRMED",reviewId:release.reviewId,
     approvalId:release.approvalId,batchIds:saved.batchIds,...(verified?{monitoring:verified}:{}),
+    ...(scheduledBatches?{scheduledBatches}:{}),
+    ...(initiationEvidence?{initiationEvidence}:{}),
     ...(approvalTiming ? {approvalTiming} : {}),...(release.status==="CANCELLED" ? {cancelled:true} : {})};
   return saved;
 }
@@ -889,23 +923,37 @@ function readOriginalConsumerReport(planPath,state,definition,callIdDigest) {
   return {plan,report,callIdDigest,dapiCallIdDigest:dapi.callIdDigest};
 }
 
-async function checkOriginalConsumerProof(client,{source,selector},{plan,report,callIdDigest,dapiCallIdDigest}) {
+async function checkOriginalConsumerProof(client,{source,selector},{plan,report,callIdDigest,dapiCallIdDigest},agentRequestId) {
   if (!isDeepStrictEqual(source,validateConsumerSource(plan.source))) stop("消费者计划与冻结原批次不一致");
   const evidence=digest=>client.request(serviceSourceReadPath("task-evidence",{...selector,callIdDigest:digest}));
   const [taskEvidence,dapiEvidence]=await Promise.all([evidence(callIdDigest),evidence(dapiCallIdDigest)]);
   const decision=bindExternalConsumption({expectedSource:source,plan,report,taskEvidence,dapiEvidence});
   if (!["MATCHED","MATCHED_ONLY"].includes(decision.status) || decision.callIdDigest!==callIdDigest)
     return {reason:decision.reason};
-  return {proof:{batchId:source.sourceReleaseRunId, status:decision.status, sourceDigest:decision.sourceDigest,
+  const proof={batchId:source.sourceReleaseRunId, status:decision.status, sourceDigest:decision.sourceDigest,
     planDigest:decision.planDigest, reportDigest:decision.reportDigest, xapiCallIdDigest:decision.callIdDigest,
-    xapiRowsDigest:decision.rowsDigest, dapiCallIdDigest:decision.dapiCallIdDigest,dapiRowsDigest:decision.dapiRowsDigest}};
+    xapiRowsDigest:decision.rowsDigest, dapiCallIdDigest:decision.dapiCallIdDigest,dapiRowsDigest:decision.dapiRowsDigest,
+    ...(decision.consumptionAttribution?{attribution:decision.consumptionAttribution}:{})};
+  if(agentRequestId!==undefined){
+    try {
+      const external={dapi:dapiEvidence.services[0],xapi:taskEvidence.services.find(entry=>entry.serviceId===plan.xapi.id)};
+      const job=await client.request(agentConsumptionReceiptPath(agentRequestId));
+      const agent=agentConsumptionPair(job,agentRequestId,source,plan,proof,external);
+      if(!agent)return {reason:'ORIGINAL_AGENT_CONSUMPTION_MISMATCH'};
+      const [agentDapi,agentXapi]=await Promise.all([evidence(agent.dapi.callIdDigest),evidence(agent.xapi.callIdDigest)]);
+      if(!verifyAgentConsumptionCall(agentDapi,'dapi',agent,external.dapi,proof,source)||
+        !verifyAgentConsumptionCall(agentXapi,'xapi',agent,external.xapi,proof,source))return {reason:'ORIGINAL_AGENT_CALL_MISMATCH'};
+      proof.agent=agent;
+    } catch { return {reason:'ORIGINAL_AGENT_CONSUMPTION_UNCONFIRMED'}; }
+  }
+  return {proof};
 }
 
-export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPath,callIdDigest}={}) {
+export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPath,callIdDigest,agentRequestId}={}) {
   return withCloudCheckpoint(path,async()=>{
     const {state,item,definition}=snapshot(client,path);
     if (outFile!==undefined) {
-      if (!id(batchId) || !isAbsolute(outFile)) stop("须提供原发布批次及受保护的导出路径");
+      if (!id(batchId) || !isAbsolute(outFile) || agentRequestId!==undefined) stop("须提供原发布批次及受保护的导出路径");
       const batches=await readVerifiedConsumptionBatches(state,item,client,batchId);
       const {source}=consumptionSourceForBatch(item,batches,batchId);
       writeCheckpoint(outFile,source,true);
@@ -914,12 +962,16 @@ export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPa
     const report=readOriginalConsumerReport(planPath,state,definition,callIdDigest);
     const batches=await readVerifiedConsumptionBatches(state,item,client,report.plan.source.sourceReleaseRunId);
     const source=consumptionSourceForBatch(item,batches,report.plan.source.sourceReleaseRunId);
-    const {proof,reason}=await checkOriginalConsumerProof(client,source,report);
+    const prior=item.consumption?.[source.source.sourceReleaseRunId];
+    if(agentRequestId!==undefined&&(!id(agentRequestId)||prior?.agent&&prior.agent.requestId!==agentRequestId))
+      stop('须使用原批次的签名消费请求编号');
+    const {proof,reason}=await checkOriginalConsumerProof(client,source,report,agentRequestId??prior?.agent?.requestId);
     if (!proof) return result(state,item,"CONSUMPTION_UNCONFIRMED",reason);
-    const prior=item.consumption?.[proof.batchId];
     if (prior && !isDeepStrictEqual(prior,proof)) stop("此批次已有原消费回执，须核对原报告");
     if (!prior) {
-      item.consumption={...item.consumption,[proof.batchId]:proof};
+      const consumption={...item.consumption,[proof.batchId]:proof};
+      if(!storedAgentConsumptionProofs({...item,consumption}))stop('原签名委托或调用不能跨批次复用');
+      item.consumption=consumption;
       writeCheckpoint(path,state);
     }
     return {...result(state,item,"CONSUMPTION_BOUND"),consumption:proof,externalSystemVerified:false,agentIndependentE2E:false};
@@ -954,7 +1006,7 @@ export async function verifyCloudV3Completion(path,client,{firstPlanPath,secondP
         review.verificationId!==action.verificationId || review.verificationId!==item.rehearsal.id)
       stop("原开发、八文件和演练核验未通过");
     for (const [index,batchId] of batches.batchIds.entries()) {
-      const {proof}=await checkOriginalConsumerProof(client,consumptionSourceForBatch(item,batches,batchId),reports[index]);
+      const {proof}=await checkOriginalConsumerProof(client,consumptionSourceForBatch(item,batches,batchId),reports[index],item.consumption[batchId].agent?.requestId);
       if (!proof || !isDeepStrictEqual(proof,item.consumption[batchId]))
         stop("原批次的消费报告或平台回执未通过重验");
     }
@@ -1081,6 +1133,12 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
     }
     if (item.code && !isDeepStrictEqual(item.code,code))
       return response("UNCONFIRMED", "ORIGINAL_DEVELOPMENT_MISMATCH");
+    const captureDrivers = !item.code && view.developmentDrivers !== undefined;
+    const savedDrivers = item.developmentDriverEvidence;
+    const drivers = captureDrivers || savedDrivers !== undefined
+      ? bindCloudV3DevelopmentDrivers(view.developmentDrivers,code,view.developmentAttemptRunIds) : undefined;
+    if ((captureDrivers && !drivers) || (savedDrivers !== undefined && !isDeepStrictEqual(savedDrivers,drivers)))
+      return response("UNCONFIRMED", "ORIGINAL_DEVELOPMENT_DRIVERS_MISMATCH");
     const original = view.originalDelivery;
     const requestId = deliveryRequestId ?? original?.requestId;
     if (workbench && deliveryRequestId !== undefined &&
@@ -1090,6 +1148,7 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
 
     const before = JSON.stringify(item);
     item.code = code;
+    if (captureDrivers) item.developmentDriverEvidence = drivers;
     delete item.developmentObservation;
     if (item.phase === "CODE_AND_DEBUG") item.phase = "DELIVERY_PREPARATION";
     const adopting = workbench && !item.actions.delivery && id(requestId) &&
@@ -1100,6 +1159,7 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
       await reconcileOriginalDelivery(client, item, code);
     if (adopting && delivery.status !== "CONFIRMED") delete item.actions.delivery;
     if (JSON.stringify(item) !== before) writeCheckpoint(path,state);
-    return {...response("DEVELOPMENT_BOUND"), execution, delivery};
+    return {...response("DEVELOPMENT_BOUND"), execution, delivery,
+      ...(drivers ? {developmentDriverEvidence:drivers} : {})};
   }, {reconcile:true});
 }

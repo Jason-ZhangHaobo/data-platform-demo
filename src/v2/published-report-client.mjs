@@ -128,6 +128,7 @@ export async function checkedSyncReportLineage(value, expected={}) {
   try{for(const id of [call.callId,call.serviceId,call.versionId])reportRequestId(id);}catch{bad();}
   if(!["DAPI","XAPI"].includes(call.serviceType)||!["ACTIVE","REVOKED","EXPIRED"].includes(call.applicationStatus)||
      call.verified!==true||call.independentResultVerified!==true||!Number.isInteger(call.rowCount)||
+     call.coverage!==undefined&&(call.coverage!=="SINGLE_CUSTOMER"||call.rowCount!==1)||
      call.rowCount<1||call.rowCount>snapshot.rowCount||![call.configHash,call.resultHash,call.paginationHash].every(hash))bad();
  }
  const body={requestId,source,report,snapshot,release,batch,calls,...rest};

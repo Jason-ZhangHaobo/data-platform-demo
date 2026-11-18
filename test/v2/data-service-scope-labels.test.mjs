@@ -23,7 +23,7 @@ for(const name of ['service-plan-source','private-service-plan'])privateStudio=p
 let compiled = compile(workbenchSource).replaceAll('from "./EvidenceDownload"', `from ${JSON.stringify(evidenceUrl)}`).replaceAll('from "./PrivateServiceAgentStudio"',`from ${JSON.stringify(moduleUrl(privateStudio))}`).replaceAll("from './PrivateServiceAgentStudio'",`from ${JSON.stringify(moduleUrl(privateStudio))}`);
 compiled=compiled.replaceAll('from "../../src/v2/output-contract-metadata.mjs"',`from ${JSON.stringify(new URL('../../src/v2/output-contract-metadata.mjs',import.meta.url).href)}`);
 compiled=compiled.replaceAll('from "../../src/v2/fund-contexts.mjs"',`from ${JSON.stringify(new URL('../../src/v2/fund-contexts.mjs',import.meta.url).href)}`);
-for (const name of ["service-composition", "service-consumption-scope", "service-source-binding", "service-plan-source", "service-batch-scope"])
+for (const name of ["service-composition", "service-consumption-scope", "service-source-binding", "service-plan-source", "service-batch-scope", "agent-consumption-view"])
   compiled = compiled.replaceAll(`from "./${name}"`, `from ${JSON.stringify(new URL(`../../web/src/${name}.ts`, import.meta.url).href)}`);
 const { DataServicesWorkbench } = await import(moduleUrl(compiled));
 const render = (props = {}) => renderToStaticMarkup(React.createElement(DataServicesWorkbench, {

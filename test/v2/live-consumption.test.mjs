@@ -48,6 +48,17 @@ test("unknown read pauses at consumption, preserving source, model usage and act
   assert.equal(restored.errorHistory.at(-1).code,"CONSUMPTION_READ_UNCONFIRMED");
 });
 
+test("a restricted receipt is readable evidence but cannot complete the lifecycle stage",async()=>{
+  const f=await waitingFixture(),proof=structuredClone(f.consumption);
+  Object.assign(proof.services[0].call,{coverage:"SINGLE_CUSTOMER",rowCount:1});
+  assert.equal(inspectLifecycleConsumption(f.waiting.consumptionSource,proof).code,"CONSUMPTION_EVIDENCE_INVALID");
+  proof.status="PENDING";
+  assert.equal(inspectLifecycleConsumption(f.waiting.consumptionSource,proof).code,"CONSUMPTION_NOT_READY");
+  const state=await refreshLiveLifecycleConsumption(f.definition,f.waiting,{testDouble:true,request:async()=>proof});
+  assert.equal(state.phase,"CONSUMPTION");
+  assert.equal(state.consumptionStage.status,"PENDING");
+});
+
 test("VERIFIED labels cannot replace exact XAPI, pinned DAPI versions, successful source batch or valid call proof",async()=>{
   const f=await waitingFixture(),source=f.waiting.consumptionSource;
   for(const change of [

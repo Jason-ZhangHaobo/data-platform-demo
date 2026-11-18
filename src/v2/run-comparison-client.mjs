@@ -1,3 +1,5 @@
+import { checkedSyncSqlOutputSchema } from './sync-sql-output-schema-client.mjs';
+
 const uuid = v => typeof v === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v), hash = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const record = v => v && typeof v === 'object' && !Array.isArray(v), input = v => record(v) && ['VERIFIED', 'UNRECORDED', 'UNCONFIRMED'].includes(v.state) && (v.state !== 'VERIFIED' || hash(v.inputHash) && hash(v.schemaHash));
 const bad = () => { throw Error('运行对照回执与原编号、版本或证据结构未核对一致；未采用其他运行结果'); };
@@ -31,11 +33,24 @@ export function checkedSqlRunComparison(value, args) {
     const expected = controlled ? v.baseline.validation.cases.flatMap(b => { const c = v.current.validation.cases.find(c => c.contextId === b.contextId); return c && c.passed !== b.passed ? [{ contextId: b.contextId, name: b.name, beforePassed: b.passed, afterPassed: c.passed }] : []; }) : [];
     if (JSON.stringify(v.caseComparison.changes) !== JSON.stringify(expected))
         bad();
-    return v;
+    const frozen = v.frozenInput;
+    if (args.snapshotHash !== undefined && frozen?.snapshotHash !== args.snapshotHash) bad();
+    if (frozen === undefined) return v;
+    if (!record(frozen) || !hash(frozen.snapshotHash) || !uuid(frozen.syncRunId) || !uuid(frozen.metadataVersionId) ||
+        v.current.runId === v.baseline.runId || v.current.contextId !== 'holdings-t1' || v.baseline.contextId !== v.current.contextId) bad();
+    const check = (item, side) => {
+        if (!record(item) || !['MATCHED','MISMATCH','UNAVAILABLE'].includes(item.selectedRows) || side.binding !== 'VERIFIED') bad();
+        return { selectedRows:item.selectedRows, output:checkedSyncSqlOutputSchema(item.output,
+            { runId:side.runId, revisionId:side.revisionId, revisionHash:side.revisionHash, snapshotHash:frozen.snapshotHash }) };
+    };
+    return { ...v, frozenInput:{ snapshotHash:frozen.snapshotHash, syncRunId:frozen.syncRunId, metadataVersionId:frozen.metadataVersionId,
+        baseline:check(frozen.baseline,v.baseline), current:check(frozen.current,v.current) } };
 }
-export function checkedRunComparisonCandidates(v, { runId, contextId } = {}) {
+export function checkedRunComparisonCandidates(v, { runId, contextId, snapshotHash } = {}) {
     if (!record(v) || v.protocol !== 'shuduo-run-comparison-candidates/v1' || v.currentRunId !== runId || typeof v.contextId !== 'string' || contextId && v.contextId !== contextId || typeof v.truncated !== 'boolean' || !Array.isArray(v.candidates) || v.candidates.length > 50 || new Set(v.candidates.map(c => c?.runId)).size !== v.candidates.length || v.candidates.some(c => !c || !uuid(c.runId) || c.runId === runId || !uuid(c.revisionId) || c.contextId !== v.contextId || typeof c.runStatus !== 'string' || typeof c.createdAt !== 'string' || c.revisionHash !== undefined && !hash(c.revisionHash)))
         bad();
+    if (v.snapshotHash !== undefined && (!hash(v.snapshotHash) || v.contextId !== 'holdings-t1' || v.candidates.some(c => !hash(c.revisionHash))) ||
+        snapshotHash !== undefined && v.snapshotHash !== snapshotHash) bad();
     return v;
 }
 export async function readSqlRunComparison(client, args) {

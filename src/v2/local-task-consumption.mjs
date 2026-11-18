@@ -3,12 +3,14 @@ import {privateTaskConsumption} from './private-task-consumption.mjs';
 import {validateDeliveryPackage} from './delivery.mjs';
 import {localServiceSources} from './local-service-sources.mjs';
 import {fundAgentTaskConsumption} from './fund-agent-task-consumption.mjs';
+import {readSyncSqlPaginationCoverage} from './sync-sql-service-source.mjs';
 const fail=()=>Object.assign(new Error('任务、交付包与本机发布来源不一致'),{status:409,code:'LOCAL_CONSUMPTION_SOURCE_MISMATCH'});
 const agentSource=record=>record&&[undefined,'AGENT'].includes(record.sourceKind)&&record.sourceAttribution===undefined;
 
 // The HTTP route is local-only; every relationship is rebuilt from stored records.
 // No mutations, credential creation, model calls or Spark execution occur here.
-export async function localTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager,timeUnitMs,fundSignedExecutionFor,syncSourcesFor}) {
+export async function localTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,batchId,manager,timeUnitMs,fundSignedExecutionFor,syncSourcesFor}) {
+ if(batchId && !agent.syncInput) throw Object.assign(Error('本机精确批次仅适用于冻结持仓发布'),{status:422,code:'LOCAL_BATCH_SCOPE_UNSUPPORTED'});
  if(agent.fundPreparation){
   if(!releaseId)throw Object.assign(Error('基金消费须指定原发布编号和包摘要'),{status:422,code:'FUND_AGENT_RELEASE_REQUIRED'});
   return fundAgentTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager,timeUnitMs,fundSignedExecutionFor});
@@ -25,20 +27,39 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
   const sync = selectedPackage?.manifest?.source?.syncInput;
   if (Boolean(agent.syncInput) !== Boolean(sync)) throw fail();
   const selection={taskId:agent.id,packageDigest,releaseId},sources=sync ? syncSourcesFor(selection) : localServiceSources({store,project,selection}),ids=new Set(sources.map(source=>source.id));
-  if (sync && sources.length !== 2) throw fail();
+  if (sync && (sources.length !== 2 || batchId && !ids.has(batchId))) throw fail();
   const getRelease=id=>id===releaseId&&sources.length?{...store.get('release',id,project),sourceAgentTaskId:agent.id,sourceKind:'AGENT'}:undefined;
-  const report = await privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,callIdDigest,scope:'LOCAL_TEST_ONLY',services:manager.list(),
+  const report = await privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,callIdDigest,batchId,
+   includeRetiredBatchVersions:Boolean(sync&&batchId),scope:'LOCAL_TEST_ONLY',services:manager.list(),
    getPackage:id=>store.get('delivery_package',id,project),
    ownedService:id=>manager.detail(id),getVersion:id=>store.get('data_service_version',id,project),getRelease,
-   source:id=>{if(!ids.has(id))throw fail();return store.get('release_run',id,project);},
+   source:id=>{if(!ids.has(id)||batchId&&id!==batchId)throw fail();return store.get('release_run',id,project);},
    application:id=>store.get('service_app',id,project),calls:id=>manager.listCalls(id),recheckCall:(id,callId,options)=>manager.recheckCall(id,callId,options)});
-  if (!sync || callIdDigest) return report;
+  if (!sync || callIdDigest && !batchId) return report;
+  if (!callIdDigest) {
+    const savedCalls = manager.listCalls(), expectedRows = new Map(sources.map(source=>[source.id,source.rowCount]));
+    for (const entry of report.services) {
+      const coverage = await readSyncSqlPaginationCoverage({ entry,expectedRows:expectedRows.get(entry.sourceRunIds[0]),calls:savedCalls,
+        application:id=>store.get('service_app',id,project),recheckCall:(id,callId,options)=>manager.recheckCall(id,callId,options) });
+      if (coverage) entry.paginationCoverage=coverage;
+    }
+  }
+  let monitoring;
+  if (batchId) {
+    if (callIdDigest && report.services.length !== 1) throw fail();
+    const source = syncSourcesFor(selection).find(item=>item.id===batchId);
+    const event = store.list('monitor_event',project).find(item=>item.releaseId===releaseId&&item.releaseRunId===batchId&&
+      item.packageDigest===packageDigest&&item.type==='BATCH_SUCCEEDED'&&item.status==='SUCCEEDED'&&item.schedulerTriggered===true);
+    if (!source || !event) throw fail();
+    monitoring = { eventId:event.id, observedAt:event.observedAt, sequence:source.sequence, businessDate:source.sourceEvidence.businessDate };
+  }
   const verified = (id, type) => report.services.some(service => service.sourceRunIds.length === 1 &&
     service.sourceRunIds[0] === id && service.serviceType === type && service.status === "VERIFIED" &&
-    service.call?.independentResultVerified && (type === "DAPI" || service.fullAssetComposition));
-  const verifiedBatchIds = [...ids].filter(id => verified(id, "DAPI") && verified(id, "XAPI"));
-  return { ...report, status: verifiedBatchIds.length === 2 && !report.truncated ? "VERIFIED" : "PENDING",
-    verifiedBatchIds, snapshotHash: sync.snapshotHash };
+    service.paginationCoverage?.status === "COMPLETE" && (type === "DAPI" || service.fullAssetComposition));
+  const requestedBatches = batchId ? [batchId] : [...ids];
+  const verifiedBatchIds = requestedBatches.filter(id => verified(id, "DAPI") && verified(id, "XAPI"));
+  return { ...report, status: verifiedBatchIds.length === requestedBatches.length && !report.truncated ? "VERIFIED" : "PENDING",
+    verifiedBatchIds, snapshotHash: sync.snapshotHash, ...(monitoring ? {monitoring} : {}) };
  }
  const attempt=agent.attempts?.at(-1);
  const deliveries=store.list('agent_delivery_task',project).filter(d=>d.sourceAgentTaskId===agent.id&&d.packageDigest===packageDigest&&d.sourceRevisionId===attempt?.revisionId&&d.sourceRunId===attempt?.runId);

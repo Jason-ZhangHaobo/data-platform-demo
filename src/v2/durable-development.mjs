@@ -5,14 +5,15 @@ import { isDeepStrictEqual } from "node:util";
 import { verifiedWorkerResultDigest } from "./worker-result-evidence.mjs";
 import { createFundTestSql, fundRunMatchesRegisteredResult } from "./fund-delivery.mjs";
 import { fundContext } from "./fund-lookthrough.mjs";
+import { agentExecutionTrigger } from "./agent-execution-drivers.mjs";
 
 const terminal = new Set(["SUCCEEDED", "FAILED", "VALIDATION_FAILED", "CANCELLED"]);
 
-export function publicDevelopmentRun(run, revision) {
+export function publicDevelopmentRun(run, revision, sourceStore) {
   if (!run) return run;
   const { remoteSubmission, workerResultDigest, syncOutputSchema: storedSchema, ...visible } = run;
   if (!terminal.has(run.status)) delete visible.durationMs;
-  const syncOutputSchema = syncSqlOutputSchemaDetails(run, revision);
+  const syncOutputSchema = syncSqlOutputSchemaDetails(run, revision, sourceStore);
   return { ...visible, validation: validationWithoutRawComparisons(visible.validation), validationDetails: validationDetails(run, revision),
     ...(syncOutputSchema ? { syncOutputSchema } : {}) };
 }
@@ -38,7 +39,8 @@ export async function submitDurableDevelopment(run, revision, { runner, store, p
   return current;
 }
 
-export async function reconcileDurableDevelopment(run, { runner, store, project, persist, contextIds, contractId, allowSubmit = true, settleResultEvent }) {
+export async function reconcileDurableDevelopment(run, { runner, store, project, persist, contextIds, contractId, allowSubmit = true,
+  settleResultEvent, agentSubmissionTrigger }) {
   if(run.validationContractId!==undefined&&run.validationContractId!==contractId)
     throw Object.assign(new Error("运行批次与业务口径验证契约不一致"),{code:"REMOTE_SPARK_CONTRACT_MISMATCH"});
   if (!run.remoteSubmission || (!settleResultEvent && terminal.has(run.status))) return run;
@@ -49,9 +51,21 @@ export async function reconcileDurableDevelopment(run, { runner, store, project,
     if (!result) {
       if (settleResultEvent) throw Object.assign(new Error("原开发结果对象暂不可读取"), {status:503});
       if (!run.remoteSubmission.submitted && allowSubmit && !settleResultEvent) {
+        const recorded = run.remoteSubmission.agentSubmissionTriggers;
+        if (Array.isArray(recorded)) {
+          const trigger = agentExecutionTrigger(agentSubmissionTrigger);
+          if (!recorded.includes(trigger)) {
+            run = store.update("run", run.id, project, {
+              remoteSubmission: { ...run.remoteSubmission, agentSubmissionTriggers: [...recorded, trigger] },
+            }, { expectedVersion: run.version });
+          }
+          await persist();
+        }
         await runner.submit(run.remoteSubmission.prepared);
+        const current = store.get("run", run.id, project);
+        if (terminal.has(current.status) || current.remoteSubmission?.submitted) return current;
         const submitted = store.update("run", run.id, project, {
-          remoteSubmission: { ...run.remoteSubmission, submitted: true },
+          remoteSubmission: { ...current.remoteSubmission, submitted: true },
           stage: "WAITING_FOR_WORKER_RESULT", submittedAt: new Date().toISOString(),
         });
         await persist();

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,8 +8,9 @@ import { join } from "node:path";
 import { LocalArtifactStore } from "../../src/v2/artifact-store.mjs";
 import { AuthManager } from "../../src/v2/auth.mjs";
 import { createCloudV2Application, startCloudV2Listener } from "../../src/v2/cloud-server.mjs";
-import { MemoryDataStateBackend } from "../../src/v2/data-state-replica.mjs";
+import { emptyDataState, MemoryDataStateBackend } from "../../src/v2/data-state-replica.mjs";
 import { MemorySnapshotBackend, ReplicatedMetadataStore } from "../../src/v2/metadata-replica.mjs";
+import { OssDataStateBackend } from "../../src/v2/oss-data-state-backend.mjs";
 import { PROJECT } from "../../src/v2/server.mjs";
 
 const cloudEnv = { V2_FC_PUBLIC_HTTP_ENABLED: "true", V2_FC_PUBLIC_READ_ONLY: "true" };
@@ -33,7 +35,7 @@ test("cloud startup overlaps only the Worker read and waits for persistence and 
   const events = [];
   const mysql = Promise.withResolvers(), oss = Promise.withResolvers(), worker = Promise.withResolvers(),
     enteredOss = Promise.withResolvers(), prefetched = Promise.withResolvers(), flush = Promise.withResolvers(),
-    enteredFlush = Promise.withResolvers();
+    enteredFlush = Promise.withResolvers(), enteredMysql = Promise.withResolvers();
   t.after(() => { for (const gate of [mysql, oss, worker, flush]) gate.resolve(); });
   const readMeta = metadata.load.bind(metadata);
   metadata.load = project => { events.push("metadata"); return readMeta(project); };
@@ -65,10 +67,11 @@ test("cloud startup overlaps only the Worker read and waits for persistence and 
   let returned = false;
   const starting = createCloudV2Application(cloudEnv, {
     ...options,
-    openMetadataBackend: async () => { events.push("mysql"); await mysql.promise; return metadata; },
+    openMetadataBackend: async () => { events.push("mysql"); enteredMysql.resolve(); await mysql.promise; return metadata; },
     createDataBackend: () => dataBackend,
     createRunner: () => runner,
   }).then(value => { returned = true; return value; });
+  await enteredMysql.promise;
   assert.deepEqual(events, ["worker-read", "mysql"]);
   mysql.resolve();
   await enteredOss.promise;
@@ -85,7 +88,7 @@ test("cloud startup overlaps only the Worker read and waits for persistence and 
   t.after(() => closeApp(boot));
   assert.equal(app.server.listening, false);
   assert.equal(app.store.get("run", prior.id, PROJECT).status, "INTERRUPTED");
-  assert.ok(["workerEvidenceReadMs", "mysqlOpenMs", "metadataRestoreMs", "dataStateRestoreMs", "workerReadyMs", "initialFlushMs"]
+  assert.ok(["applicationModuleLoadMs", "workerEvidenceReadMs", "mysqlOpenMs", "metadataRestoreMs", "dataStateRestoreMs", "workerReadyMs", "initialFlushMs"]
     .every(phase => Number.isSafeInteger(timing[phase])));
   await new Promise(resolve => app.server.listen(0, "127.0.0.1", resolve));
   const base = "http://127.0.0.1:" + app.server.address().port;
@@ -93,6 +96,37 @@ test("cloud startup overlaps only the Worker read and waits for persistence and 
   const denied = await fetch(base + "/api/v2/agent/tasks", { method: "POST", body: "{}" });
   assert.equal(denied.status, 403);
   assert.equal((await denied.json()).code, "PUBLIC_READ_ONLY");
+});
+
+test("early public shell and catalog are readable while the application module is still loading", {timeout:5000}, async t=>{
+  const options=fixture(t), load=Promise.withResolvers(), entered=Promise.withResolvers();
+  let restores=0;
+  const listener=startCloudV2Listener(cloudEnv,{...options,port:0,host:"127.0.0.1",
+    loadApplication:async()=>{
+      entered.resolve();
+      await load.promise;
+      return import("../../src/v2/cloud-application.mjs");
+    },
+    openMetadataBackend:async()=>{restores++;return new MemorySnapshotBackend();},
+    createDataBackend:()=>new MemoryDataStateBackend(),createRunner:()=>undefined});
+  t.after(async()=>{load.resolve();await listener.close();});
+  await once(listener.server,"listening");
+  await entered.promise;
+  const base="http://127.0.0.1:"+listener.server.address().port;
+  const html=await fetch(base+"/v2/");
+  assert.equal(await html.text(),"<html>Fictional cloud startup</html>");
+  assert.match(html.headers.get("server-timing"),/shuduo_index_opening/);
+  assert.ok((await (await fetch(base+"/api/v2/contexts")).json()).some(context=>context.id==="holdings-t1"));
+  assert.equal((await fetch(base+"/api/v2/auth/session")).status,503);
+  assert.equal((await fetch(base+"/api/v2/agent/tasks",{method:"POST",body:"{}"})).status,403);
+  assert.equal(restores,0);
+  load.resolve();
+  const ready=await listener.ready;
+  assert.equal(restores,1);
+  assert.ok(Number.isSafeInteger(ready.timing.applicationModuleLoadMs));
+  const session=await (await fetch(base+"/api/v2/auth/session")).json();
+  assert.equal(session.authenticated,false);
+  assert.equal(session.readOnly,true);
 });
 
 test("a failed prefetched Worker check preserves restored read-only state", async t => {
@@ -154,9 +188,11 @@ test("the read-only listener serves the same public files with a returning sessi
   const html = await read("/v2/?module=agent-center");
   assert.equal(await html.text(),"<html>Fictional cloud startup</html>");
   assert.equal(html.headers.get("cache-control"),"no-cache");
+  assert.match(html.headers.get("server-timing"),/^shuduo_index_opening;dur=\d+\.\d$/);
   const script=await read("/v2/assets/index-FictionalHash.js",{headers:{origin:base}});
   assert.equal(await script.text(),"export const sample = true;");
   assert.match(script.headers.get("cache-control"),/immutable/);
+  assert.equal(script.headers.get("server-timing"),null);
   const catalog=await (await read("/api/v2/contexts")).json();
   assert.ok(catalog.some(context=>context.id==="holdings-t1"));
   const [sessionCookie,csrfCookie]=session.cookies.map(cookie=>cookie.split(";",1)[0]);
@@ -179,6 +215,7 @@ test("the read-only listener serves the same public files with a returning sessi
   for (const path of ["/api/v2/status?include=session","/api/v2/auth/session","/api/v2/agent/tasks"]) {
     const pending = await read(path,returning);
     assert.equal(pending.status,503);
+    assert.equal(pending.headers.get("server-timing"),null);
     assert.equal(pending.headers.get("retry-after"),"1");
     assert.equal((await pending.json()).code,"CLOUD_STARTUP_PENDING");
   }
@@ -193,6 +230,9 @@ test("the read-only listener serves the same public files with a returning sessi
   const boot = await listener.ready;
   assert.equal(boot.app.server,listener.server);
   assert.equal(listener.server.listenerCount("request"),1);
+  const readyPage=await read("/v2/?module=agent-center");
+  assert.equal(await readyPage.text(),"<html>Fictional cloud startup</html>");
+  assert.match(readyPage.headers.get("server-timing"),/^shuduo_index_ready;dur=\d+\.\d$/);
   assert.deepEqual(await (await read("/api/v2/contexts")).json(),catalog);
   const delivered=await event;
   assert.equal(delivered.status,200);
@@ -259,6 +299,102 @@ test("a bounded startup identity read waits for recovered state and releases dis
     assert.equal(session.user.id,owner.id);
     assert.equal(session.readOnly,true);
   }
+});
+
+test("the read-only cloud listener cold-starts from the original OSS state and returns the authenticated record", {
+  timeout:10000,
+}, async t=>{
+  const key="data-platform-v2/state/fictional-startup.json", basePath="/"+key;
+  const slot=revision=>basePath+".revisions/"+revision+".json";
+  const digest=value=>createHash("sha256").update(value).digest("hex");
+  const hash=(revision,payload)=>digest(revision+"\n"+JSON.stringify(payload));
+  // Encode the original wire layout independently of today's empty snapshot.
+  const genesis={format:"shuduo-data-state/v1",projectId:PROJECT,tables:{
+    landingRows:[],streamEvents:[],streamState:[],streamCheckpoints:[],
+    serviceSnapshots:[],customerAssets:[],reportSnapshots:[],
+  }};
+  const reportId="fictional-wealth-report", reportRows=[{client_id:"FICTIONAL-CLIENT",total_assets:"1750.00"}];
+  const storedRow={id:reportId,asset_id:"fictional-assets",content_hash:digest(JSON.stringify(reportRows)),
+    row_count:1,rows_json:JSON.stringify(reportRows),created_at:"2026-09-10T00:00:00Z"};
+  const first=structuredClone(genesis), latest=emptyDataState(PROJECT);
+  latest.tables.reportSnapshots.push(storedRow);
+  const envelope=(revision,previousHash,payload)=>JSON.stringify({
+    format:"shuduo-data-state-envelope/v1",revision,previousHash,payload,
+  });
+  const revisionOne=envelope(1,hash(0,genesis),first);
+  const scenarios=[
+    {name:"missing legacy anchor",keepAnchor:false,corrupt:false},
+    {name:"retained legacy anchor",keepAnchor:true,corrupt:false},
+    {name:"broken successor chain",keepAnchor:false,corrupt:true},
+  ];
+  for(const {name,keepAnchor,corrupt} of scenarios)await t.test(name,async child=>{
+    const options=fixture(child), metadata=new MemorySnapshotBackend();
+    const seed=await ReplicatedMetadataStore.open({backend:metadata,project:PROJECT,autoFlush:false});
+    const auth=new AuthManager({store:seed,project:PROJECT,env:{}});
+    const credentials={email:"fictional-oss-engineer@example.invalid",password:"SyntheticStartup!2026"};
+    const owner=auth.bootstrapAdmin({...credentials,displayName:"虚构证券工程师"});
+    const task=seed.create("agent",PROJECT,{submittedBy:owner.id,status:"SUCCEEDED",message:"虚构证券持仓 T+1"});
+    const {cookies}=auth.sessionResponse(auth.login(credentials),true);
+    await seed.closeReplicated();
+
+    const objects=new Map([[slot(1),revisionOne],
+      [slot(2),envelope(2,corrupt?hash(0,genesis):hash(1,first),latest)]]);
+    if(keepAnchor)objects.set(basePath,revisionOne);
+    const saved=[...objects], entered=Promise.withResolvers(), release=Promise.withResolvers(), requests=[];
+    const config={bucket:"synthetic-startup-bucket",endpoint:"oss-cn-hangzhou-internal.aliyuncs.com",key,maxBytes:1024*1024,
+      credentials:{accessKeyId:"fictional-key",accessKeySecret:"fictional-secret"}};
+    const backend=new OssDataStateBackend(config,async(url,opts)=>{
+      const path=new URL(url).pathname;
+      requests.push({path,method:opts.method});
+      assert.equal(opts.method,"GET","readonly recovery must not rewrite OSS objects");
+      if(path===basePath){entered.resolve();await release.promise;}
+      return objects.has(path)?new Response(objects.get(path)):new Response("",{status:404});
+    });
+    const listener=startCloudV2Listener({...cloudEnv},{...options,port:0,host:"127.0.0.1",
+      openMetadataBackend:async()=>metadata,createDataBackend:()=>backend,createRunner:()=>undefined});
+    child.after(async()=>{release.resolve();await listener.close();});
+    // The known failing control may complete before the HTTP response finishes.
+    listener.ready.catch(()=>{});
+    await Promise.all([once(listener.server,"listening"),entered.promise]);
+    const base="http://127.0.0.1:"+listener.server.address().port;
+    const headers={"x-shuduo-client":"workbench",cookie:cookies.map(cookie=>cookie.split(";",1)[0]).join("; ")};
+    const read=async(path,init={})=>fetch(base+path,{...init,signal:AbortSignal.timeout(4000)});
+    assert.equal(await (await read("/v2/?module=agent-center",{headers})).text(),"<html>Fictional cloud startup</html>");
+    const arrived=once(listener.server,"request");
+    const waiting=read("/api/v2/status?include=session",{headers});
+    waiting.catch(()=>{});
+    const [,response]=await arrived;
+    assert.equal(response.headersSent,false);
+    release.resolve();
+    if(corrupt){
+      await assert.rejects(listener.ready,{code:"CLOUD_DATA_STATE_INVALID_CHAIN"});
+      await assert.rejects(waiting);
+      assert.equal(listener.server.listening,false);
+    }else{
+      const boot=await listener.ready;
+      const reply=await waiting;
+      assert.equal(reply.status,200);
+      assert.equal(reply.headers.get("cache-control"),"no-store");
+      const {session}=await reply.json();
+      assert.equal(session.authenticated,true);
+      assert.equal(session.user.id,owner.id);
+      assert.equal(session.readOnly,true);
+      assert.deepEqual(boot.app.reportStore.read(reportId).rows,reportRows);
+      assert.equal(boot.app.reportStore.read(reportId).contentHash,storedRow.content_hash);
+      assert.equal(boot.stateCoordinator.replicationStatus().dataState.remoteRevision,2);
+      const path="/api/v2/agent/tasks/"+task.id;
+      assert.equal((await read(path)).status,401);
+      const ownerRead=await read(path,{headers});
+      assert.equal(ownerRead.status,200);
+      assert.equal((await ownerRead.json()).id,task.id);
+      const denied=await read("/api/v2/agent/tasks",{method:"POST",headers,body:"{}"});
+      assert.equal(denied.status,403);
+      assert.equal((await denied.json()).code,"PUBLIC_READ_ONLY");
+    }
+    const readOrder=keepAnchor?[basePath,slot(2)]:[basePath,slot(1),slot(2)];
+    assert.deepEqual(requests.slice(0,readOrder.length).map(({path})=>path),readOrder);
+    assert.deepEqual([...objects],saved);
+  });
 });
 
 test("an unfinished startup releases the combined read with the existing retry response", {timeout:5000}, async t => {

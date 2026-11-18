@@ -1,11 +1,30 @@
 import { sha256, validateDeliveryPackage, validationMatchesFamily } from "./delivery.mjs";
 import { fundRehearsalMatchesPlan } from "./fund-delivery.mjs";
+import { uuid } from "./live-lifecycle-checkpoint.mjs";
 import { publicationAttestationKeys } from "./publication-request.mjs";
 import { storedWorkerBatchResult } from "./worker-result-evidence.mjs";
+import { storedPublicationInitiation } from "./publication-initiation-evidence.mjs";
 
 const fail = (status,message) => Object.assign(new Error(message),{status});
 const originalBatchResult = (store,project,run) =>
   storedWorkerBatchResult(store,run,run.remoteSubmission?.prepared?.job,`${project}:cloud-release-result:${run.id}`);
+const time = value => typeof value === "string" ? Date.parse(value) : NaN;
+
+export function validStoredPublicationSchedule(batches, {batchIds, monitoring, approvalTiming}) {
+  const approved = time(approvalTiming?.approvedAt);
+  return Number.isFinite(approved) && Array.isArray(batches) && batches.length === 2 &&
+    Array.isArray(batchIds) && batchIds.length === 2 && new Set(batchIds).size === 2 &&
+    Array.isArray(monitoring) && monitoring.length === 2 &&
+    batches.every((batch,index) => {
+      if (!batch || Object.keys(batch).length !== 6 || typeof batch.batchId !== "string" || !uuid.test(batch.batchId) ||
+          batch.batchId !== batchIds[index] ||
+          batch.batchId !== monitoring[index]?.batchId || batch.clockMode !== "FC_TIMER" ||
+          typeof batch.workerResultDigest !== "string" || !/^[a-f0-9]{64}$/.test(batch.workerResultDigest)) return false;
+      const triggered = time(batch.triggeredAt), finished = time(batch.finishedAt);
+      return time(batch.scheduledTriggerAt) <= triggered && approved <= triggered &&
+        triggered <= finished && finished <= time(monitoring[index].observedAt);
+    }) && new Set(batches.map(batch=>batch.workerResultDigest)).size === 2;
+}
 export function exactPublicationReviewBasis(evidence,{businessDate,businessScheduledFor}) {
   return {evidence,businessDate,businessScheduledFor,plannedBatchCount:2,scope:"PRIVATE_CLOUD_TEST"};
 }
@@ -106,19 +125,29 @@ export function exactPublicationReceipt(store, project, release, now=Date.now())
           !["main.sql","tests.sql"].every(name=>run.fileHashes?.[name]===item.manifest.files[name].sha256) ||
           observed.length!==1 || event.status!=="SUCCEEDED" || event.packageDigest!==release.packageDigest ||
           !(Date.parse(event.observedAt)>=finished)) return;
-      return {batchId:run.id,eventId:event.id,observedAt:event.observedAt};
+      return {
+        event:{batchId:run.id,eventId:event.id,observedAt:event.observedAt},
+        execution:{batchId:run.id,clockMode:run.clockMode,scheduledTriggerAt:run.scheduledTriggerAt,
+          triggeredAt:run.triggeredAt,finishedAt:original.finishedAt,workerResultDigest:original.resultDigest},
+      };
     });
     if (release.status==="COMPLETED_CLOUD_TEST" && release.health==="HEALTHY" && openAlertCount===0 && checks.every(Boolean)) {
       monitoring.status="VERIFIED";
-      monitoring.batches=checks;
+      monitoring.batches=checks.map(check=>check.event);
+      const scheduledBatches=checks.map(check=>check.execution);
+      if (validStoredPublicationSchedule(scheduledBatches,{
+        batchIds:runs.map(run=>run.id),monitoring:monitoring.batches,approvalTiming,
+      })) monitoring.scheduledBatches=scheduledBatches;
     } else monitoring.status="UNCONFIRMED";
   }
+  const initiationEvidence=storedPublicationInitiation(store,project,release,approvalTiming,monitoring.scheduledBatches);
   return {protocol:"shuduo-cloud-publication-receipt/v1",
     release:{id:release.id, taskId:release.sourceAgentTaskId, sourceRunId:release.sourceRunId,
       sourceRevisionId:release.sourceRevisionId, sourceCodeHash:release.sourceCodeHash, packageId:release.packageId,
       packageDigest:release.packageDigest, verificationId:release.verificationId, reviewDigest:release.reviewDigest,
       reviewId:review.id, approvalId:approval.id, status:release.status, scope:release.scope,
-      businessScheduledFor:release.businessScheduledFor,...(approvalTiming?{approvalTiming}:{})},
+      businessScheduledFor:release.businessScheduledFor,...(approvalTiming?{approvalTiming}:{}),
+      ...(initiationEvidence?{initiationEvidence}:{})},
     runs:runs.map(record=>{
       const run=projectCloudReleaseBatchStage(record,now);
       return {id:run.id,sequence:run.sequence,status:run.status,schedulerTriggered:run.schedulerTriggered,

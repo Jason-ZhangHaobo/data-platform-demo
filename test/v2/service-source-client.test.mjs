@@ -44,17 +44,19 @@ test('CLI and MCP preserve exact release selection and never issue a write or fa
  assert.equal(f.reads.length,6);
 });
 
-test('exact historical call selection is carried by one read through CLI, MCP and the private route',async()=>{
- const f=fixture(),callIdDigest='b'.repeat(64),selected={...exact,callIdDigest};
+test('exact historical batch and call selection are carried by one read through CLI, MCP and the private route',async()=>{
+ const f=fixture(),callIdDigest='b'.repeat(64),batchId='00000000-0000-4000-8000-000000000003',selected={...exact,callIdDigest,batchId};
  const path=serviceSourceReadPath('task-evidence',selected);
  const query=Object.fromEntries(new URL(path,'https://synthetic.invalid').searchParams);
  assert.equal(query.call_id_digest,callIdDigest);
+ assert.equal(query.release_batch_id,batchId);
  assert.equal(privateServiceRoute('GET','/api/v2'+path),true);
  assert.equal(privateServiceRoute('POST','/api/v2'+path),false);
  assert.equal(privateServiceRoute('GET','/api/v2'+path+'&call_id_digest='+callIdDigest),false);
  assert.throws(()=>serviceSourceReadPath('sources',selected));
  assert.throws(()=>serviceSourceReadPath('task-evidence',{agentTaskId:task,packageDigest:digest,callIdDigest}));
- assert.equal(await cli(['services','task-evidence','--task-id',task,'--package-digest',digest,'--release-id',release,'--call-id-digest',callIdDigest],f),0);
+ assert.throws(()=>serviceSourceReadPath('task-evidence',{manualDeliveryTaskId:task,packageDigest:digest,releaseId:release,batchId}));
+ assert.equal(await cli(['services','task-evidence','--task-id',task,'--package-digest',digest,'--release-id',release,'--call-id-digest',callIdDigest,'--batch-id',batchId],f),0);
  assert.equal((await mcp('data_service_task_evidence',selected,f)).error,undefined);
  assert.ok((await mcp('data_service_task_evidence',{...selected,callIdDigest:'invalid'},f)).error);
  assert.equal(f.reads.length,2);

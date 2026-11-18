@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { cloudV3CompletionReceipt, cloudV3CompletionScope, cloudV3FailureReceipt, summarizeCloudV3Progress } from "../../scripts/cloud-v3-run.mjs";
 import { currentLiveLifecycleContract } from "../../src/v2/live-lifecycle-evaluation.mjs";
+import {cloudV3PhaseAttribution} from '../../src/v2/cloud-v3-phase-attribution.mjs';
 
 test("an HTTPS completion requires both matched batches and the original approved application", () => {
   const source = "a".repeat(40);
@@ -53,10 +54,44 @@ test("reviewed cloud scoring keeps the frozen denominator and waits for all orig
   assert.equal(met.reviewedCloudCompletionRate,0.85);
   assert.equal(met.reviewedCloudTargetStatus,"MET");
   assert.equal(met.directAutonomousCompletionRate,null);
+  assert.equal(met.recordedPhaseAttributionCases,0);
   assert.equal(met.fullGoalTargetMet,false);
   assert.equal(score([...successes.slice(1),...Array(4).fill("CLOUD_FAILURE_SETTLED")]).reviewedCloudTargetStatus,"NOT_MET");
   assert.throws(()=>score(successes),/冻结案例分母/);
   assert.throws(()=>summarizeCloudV3Progress(currentLiveLifecycleContract,Array(20).fill({caseId:"duplicate"})),/冻结案例分母/);
+});
+
+test('direct autonomy counts only verified cloud outcomes over the frozen twenty cases',()=>{
+  const phaseAttribution={directAutonomousEligible:true,executionEvidence:'STORED',intervention:'NO_RESCUE_RECORDED',
+    ownerAdvanceRecorded:false,approval:{status:'RECORDED'},unconfirmedAutonomousStages:[]};
+  const verified={status:'CLOUD_CHAIN_VERIFIED',evidenceScope:'INVITED_CLOUD_MATCHED',phaseAttribution};
+  const failed={status:'CLOUD_FAILURE_SETTLED',evidenceScope:'INVITED_CLOUD_SETTLED_FAILURE'};
+  const owner={...verified,phaseAttribution:{...phaseAttribution,directAutonomousEligible:false,ownerAdvanceRecorded:true}};
+  const missing={...verified,phaseAttribution:{...phaseAttribution,directAutonomousEligible:false,unconfirmedAutonomousStages:['authorizedConsumption']}};
+  const local={...verified,status:'LOCAL_MATCHED_ONLY',evidenceScope:'LOCAL_MATCHED_ONLY'};
+  const fixture={...verified,phaseAttribution:{...phaseAttribution,executionEvidence:'TEST_HARNESS'}};
+  const rescued={...verified,phaseAttribution:{...phaseAttribution,intervention:'ENGINEER_RESCUE'}};
+  const score=cases=>summarizeCloudV3Progress(currentLiveLifecycleContract,cases.map((item,caseId)=>({...item,caseId:String(caseId)})));
+  const pending=score([...Array(15).fill(verified),failed,missing,local,fixture,{status:'SOURCE_FAILED'}]);
+  assert.equal(pending.directAutonomousSuccesses,15);
+  assert.equal(pending.directAutonomousSettledCases,16);
+  assert.equal(pending.directAutonomousCoverage,0.8);
+  assert.equal(pending.additionalDirectAutonomousSuccessesRequired,2);
+  assert.equal(pending.unconfirmedAutonomousCloudCases,2);
+  assert.equal(pending.directAutonomousCompletionRate,null);
+  assert.equal(pending.directAutonomousTargetStatus,'INCOMPLETE_BLOCKED_SOURCE');
+  const met=score([...Array(17).fill(verified),failed,failed,owner]);
+  assert.equal(met.directAutonomousCompletionRate,0.85);
+  assert.equal(met.ownerAdvancedCloudCases,1);
+  assert.equal(met.directAutonomousTargetStatus,'MET');
+  assert.equal(met.fullGoalTargetMet,false);
+  const notMet=score([...Array(16).fill(verified),failed,failed,owner,owner]);
+  assert.equal(notMet.directAutonomousCompletionRate,0.8);
+  assert.equal(notMet.directAutonomousTargetStatus,'NOT_MET');
+  const allReviewedButUnconfirmed=score([...Array(18).fill(verified),missing,rescued]);
+  assert.equal(allReviewedButUnconfirmed.directAutonomousCompletionRate,null);
+  assert.equal(allReviewedButUnconfirmed.directAutonomousTargetStatus,'INCOMPLETE');
+  assert.equal(allReviewedButUnconfirmed.engineerRescueObserved,1);
 });
 
 test("cloud completion cannot be created from consumer matches alone, unsettled model usage or missing human review timing", () => {
@@ -80,7 +115,105 @@ test("cloud completion cannot be created from consumer matches alone, unsettled 
     consumption:Object.fromEntries(batchIds.map((batchId,index)=>[batchId,{batchId,status:"MATCHED",
       ...Object.fromEntries(["sourceDigest","planDigest","reportDigest","dapiCallIdDigest","xapiCallIdDigest",
         "dapiRowsDigest","xapiRowsDigest"].map((key,offset)=>[key,hex(20+index*10+offset)]))}]))};
-  assert.equal(cloudV3CompletionReceipt(original,item,time(9)).scope,"INVITED_CLOUD_MATCHED");
+  const historical=cloudV3CompletionReceipt(original,item,time(9));
+  assert.equal(historical.scope,"INVITED_CLOUD_MATCHED");
+  assert.equal(historical.deliveryPreparationEvidence,undefined);
+  assert.equal(historical.publicationInitiationEvidence,undefined);
+  const withSchedule=structuredClone(item);
+  const preparationEvidence={trigger:"SIGNED_BACKGROUND_EVENT",taskId:withSchedule.taskId,
+    revisionId:withSchedule.code.revisionId,revisionHash:withSchedule.code.revisionHash,developmentRunId:withSchedule.code.runId,
+    deliveryId:withSchedule.actions.delivery.id,packageId:withSchedule.actions.delivery.packageId,
+    packageDigest:withSchedule.actions.delivery.packageDigest};
+  withSchedule.actions.delivery.preparationEvidence=preparationEvidence;
+  withSchedule.actions.publication.scheduledBatches=batchIds.map((batchId,index)=>({
+    batchId,clockMode:"FC_TIMER",scheduledTriggerAt:time(4),triggeredAt:time(5),
+    finishedAt:time(6+index),workerResultDigest:hex(60+index),
+  }));
+  const initiation={trigger:"INVITED_SESSION_CONFIRMATION",originalRequestDigest:hex(73),acceptedAt:time(4),
+    taskId,revisionId:withSchedule.code.revisionId,developmentRunId:withSchedule.code.runId,
+    releaseId:withSchedule.actions.publication.id,approvalId:withSchedule.actions.publication.approvalId,
+    packageDigest:withSchedule.actions.publication.packageDigest,reviewDigest:withSchedule.actions.publication.reviewDigest};
+  withSchedule.actions.publication.initiationEvidence=initiation;
+  const receipt=cloudV3CompletionReceipt(original,withSchedule,time(9));
+  assert.equal(receipt.scope,"INVITED_CLOUD_MATCHED");
+  assert.deepEqual(receipt.deliveryPreparationEvidence,preparationEvidence);
+  assert.deepEqual(receipt.publicationInitiationEvidence,initiation);
+  const phaseInput=structuredClone(withSchedule);
+  phaseInput.developmentDriverEvidence={taskId,revisionId:phaseInput.code.revisionId,developmentRunId:phaseInput.code.runId,
+    attempts:[{attempt:1,modelTrigger:'SIGNED_BACKGROUND_EVENT',spark:{runId:phaseInput.code.runId,submissionTriggers:['SIGNED_BACKGROUND_EVENT']}}]};
+  phaseInput.actions.publication.initiationEvidence={...initiation,trigger:'SIGNED_PUBLICATION_WAKE',wakeId:id(28)};
+  const phases=cloudV3PhaseAttribution(phaseInput,{approvalTimingVerified:true});
+  assert.deepEqual(phases.phases,{requirements:'STRUCTURED_MODEL_RESULT',code:'SIGNED_BACKGROUND_EVENT',sparkDebugging:'SIGNED_BACKGROUND_EVENT',
+    deliveryFiles:'SIGNED_BACKGROUND_EVENT',fileRehearsal:'ORIGIN_UNCONFIRMED',publication:'SIGNED_PUBLICATION_WAKE',
+    schedulingAndMonitoring:'FC_TIMER_AND_SIGNED_WORKER_RESULT',authorizedConsumption:'MATCHED_RESULTS_CALLER_UNCONFIRMED'});
+  assert.deepEqual(phases.approval,{status:'RECORDED',waitMs:2000});
+  assert.equal(phases.directAutonomousEligible,false);
+  assert.deepEqual(phases.unconfirmedAutonomousStages,['fileRehearsal','authorizedConsumption']);
+  const revised=structuredClone(phaseInput);
+  revised.developmentDriverEvidence.attempts[0].spark.submissionTriggers.push('OWNER_ADVANCE');
+  revised.humanClarified=true;
+  const mixed=cloudV3PhaseAttribution(revised,{approvalTimingVerified:true});
+  assert.equal(mixed.phases.sparkDebugging,'MULTIPLE_DRIVERS_RECORDED');
+  assert.equal(mixed.ownerAdvanceRecorded,true);
+  assert.equal(mixed.intervention,'BUSINESS_CLARIFICATION');
+  const rescued=cloudV3PhaseAttribution({...revised,manualContinuation:{revisionId:id(29)}});
+  assert.equal(rescued.intervention,'ENGINEER_RESCUE');
+  assert.equal(rescued.businessClarificationRecorded,true);
+  assert.equal(cloudV3PhaseAttribution({...phaseInput,code:{...phaseInput.code,sourceKind:'MANUAL'}}).intervention,'NON_NATIVE_SOURCE');
+  const withoutInitiation=structuredClone(phaseInput);
+  delete withoutInitiation.actions.publication.initiationEvidence;
+  const historicalPhases=cloudV3PhaseAttribution(withoutInitiation).phases;
+  assert.equal(historicalPhases.publication,'ORIGIN_UNCONFIRMED');
+  assert.equal(historicalPhases.schedulingAndMonitoring,'FC_TIMER_AND_SIGNED_WORKER_RESULT');
+  assert.equal(cloudV3PhaseAttribution({...phaseInput,developmentDriverEvidence:undefined}).phases.code,'ORIGIN_UNCONFIRMED');
+  assert.equal(cloudV3PhaseAttribution({...phaseInput,code:{...phaseInput.code,model:'synthetic'}}).executionEvidence,'TEST_HARNESS');
+  assert.equal(cloudV3PhaseAttribution({actions:{agent:{status:'PREPARED'}}}),undefined);
+  const paired=structuredClone(phaseInput),delivery=paired.actions.delivery;
+  paired.rehearsal.initiationEvidence={trigger:'SIGNED_BACKGROUND_EVENT',taskId,revisionId:paired.code.revisionId,
+    revisionHash:paired.code.revisionHash,developmentRunId:paired.code.runId,deliveryId:delivery.id,packageId:delivery.packageId,
+    packageDigest:delivery.packageDigest,verificationId:paired.rehearsal.id,wakeId:id(30),workerResultDigest:hex(80)};
+  for(const [index,batchId] of batchIds.entries()){
+    const proof=paired.consumption[batchId],callEvidence={protocol:'shuduo-service-call-attribution/v1',channel:'BEARER_HTTP',
+      queryDigest:hex(90+index),issuanceMode:'AUTHENTICATED_SESSION',issuanceRequestDigest:hex(92+index),credentialProofDigest:hex(94+index),
+      serviceDesign:{kind:'UNRECORDED'}};
+    proof.attribution={batchId,dapi:{callIdDigest:proof.dapiCallIdDigest,evidence:callEvidence},
+      xapi:{callIdDigest:proof.xapiCallIdDigest,evidence:callEvidence}};
+    const invocation=(offset)=>({serviceId:id(40+index*10+offset),versionId:id(41+index*10+offset),callIdDigest:hex(100+index*10+offset),
+      rowsDigest:hex(101+index*10+offset),paginationDigest:hex(102+index*10+offset),rowCount:1});
+    proof.agent={requestId:id(60+index*2),wakeId:id(61+index*2),batchId,sourceDigest:proof.sourceDigest,
+      applicationId:id(70+index),dapi:invocation(0),xapi:invocation(2)};
+  }
+  const verifiedScope=cloudV3CompletionReceipt(original,paired,time(9)).scope;
+  const classified=cloudV3PhaseAttribution(paired,{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope});
+  assert.equal(classified.directAutonomousEligible,true);
+  assert.deepEqual(classified.unconfirmedAutonomousStages,[]);
+  assert.equal(cloudV3PhaseAttribution(paired,{approvalTimingVerified:true,verifiedCompletionScope:'LOCAL_MATCHED_ONLY'}).directAutonomousEligible,false);
+  assert.equal(cloudV3PhaseAttribution({...paired,synthetic:true},{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope}).directAutonomousEligible,false);
+  assert.equal(cloudV3PhaseAttribution({...paired,humanClarified:true},{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope}).directAutonomousEligible,false);
+  assert.equal(cloudV3PhaseAttribution(paired,{verifiedCompletionScope:verifiedScope}).directAutonomousEligible,false);
+  const ownerAdvanced=structuredClone(paired);
+  ownerAdvanced.developmentDriverEvidence.attempts[0].modelTrigger='OWNER_ADVANCE';
+  const ownerResult=cloudV3PhaseAttribution(ownerAdvanced,{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope});
+  assert.equal(ownerResult.ownerAdvanceRecorded,true);
+  assert.equal(ownerResult.directAutonomousEligible,false);
+  for(const invalid of [{trigger:"AGENT"}, {approvalId:id(99)}, {acceptedAt:time(6)}]){
+    const wrong=structuredClone(withSchedule);
+    Object.assign(wrong.actions.publication.initiationEvidence,invalid);
+    assert.throws(()=>cloudV3CompletionReceipt(original,wrong,time(9)));
+  }
+  const incorrectPreparation=structuredClone(withSchedule);
+  incorrectPreparation.actions.delivery.preparationEvidence.packageId=id(25);
+  assert.throws(()=>cloudV3CompletionReceipt(original,incorrectPreparation,time(9)));
+  for(const invalidate of [
+    batches=>{batches[0].clockMode="MANUAL";},
+    batches=>{batches[0].triggeredAt=time(3);},
+    batches=>{batches[0].finishedAt=time(8);},
+    batches=>{batches[0].workerResultDigest=batches[1].workerResultDigest;},
+  ]){
+    const altered=structuredClone(withSchedule);
+    invalidate(altered.actions.publication.scheduledBatches);
+    assert.throws(()=>cloudV3CompletionReceipt(original,altered,time(9)));
+  }
   for (const mutate of [
     value=>delete value.code.requirementBinding,
     value=>{value.code.reservedTokens=12;},

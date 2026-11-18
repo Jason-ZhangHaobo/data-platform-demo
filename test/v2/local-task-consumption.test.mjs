@@ -8,6 +8,8 @@ import {createV2Server,PROJECT} from '../../src/v2/server.mjs';
 import {MetadataStore} from '../../src/v2/store.mjs';
 import {BusinessQueryStore,DataServiceManager} from '../../src/v2/data-services.mjs';
 import {localTaskConsumption} from '../../src/v2/local-task-consumption.mjs';
+import {privateTaskConsumption} from '../../src/v2/private-task-consumption.mjs';
+import {readSyncSqlPaginationCoverage} from '../../src/v2/sync-sql-service-source.mjs';
 import {seedLocalServiceSource} from './fixtures/local-service-sources.mjs';
 
 test('local task consumption joins existing source and revoked-app receipts without executing or writing',async t=>{
@@ -34,6 +36,7 @@ test('local task consumption joins existing source and revoked-app receipts with
  assert.ok(entry.sourceVersions.every(v=>v.sourceKind==='AGENT'&&v.releaseId===release.id&&v.sourceReleaseRunId===run.id&&v.packageDigest===bundle.digest&&/^[a-f0-9]{64}$/.test(v.configHash)));
  assert.deepEqual([...new Set(entry.sourceVersions.flatMap(v=>v.fields))].sort(),['available_cash','client_id','holding_market_value','security_count','total_assets']);
  const unknown=await read({releaseId:randomUUID()});assert.equal(unknown.status,'PENDING');assert.equal(unknown.services.length,0);
+ await assert.rejects(read({releaseId:release.id,batchId:run.id}),{status:422,code:"LOCAL_BATCH_SCOPE_UNSUPPORTED"});
  await assert.rejects(read({agent:{...agent,status:'FAILED'}}),{status:409});
  for(const sourceKind of ['MANUAL','UNKNOWN'])await assert.rejects(read({agent:{...agent,sourceKind}}),{status:409});
  store.update('service_app',issued.application.id,PROJECT,{scope:'PRIVATE_CLOUD_TEST'});assert.equal((await read()).status,'PENDING');
@@ -52,4 +55,39 @@ test('local task consumption joins existing source and revoked-app receipts with
  for(const suffix of ['&release_id=invalid','&release_id='+release.id+'&release_id='+release.id,'&package_digest='+bundle.digest])assert.equal((await fetch(path+suffix)).status,422);
  assert.equal((await fetch(path+'&extra=not-supported')).status,422);
  assert.equal(computations,0);assert.equal(store.list('service_call',PROJECT).length,count);
+ const original=store.get('data_service_version',manager.detail(x.id).publishedVersion.id,PROJECT);
+ const next=manager.createXapiVersion(x.id,{steps:original.steps,rateLimitPerMinute:45});
+ await manager.test(x.id,{});manager.publish(x.id);
+ const history=await privateTaskConsumption({store,project:PROJECT,taskId:agent.id,packageDigest:bundle.digest,releaseId:release.id,
+   batchId:run.id,includeRetiredBatchVersions:true,scope:'LOCAL_TEST_ONLY',services:manager.list(),
+   ownedService:id=>manager.detail(id),getVersion:id=>store.get('data_service_version',id,PROJECT),
+   source:id=>store.get('release_run',id,PROJECT),getRelease:id=>id===release.id?{...release,sourceAgentTaskId:agent.id}:undefined,
+   application:id=>manager.application(id),calls:id=>manager.listCalls(id),
+   recheckCall:(id,callId,options)=>manager.recheckCall(id,callId,options)});
+ const variants=history.services.filter(item=>item.serviceId===x.id);
+ assert.deepEqual(variants.map(item=>[item.versionId,item.versionStatus,item.status]),
+   [[next.id,'PUBLISHED','PENDING'],[original.id,'RETIRED','VERIFIED']]);
+ assert.equal(variants[1].call.applicationStatus,'REVOKED');
+ assert.equal(store.list('service_call',PROJECT).length,count);
+});
+
+test('frozen pagination requires distinct verified pages from one application and one version',async()=>{
+ const entry={serviceId:'service',versionId:'version',configHash:'a'.repeat(64),status:'VERIFIED',sourceRunIds:['batch']};
+ const saved=(id,page,applicationId='a',patch={})=>({id,serviceId:entry.serviceId,serviceVersionId:entry.versionId,
+   outcome:'SUCCEEDED',statusCode:200,applicationId,rowCount:1,parameters:{page,pageSize:1},...patch});
+ const read=calls=>readSyncSqlPaginationCoverage({entry,calls,expectedRows:2,
+   application:()=>({scope:'LOCAL_TEST_ONLY',status:'REVOKED',versionGrants:{service:'version'}}),
+   recheckCall:async(serviceId,callId,{pinnedVersionId})=>{
+     assert.equal(serviceId,'service');assert.equal(pinnedVersionId,'version');
+     return {callId,versionId:entry.versionId,configHash:entry.configHash,rowCount:1,verified:callId!=='bad',independentResultVerified:true};
+   }});
+ const first=saved('first',1),second=saved('second',2);
+ for (const other of [saved('other-app',2,'b'),saved('wrong-version',2,'a',{serviceVersionId:'new'}),
+   saved('filtered',2,'a',{parameters:{page:2,pageSize:1,clientId:'CLIENT-001'}}),saved('bad',2)]) {
+   const partial=await read([first,saved('duplicate',1),other]);
+   assert.equal(partial.status,'INCOMPLETE');
+   assert.equal(partial.verifiedPages.length,1);
+ }
+ assert.deepEqual(await read([saved('bad',2),second,saved('duplicate',1),first]),
+   {status:'COMPLETE',applicationId:'a',pageSize:1,totalPages:2,verifiedPages:[1,2]});
 });

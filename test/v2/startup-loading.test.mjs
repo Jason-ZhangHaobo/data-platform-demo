@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { publicContext } from '../../src/v2/context.mjs';
 import { loadModuleStartup, moduleStartupPaths, startupReadCurrent } from '../../web/src/startup-loading.ts';
 import { loadStartupCore } from '../../web/src/startup-core.ts';
 import { workbenchSessionScope } from '../../web/src/workbench-session-boundary.ts';
@@ -21,6 +23,41 @@ test('early Agent samples retain only the public picker fields and skip original
   assert.deepEqual(publicAgentSamples([context,{...context,classification:'PRIVATE'},{...context,capabilities:{scope:'LOCAL_ONLY'}},
     {...context,capabilities:{agentDevelopment:false}},{...context,id:'../wrong'}]),[sample]);
   assert.deepEqual(publicAgentSamples({items:[context]}),[]);
+});
+
+test('the HTML opening script switches canonical public fixtures without fetching or enabling writes',()=>{
+  const html=readFileSync(new URL('../../web/agent-opening.html',import.meta.url),'utf8');
+  const script=html.match(/<script>\s*([\s\S]+?)<\/script>/)?.[1];
+  assert.ok(script);
+  assert.match(html,/<button type="button" disabled>新建任务<\/button>/);
+  const samples=publicAgentSamples(['holdings-t1','stock-cash-t1'].map(publicContext));
+  const run=(href,privatePreview=false)=>{
+    const [date,definition]=[{},{}], options=[];
+    let onChange, displayed=false;
+    const picker={selectedIndex:0,add:option=>options.push(option),addEventListener:(event,listener)=>{
+      assert.equal(event,'change');onChange=listener;
+    }};
+    const fragment={querySelector:()=>picker,querySelectorAll:()=>[date,definition]};
+    const nodes={
+      'agent-opening-data':{textContent:JSON.stringify(samples)},
+      'agent-opening-template':{content:{cloneNode:()=>fragment}},
+      root:{append:value=>{assert.equal(value,fragment);displayed=true;}},
+    };
+    runInNewContext(script,{URL,location:{href},Option:function(name,id){this.name=name;this.id=id;},
+      document:{querySelector:()=>privatePreview,getElementById:id=>nodes[id]}});
+    return {displayed,date,definition,picker,options,onChange};
+  };
+  const base='https://demo.example/v2/';
+  const first=run(base+'?module=agent-center');
+  assert.equal(first.displayed,true);
+  assert.deepEqual(first.options.map(option=>option.id),['holdings-t1','stock-cash-t1']);
+  assert.equal(first.definition.textContent,samples[0].definition);
+  first.picker.selectedIndex=1;
+  first.onChange();
+  assert.equal(first.definition.textContent,samples[1].definition);
+  for (const suffix of ['?module=services','?module=agent-center&task=original','?module=agent-center&module=agent-center','#agent-delivery'])
+    assert.equal(run(base+suffix).displayed,false);
+  assert.equal(run(base,true).displayed,false);
 });
 
 test('identity and status become usable while historical inputs are still pending or later fail',async()=>{
@@ -178,12 +215,14 @@ test('actual app wires guarded loading, explicit retry and no-context write gate
   assert.match(source,/loadStartupCore<Status, AuthSession>/);assert.match(source,/loadModuleStartup<Context, Run, Revision, AgentTask, AgentDeliveryTask>/);
   assert.match(source,/ready=\{coreReady && contextsReady && agentDevelopmentReadiness\(status\).ready\}/);
   assert.match(source,/\) && startupWritable/);assert.match(source,/重新读取服务与身份/);assert.match(source,/重新读取当前模块/);
-  assert.match(source,/!coreSnapshotKnown \?/);assert.match(source,/<Suspense key=\{viewEpoch\}/);assert.match(source,/workbenchSessionScope\(nextStatus, nextSession\)/);
+  assert.match(source,/!coreSnapshotKnown \|\|/);assert.match(source,/<Suspense key=\{viewEpoch\}/);assert.match(source,/workbenchSessionScope\(nextStatus, nextSession\)/);
   assert.match(source,/const currentView = \(\) => active && startupReadCurrent/);
   assert.ok((source.match(/if \(!currentView\(\)\) return/g)||[]).length>=6);
   assert.match(source,/active = false; clearInterval\(interval\)/);
   assert.match(source,/core === 1 && !openingContexts\.current\.consumed \? openingContexts\.current\.request/);
-  assert.match(source,/<AgentStartupPreview read=\{readOpeningContexts\}/);
+  assert.match(source,/<opening\.Preview selected=\{openingContextId\}/);
+  assert.match(source,/fallback=\{startupPreview \?\?/);
+  assert.match(source,/initialContextId=\{openingContextId\}/);
   assert.match(source,/void readOpeningContexts\(\)\.catch/);
   assert.match(source,/!privatePreview && inputModule === "agent-center" && agentWorkspaceMode === "development"/);
 });

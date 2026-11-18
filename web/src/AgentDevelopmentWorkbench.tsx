@@ -25,8 +25,8 @@ import {contextDerivationFromLocation,contextDerivationLocation,clearContextDeri
 import type {ContextDerivationDraft,VerifiedDerivationSource,DerivedFrom} from "./agent-context-derivation";
 import {ValidationDetails,ValidationResultScope} from "./ValidationDetails";
 import {SyncOutputSchemaDetails} from "./SyncOutputSchemaDetails";
-import {checkedSyncSqlOutputSchema} from "../../src/v2/sync-sql-output-schema-client.mjs";
-import type {SyncSqlOutputSchema} from "../../src/v2/sync-sql-output-schema-client.mjs";
+import {checkedSyncSqlOutputSchema,readSyncedPositions} from "../../src/v2/sync-sql-output-schema-client.mjs";
+import type {SyncSqlOutputSchema,SyncedPositionsOffer} from "../../src/v2/sync-sql-output-schema-client.mjs";
 import type {ValidationDetailsReport} from "./validation-details";
 import type {ServiceSourceBinding} from "./service-source-binding";
 import {validServiceSourceBinding,sourceBindingEnvironmentMatches,agentReturnSourceMatches,serviceSourcesPath,currentAgentTaskLocation} from "./service-source-binding";
@@ -47,12 +47,18 @@ const OpsPublicationPanel=lazy(async()=>({default:(await import('./OpsPublicatio
 type Context = { id: string; name: string; definition: string; businessDate?:string; validationFamily?:ValidationFamily; capabilities?:{delivery?:boolean;agentDevelopment?:boolean;fundPreparation?:boolean};outputContract?:{id:string;fields:{name:string;label:string}[]}; tables: { name: string; columns: [string, string][] }[] };
 type SyncSelection = {targetTable:"raw_positions";runId:string;targetHash:string};
 type SyncInput = SyncSelection & {metadataVersionId:string;sourceRevisionId:string;rowCount:number;snapshotId:string;snapshotHash:string};
-type SyncOffer = {selection:SyncSelection;metadataVersionId:string;rowCount:number;contextId:"holdings-t1"};
-type Task = { requestBound?:true; syncInput?: SyncInput; id: string; version: number; status: string; stage?: string; requirements?:unknown;clarification?:import('../../src/v2/sql-clarification-client.mjs').SqlClarification;humanClarified?:boolean;directAutonomousEligible?:boolean;clarificationOriginTaskId?:string;executionMode?: string; mode?:string;language?:string;fundPreparation?:FundExecutionBinding;sourceKind?:string;sourceAttribution?:unknown;manualContinuation?:import('../../src/v2/manual-continuation-binding.mjs').ManualContinuationBinding;assistedContinuation?:import('../../src/v2/assisted-continuation-binding.mjs').AssistedContinuationBinding;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean}; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
+type DevelopmentDriver = { attempt: number; modelTrigger: string; spark?: { runId: string; submissionTriggers: string[] } };
+type Task = { requestBound?:true; syncInput?: SyncInput; id: string; version: number; status: string; stage?: string; requirements?:unknown;clarification?:import('../../src/v2/sql-clarification-client.mjs').SqlClarification;humanClarified?:boolean;directAutonomousEligible?:boolean;clarificationOriginTaskId?:string;executionMode?: string; mode?:string;language?:string;fundPreparation?:FundExecutionBinding;sourceKind?:string;sourceAttribution?:unknown;manualContinuation?:import('../../src/v2/manual-continuation-binding.mjs').ManualContinuationBinding;assistedContinuation?:import('../../src/v2/assisted-continuation-binding.mjs').AssistedContinuationBinding;derivedFrom?:DerivedFrom; message: string; contextId: string; sql?: string; initialSql?: string; sourceRunId?: string; explanation?: string; error?: string; revisionId?: string; runId?: string; usedTokens?: number; createdAt?: string; recovery?: { modelLeaseExpiresAt?: string }; background?: {status:string;state?:string;delivery?:string;expiresAt:number;consumedEvents:number;maxEvents:number;code?:string;scopeBlocked?:boolean;prepareFiles?:boolean;preparedDelivery?:{deliveryId:string;preparationTrigger?:string}}; developmentDrivers?: DevelopmentDriver[]; attempts: { attempt: number; status: string; revisionId?: string; runId?: string; sourceRunId?: string; model?: string; diagnostic?: {code:string;phase:string;httpStatus?:number;elapsedMs:number;requestMayHaveBeenSent:boolean} }[] };
 type Run = { syncInput?: SyncInput; id: string; status: string; agentTaskId?:string; contextId?:string; createdAt?: string; validationContractId?: string; validationDetails?:ValidationDetailsReport; syncOutputSchema?:unknown; revisionId?: string; revisionHash?: string; engine?: string; engineVersion?: string; mainSqlExecuted?:boolean;columnLineage?:unknown;testDouble?:boolean;sourceKind?:string;sourceAttribution?:unknown; rows?: Record<string, unknown>[]; columns?: { name: string; type: string }[]; error?: string; log?: string; stage?: string; validation?: { passed: boolean; contractId?:string; issues?: string[]; regressions?: { contextId: string; name: string; passed: boolean }[] } };
 type Api = <T>(path: string, body?: unknown, options?: { idempotencyKey?: string }) => Promise<T>;
 type SavedRevision = {syncInput?:SyncInput;id:string;sql:string;hash?:string;contextId:string;source?:string;manualProvenance?:{originAgentTaskId?:string;kind:string;agentIndependentE2E:boolean}};
 const terminal = (s?: string) => Boolean(s && ["SUCCEEDED", "FAILED", "CANCELLED", "VALIDATION_FAILED","INTERRUPTED"].includes(s));
+const driverLabels: Record<string, string> = {
+  SIGNED_BACKGROUND_EVENT: "签名后台事件",
+  OWNER_ADVANCE: "任务创建者发起推进",
+  PRIVATE_TICK: "私有调度调用",
+};
+const driverLabel = (trigger: string) => Object.hasOwn(driverLabels,trigger) ? driverLabels[trigger] : "未记录";
 const stageText: Record<string, string> = { READY_FOR_MODEL: "准备生成 / 修正", MODEL_IN_FLIGHT: "正在编写代码", MODEL_OUTCOME_UNKNOWN: "模型结果待确认", MODEL_NOT_SENT:"模型请求未发送，等待修复后重试", READY_FOR_RUN: "代码已保存，待执行", WAITING_FOR_RUN: "Spark 执行与校验中", CANCELLING: "正在停止", SUCCEEDED: "SQL 验证通过", FAILED: "需要处理", CANCELLED: "已停止", QUEUED: "等待执行", RUNNING: "执行中", INTERRUPTED: "执行中断，记录保留", VALIDATION_FAILED: "业务断言未通过", NO_SQL_CHANGE:"模型未修改代码（未重复执行）" };
 Object.assign(stageText,{REQUIREMENT_CLARIFICATION_REQUIRED:'等待需求澄清（未执行）',REQUIREMENT_EVIDENCE_INVALID:'需求理解未确认（未执行）'});
 stageText.CLARIFICATION_SOURCE_CHANGED='澄清依据已变化，原记录保留';
@@ -83,7 +89,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const sourceReturnActive=Boolean(expectedSourceBinding||expectedManualSource||expectedSourceError),readOnly=requestedReadOnly||sourceReturnActive;
   const [returnSourceError,setReturnSourceError]=useState("");
   const [tasks, setTasks] = useState<Task[]>([]), [task, setTask] = useState<Task>(), [contextId, setContextId] = useState(initialContextId ?? "holdings-t1");
-  const [syncOffer,setSyncOffer]=useState<SyncOffer>(),[syncOfferState,setSyncOfferState]=useState("");
+  const [syncOffer,setSyncOffer]=useState<SyncedPositionsOffer>(),[syncOfferState,setSyncOfferState]=useState("");
   const [syncRequested,setSyncRequested]=useState(false);
   const [message, setMessage] = useState(""), [draft, setDraft] = useState(""), [baseline, setBaseline] = useState("");
   const [run, setRunValue] = useState<Run>(), [tab, setTab] = useState("结果"), [diff, setDiff] = useState(false);
@@ -108,6 +114,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const revisionRequest = useRef<{key:string;sql:string;contextId:string;originAgentTaskId?:string} | undefined>(undefined);
   const confirmedManualRevision = useRef<SavedRevision | undefined>(undefined);
   const [backgroundConsent,setBackgroundConsent]=useState(true);
+  const [prepareFilesTask,setPrepareFilesTask]=useState<string>();
   const pendingBackground = useRef(new Set<string>());
   const [historyState,setHistoryState]=useState<"loading"|"loaded"|"deferred"|"error">("loading"),[historyError,setHistoryError]=useState("");
   const historyFlight=useRef<Promise<void>|undefined>(undefined),startupStarted=useRef(false);
@@ -139,6 +146,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     try {
       syncSchema = checkedSyncSqlOutputSchema(run.syncOutputSchema,{
         runId:run.id, revisionId:run.revisionId, revisionHash:run.revisionHash, snapshotHash:frozenInput.snapshotHash,
+        syncRunId:frozenInput.runId, metadataVersionId:frozenInput.metadataVersionId, sourceRevisionId:frozenInput.sourceRevisionId,
       });
     } catch { /* Keep the current SQL and results if the optional details do not match. */ }
   }
@@ -158,7 +166,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     setSyncRequested(true);
     setSyncOffer(undefined);setSyncOfferState("正在核对最近提交的持仓批次…");
     try{
-      const offer=await api<SyncOffer>("/development/synced-positions");
+      const offer=await readSyncedPositions({request:path=>api<unknown>(path)});
       if(alive.current&&epoch.current===token){setSyncOffer(offer);setSyncOfferState("");}
     }catch(cause){
       if(alive.current&&epoch.current===token)setSyncOfferState((cause as Error).message);
@@ -175,6 +183,9 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const resumeInput = task ? {task,canWrite,working,dirty,
     pendingResult:manualUnconfirmed||Boolean(pendingSaveKey)||Boolean(pendingAgentKey)||backgroundUnconfirmed,retryConsent} : undefined;
   const resumeReason = resumeInput ? agentResumeDecision(resumeInput).reason : undefined;
+  const filesPending = task?.status==="SUCCEEDED" && task.background?.prepareFiles===true && !task.background.preparedDelivery;
+  const backgroundResumeInput = resumeInput && {...resumeInput,filesOnly:filesPending};
+  const backgroundResumeReason = backgroundResumeInput ? agentResumeDecision(backgroundResumeInput).reason : undefined;
   const backgroundAction = task && backgroundAvailable && canWrite && agentBackgroundAction(task);
   const backgroundDisabled = Boolean(resumeReason || !ready || runPending);
   const backgroundLabel = task?.background && agentBackgroundLabel(task.background);
@@ -374,7 +385,9 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     pendingBackground.current.add(id);
     setBusy(true);setError("");setNotice("正在提交并核对原任务的后台委托…");
     let failure: string | undefined;
-    try { await api(`/agent/tasks/${id}/background`, {expectedVersion:version}); }
+    const prepareFiles=backgroundAction==="ENABLE"&&prepareFilesTask===id;
+    setPrepareFilesTask(undefined);
+    try { await api(`/agent/tasks/${id}/background`, {expectedVersion:version,...(prepareFiles?{prepareFiles:true}:{})}); }
     catch (cause) { if (cause instanceof Error) failure = cause.message; }
     if (alive.current && epoch.current === token && selectedId.current === id) await selectTask(id,false,failure);
   }
@@ -730,15 +743,18 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       </aside>
       <section id="agent-requirement" className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
         <div className="agent-dev-conversation">
-          {frozenInput && <div className="agent-dev-notice" role="status"><strong>原同步输入已冻结</strong><p>批次 {frozenInput.runId.slice(0,8)} · 元数据 {frozenInput.metadataVersionId.slice(0,8)} · {frozenInput.rowCount} 行 · 快照 {frozenInput.snapshotHash.slice(0,12)}。账户与现金使用登记样例。</p></div>}
+          {frozenInput && <div className="agent-dev-notice agent-dev-sync-input" role="status"><strong>原同步输入已冻结</strong><p>批次 {frozenInput.runId.slice(0,8)} · 元数据 {frozenInput.metadataVersionId.slice(0,8)} · {frozenInput.rowCount} 行 · 快照 {frozenInput.snapshotHash.slice(0,12)}。账户与现金使用登记样例。</p></div>}
           <details className="agent-dev-context" open={!task}><summary>本次数据与业务口径 <ChevronDown size={14} /></summary>
             {derivationActive && <p>目标口径在上方变更草稿中选择；下方展示其已登记定义与数据结构。</p>}
             {context?.validationFamily&&<small>已登记口径 · {context.validationFamily.name} · V{context.validationFamily.definitionVersion}</small>}
-            {maySelectSync && <div className="agent-dev-notice">
+            {maySelectSync && <div className="agent-dev-notice agent-dev-sync-input">
               <strong>{selectedSync ? "已选择同步持仓" : syncRequested ? "同步持仓待确认" : "持仓输入 · 登记样例"}</strong>
               {selectedSync && <p>同步批次 {selectedSync.runId.slice(0,8)} · 元数据 {syncOffer?.metadataVersionId.slice(0,8)} · {syncOffer?.rowCount} 行。账户与现金使用登记样例。</p>}
-              <button type="button" className="button" disabled={!canWrite||working||syncOfferState.startsWith("正在")} onClick={()=>void selectLatestSync()}>{selectedSync?"核对最新同步批次":"使用已核对的同步持仓"}</button>
-              {syncRequested && <button type="button" className="button" disabled={working||Boolean(pendingAgentKey)||syncOfferState.startsWith("正在")} onClick={useRegisteredPositions}>改用登记样例</button>}
+              {selectedSync && syncOffer?.verifiedCurrency==="CNY" && <p>币种逐行核验为 CNY。SQL 使用七个已登记的持仓字段。</p>}
+              <div className="agent-dev-sync-input-actions">
+                <button type="button" className="button" disabled={!canWrite||working||syncOfferState.startsWith("正在")} onClick={()=>void selectLatestSync()}>{selectedSync?"核对最新同步批次":"使用已核对的同步持仓"}</button>
+                {syncRequested && <button type="button" className="button" disabled={working||Boolean(pendingAgentKey)||syncOfferState.startsWith("正在")} onClick={useRegisteredPositions}>改用登记样例</button>}
+              </div>
               {syncOfferState && <p role="status">{syncOfferState}</p>}
             </div>}
             <p>{context?.definition ?? "正在加载数据上下文…"}</p><div className="agent-dev-tables">{context?.tables.map(t => <details key={t.name}><summary>{t.name} · {t.columns.length}字段</summary><dl>{t.columns.map(([name,type]) => <div key={name}><dt>{name}</dt><dd>{type}</dd></div>)}</dl></details>)}</div>
@@ -757,16 +773,25 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
               {task.sourceRunId && <button className="button" disabled={working} onClick={()=>void readAttemptRun(task.sourceRunId!,undefined,"这里是本次修正引用的原始失败批次。",true)}>查看修正依据 · {task.sourceRunId.slice(0,8)}</button>}
               <ol className="agent-dev-attempts">{task.attempts.map(a => <li key={a.attempt}><span>第{a.attempt}次</span><strong>{a.status === "FAILED" ? "执行失败（记录保留）" : a.status === "GENERATED" ? "代码已生成" : stageText[a.status] ?? a.status}</strong>{a.model && <small>{task.mode==="SYNTHETIC_MODEL"?"模型替身":`模型：${a.model}`}</small>}{a.status === "NO_SQL_CHANGE" ? a.sourceRunId && <button disabled={working} onClick={()=>void readAttemptRun(a.sourceRunId!,undefined,"本次模型未修改代码，正在查看原失败批次。",true,"校验")}>查看原失败批次 · {a.sourceRunId.slice(0,8)}</button> : a.runId && <button disabled={working} onClick={()=>void readAttemptRun(a.runId!,a.revisionId,"正在查看这次尝试的执行记录。")}>查看第{a.attempt}次执行 · {a.runId.slice(0,8)}</button>}</li>)}</ol>
               <small>版本 {task.version} · {task.mode==="SYNTHETIC_MODEL"?"测试用量":"预算占用"} {task.usedTokens ?? 0} Token{task.mode==="SYNTHETIC_MODEL"?"":"（含未发送或未知结果的保留额度）"} · 结论仅对应当前代码版本</small>
+              {task.developmentDrivers?.map(step => <p key={step.attempt}><small>
+                第 {step.attempt} 次 · 模型触发 {driverLabel(step.modelTrigger)}
+                {step.spark && <> · Spark 提交尝试 {step.spark.submissionTriggers.map(driverLabel).join("、")}</>}
+              </small></p>)}
               {task.background&&<p role="status">云后台：{backgroundLabel} · 已处理 {task.background.consumedEvents}/{task.background.maxEvents} 个事件 · 截止 {new Date(task.background.expiresAt).toLocaleTimeString("zh-CN",{timeZone:"Asia/Shanghai"})}。{backgroundLabel==="已委托"?"可以关页，稍后返回同一任务查看结果。":""}{task.background.code&&` ${task.background.code}`}</p>}
             </div>
             <AgentModelRecovery stage={task.stage} consent={retryConsent} disabled={!canWrite||working} onConsent={setRetryConsent} />
             <div className="agent-dev-task-actions"><button className="button" disabled={busy} onClick={() => void selectTask(task.id, false)}><RefreshCw size={14} />{backgroundUnconfirmed ? "核对原后台委托" : "刷新 / 恢复"}</button>
               {backgroundAction&&<button className="button primary" disabled={backgroundDisabled} onClick={()=>void delegateSavedTask()}>{backgroundAction==="REDRIVE"?"重新投递原唤醒":"委托后台继续"}</button>}
               {task.background?.status==="ACTIVE"&&<button className="button" disabled={!canWrite||busy||backgroundUnconfirmed} onClick={async()=>{epoch.current++;setAutomatic(false);setBusy(true);try{await api(`/agent/tasks/${task.id}/background/cancel`,{});setNotice("已停止后续后台推进；已提交步骤不会重复运行，待当前步骤确认后可人工接管。");await selectTask(task.id,false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}><Square size={13}/>停止后台自动推进</button>}
-              {task.background&&(["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(task.background.status)||task.background.scopeBlocked||Date.now()>=task.background.expiresAt)&&!agentTaskFinished(task.status)&&<button className="button primary" title={resumeReason} disabled={Boolean(resumeReason)} onClick={()=>resumeInput&&submitAgentResume(resumeInput,{explain:setNotice,submit:async confirmModelRetry=>{setBusy(true);try{await api(`/agent/tasks/${task.id}/background/resume`,{expectedVersion:task.version,confirmModelRetry});setRetryConsent(false);setNotice("已审阅并在当前窗口内恢复原任务云后台，最多15分钟；原次数与预算不清零，不自动发布。");await selectTask(task.id,false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}})}>{modelNotSent?"修复后恢复后台":"审阅并恢复云后台"}</button>}
+              {task.background&&(["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(task.background.status)||task.background.scopeBlocked||Date.now()>=task.background.expiresAt)&&(!agentTaskFinished(task.status)||filesPending)&&<button className="button primary" title={backgroundResumeReason} disabled={Boolean(backgroundResumeReason)} onClick={()=>backgroundResumeInput&&submitAgentResume(backgroundResumeInput,{explain:setNotice,submit:async confirmModelRetry=>{setBusy(true);try{await api(`/agent/tasks/${task.id}/background/resume`,{expectedVersion:task.version,confirmModelRetry});setRetryConsent(false);setNotice(filesPending?"已续接原交付包准备，完成后可回查文件。":"已审阅并在当前窗口内恢复原任务云后台，最多15分钟；原次数与预算不清零，不自动发布。");await selectTask(task.id,false);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}})}>{filesPending?"恢复原交付包准备":modelNotSent?"修复后恢复后台":"审阅并恢复云后台"}</button>}
               {!agentTaskFinished(task.status) && <button className={backgroundAction ? "button" : "button primary"} title={resumeReason} disabled={Boolean(resumeReason)} onClick={()=>resumeInput&&submitAgentResume(resumeInput,{explain:setNotice,submit:confirmModelRetry=>drive(task,confirmModelRetry,true)})}><Play size={14} />{modelNotSent ? "修复后重试原任务" : unknown ? "确认重试" : task.background?.status==="ACTIVE"?"查看后台进度":"继续任务"}</button>}
               {!agentTaskFinished(task.status) && <button className="button" disabled={!canWrite || busy || backgroundUnconfirmed} onClick={() => void stop()}><Square size={13} />停止</button>}
             </div>
+            {backgroundAction==="ENABLE"&&!backgroundDisabled&&<label className="agent-dev-consent">
+              <input type="checkbox" checked={prepareFilesTask===task.id} onChange={e=>setPrepareFilesTask(e.target.checked?task.id:undefined)}/>
+              核验成功后准备同版交付文件，演练与发布单独确认
+            </label>}
+            {task.background?.preparedDelivery&&<p role="status">交付包可查看 · {task.background.preparedDelivery.preparationTrigger==="SIGNED_BACKGROUND_EVENT"?"签名后台事件":"已存在的原交付"} · {task.background.preparedDelivery.deliveryId.slice(0,8)}</p>}
             {backgroundUnconfirmed ? <p className="agent-dev-notice" role="status">{busy?"正在核对原任务的后台委托…":"后台委托结果待确认。请先核对原任务状态。"}</p> :
               !agentTaskFinished(task.status)&&resumeReason ? <p className="agent-dev-notice" role="status">{resumeReason}</p> :
               backgroundAction==="ENABLE"&&<p><small>沿当前已保存版本推进，最多 15 分钟、20 个事件。发布仍须审阅。</small></p>}
@@ -780,15 +805,15 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       <section id="agent-code" className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : baselineRevisionId ? `版本 ${baselineRevisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>
         <div className="agent-dev-editor"><Suspense fallback={<div className="agent-dev-empty">正在加载代码编辑器…</div>}><SqlEditor value={draft} original={codeOriginal} diff={diff} onChange={setDraft} readOnly={derivationActive||readOnly||!scopeEditable||Boolean(publicationTarget)||working||fundTask} /></Suspense></div>
         <div className="agent-dev-code-actions"><small><Code2 size={14} />{fundTask?"此处展示与准备回执绑定的生成代码":derivationActive?"源SQL已冻结；新任务确认后才按目标口径生成新版本":readOnly ? "代码只读；编辑与执行尚未开放" : !scopeEditable ? "其他任务只读；请查看指定任务续接" : automatic ? "Agent 处理中，可随时停止后接管" : "可直接编辑；修改后需重新验证"}</small>{runPending && !automatic && <button className="button" disabled={!canWrite || busy} onClick={async () => { if (!run) return; setBusy(true); try { setRun(await api<Run>(`/runs/${run.id}/cancel`, {})); setNotice("取消标记已保存；迟到结果不会覆盖已取消状态。"); } catch(e) { setError((e as Error).message); } finally { setBusy(false); } }}><Square size={13} />停止运行</button>}{!fundTask&&<button className="button" disabled={derivationActive||!canWrite || working || runPending || manualUnconfirmed || Boolean(pendingSaveKey) || Boolean(pendingAgentKey) || (maySelectSync && syncRequested) || !draft.trim()} onClick={() => void runDraft()}><Play size={14} />保存并运行我的代码</button>}</div>
-        <div id="agent-development-result" className="agent-dev-result-tabs" role="tablist" aria-label="开发执行反馈">{["结果","字段来源","运行对照","校验","日志"].map(name => <button key={name} role="tab" disabled={Boolean(frozenInput && name==="运行对照")} title={frozenInput && name==="运行对照" ? "冻结输入的跨批次对照待接入" : undefined} aria-selected={tab === name} onClick={() => setTab(name)}>{name}</button>)}<span>{runRead.state==="LOADING"?"正在读取原运行记录":runRead.state==="ERROR"?"运行结果未确认":run ? `${displayedRunStatus} · ${run.id.slice(0,8)}` : "尚未执行"}</span></div>
+        <div id="agent-development-result" className="agent-dev-result-tabs" role="tablist" aria-label="开发执行反馈">{["结果","字段来源","运行对照","校验","日志"].map(name => <button key={name} role="tab" aria-selected={tab === name} onClick={() => setTab(name)}>{name}</button>)}<span>{runRead.state==="LOADING"?"正在读取原运行记录":runRead.state==="ERROR"?"运行结果未确认":run ? `${displayedRunStatus} · ${run.id.slice(0,8)}` : "尚未执行"}</span></div>
         <div className={`agent-dev-results ${tab==='运行对照'?'agent-dev-results-compare':''}`}>{!run ? runRead.state!=="IDLE"?<div className="agent-dev-empty" role={runRead.state==="ERROR"?"alert":"status"}>{runRead.state==="LOADING"?"正在核对原任务的运行记录；不重新执行计算。":<>{runRead.message}<p>已读代码与草稿保留，不显示其他任务的结果。</p><button className="button" disabled={working||!task} onClick={()=>task&&void selectTask(task.id,false)}>重新读取原任务与运行</button></>}</div>:<div className="agent-dev-empty">执行后的真实结果、校验与日志会显示在这里。<br />不会预先填入报表结果。</div> : <>
           {run.error && <p className="agent-dev-error-text" role="alert">{run.error}</p>}
-          {syncSchema && <SyncOutputSchemaDetails schema={syncSchema} dirty={dirty}/>}
+          {syncSchema && tab!=="运行对照" && <SyncOutputSchemaDetails schema={syncSchema} dirty={dirty}/>}
           {hasSyncSchema && !syncSchema && <p role="status">输出结构详情未能与原运行对应。当前代码和结果已保留。</p>}
           {!frozenInput&&tab!=='运行对照'&&<AgentRepairAction input={repairInput} onSubmit={request=>send(request.message,request.sourceRunId)} onExplain={setNotice} />}
           {tab === "结果" && (resultFields.length ? <><ValidationResultScope contextId={run.contextId} contextName={availableContexts.find(item=>item.id===run.contextId)?.name} runId={run.id} revisionId={run.revisionId} dirty={dirty} /><div className="agent-dev-table-scroll"><table><thead><tr>{resultFields.map(k => <th key={k} title={k}>{resultLabel(k)}</th>)}</tr></thead><tbody>{run.rows?.map((row,i) => <tr key={i}>{resultFields.map(k => <td key={k}>{String(row[k] ?? "—")}</td>)}</tr>)}</tbody></table></div><p>{run.engine} {run.engineVersion} · {run.rows?.length} 行 · 结果绑定版本 {run.revisionId?.slice(0,8)}</p></> : <p className="agent-dev-empty">{terminal(run.status) ? "本次未产生可展示的数据行。请查看校验和日志。" : "Spark 正在执行，结果完成后显示。"}</p>)}
           {tab === "字段来源" && <Suspense fallback={<p role="status">正在加载字段来源视图…</p>}><RunColumnLineagePanel key={run.id} run={run} revisionId={baselineRevisionId} sql={baseline} context={context} dirty={dirty}/></Suspense>}
-          {tab === "运行对照" && <Suspense fallback={<p role="status">正在加载已保存运行对照…</p>}><RunComparisonPanel key={run.id} api={api} runId={run.id} revisionHash={run.revisionHash} contextId={run.contextId??contextId} runStatus={run.status} dirty={dirty} repairReason={failedRunRepairAction(repairInput).request?undefined:failedRunRepairAction(repairInput).reason} onRepair={basis=>send('参考所选成功基线的已核验差异，修正当前失败 SQL；以实际运行与独立断言验证，不继承发布批准。',basis.sourceRunId,basis)}/></Suspense>}
+          {tab === "运行对照" && <Suspense fallback={<p role="status">正在加载已保存运行对照…</p>}><RunComparisonPanel key={run.id} api={api} runId={run.id} revisionHash={run.revisionHash} contextId={run.contextId??contextId} snapshotHash={frozenInput?.snapshotHash} runStatus={run.status} dirty={dirty} repairReason={failedRunRepairAction(repairInput).request?undefined:failedRunRepairAction(repairInput).reason} onRepair={frozenInput ? undefined : basis=>send('参考所选成功基线的已核验差异，修正当前失败 SQL；以实际运行与独立断言验证，不继承发布批准。',basis.sourceRunId,basis)}/></Suspense>}
           {tab === "校验" && <><h4>{run.validation?.passed ? "独立业务断言通过" : "校验尚未通过"}</h4>{run.validation?.issues?.map((x,i) => <p key={i}>{x}</p>)}{run.validation?.regressions?.map(r => <div className="agent-dev-check" key={r.contextId}><span>{r.name ?? r.contextId}</span><strong>{r.passed ? "通过" : "未通过"}</strong></div>)}{!frozenInput&&!context?.outputContract&&<ValidationDetails details={run.validationDetails} expectedSource={{runId:run.id,revisionId:baselineRevisionId,contextId,revisionHash:run.revisionHash,contractId:run.validationContractId}} dirty={dirty} />}{context?.outputContract&&<p className="agent-dev-notice">{fundTask?"按组合、交易日、资产类别核对敞口金额与六位占比，查看每次运行可复核原结果。":"分布按客户/交易日/分类复合键与六位占比独立核验；具体失败见各场景摘要，不套用旧客户级差异表。"}</p>}</>}
           {tab === "日志" && <pre>{developmentRunLog(run)}</pre>}
         </>}</div>
@@ -797,7 +822,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     {task?.sourceKind==='MANUAL'&&(task.executionMode==='DURABLE_SQL_AGENT_V1'&&task.status==='SUCCEEDED'&&run?.id===task.runId&&run?.agentTaskId===task.id&&baselineRevisionId===task.revisionId&&run?.revisionId===baselineRevisionId?
       <AgentDeliveryPanel key={`assisted-${task.id}-${run.id}`} manual assisted api={api} taskId={task.id} contextId={task.contextId} revisionId={baselineRevisionId} runId={run.id} dirty={dirty} canWrite={canWrite&&!pendingAgentKey} canPublish={canPublish&&!sourceReturnActive} publicationTarget={publicationTarget} expectedSourceBinding={expectedSourceBinding} codeBusy={working||Boolean(pendingAgentKey)} onOpenServices={onOpenServices} handoffBlocked={Boolean(message.trim())||Boolean(pendingAgentKey)} />:
       <section id="agent-delivery" className="agent-dev-context" aria-label="人工辅助开发交付边界"><h3>人工辅助开发结果</h3><p>先完成持久修正任务并查看其当前已核验代码和运行。交付将独立记录人工辅助来源，不继承历史基线的批准。</p><button className="button" disabled={!run||working} onClick={()=>setTab('校验')}>查看当前独立核验</button></section>)}
-    {frozenInput && <section id="agent-delivery" className="agent-dev-notice" aria-label="冻结持仓交付">
+    {frozenInput && <section id="agent-delivery" className="agent-dev-context" aria-label="冻结持仓交付">
       <strong>冻结持仓交付</strong><p>按已核验的代码版本生成调度与部署文件，使用原持仓快照演练。</p>
       {!task&&originTaskId&&<button className="button" disabled={working||manualUnconfirmed} onClick={()=>void selectTask(originTaskId)}>返回原 Agent 任务</button>}
       {!manualDeliveryOpen&&<button className="button" disabled={dirty||working||manualUnconfirmed||schemaBlocksDelivery||run?.status!=="SUCCEEDED"||!run.syncInput||run.revisionId!==baselineRevisionId}

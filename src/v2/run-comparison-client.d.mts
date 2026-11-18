@@ -1,3 +1,5 @@
+import type { SyncSqlOutputSchema } from './sync-sql-output-schema-client.mjs';
+
 export type ComparisonInput = {
     state: string;
     inputHash?: string;
@@ -88,11 +90,20 @@ export type SqlRunComparison = {
     causalConclusion: 'NOT_ESTABLISHED';
     readOnly: true;
     notice: string;
+    frozenInput?: {
+        snapshotHash: string;
+        syncRunId: string;
+        metadataVersionId: string;
+        baseline: FrozenOutcome;
+        current: FrozenOutcome;
+    };
 };
+type FrozenOutcome = { output:SyncSqlOutputSchema;selectedRows:'MATCHED'|'MISMATCH'|'UNAVAILABLE' };
 export type RunComparisonCandidates = {
     protocol: 'shuduo-run-comparison-candidates/v1';
     currentRunId: string;
     contextId: string;
+    snapshotHash?: string;
     truncated: boolean;
     candidates: {
         runId: string;
@@ -113,10 +124,12 @@ export function checkedSqlRunComparison(value: unknown, args: {
     currentRevisionHash?: string;
     baselineRevisionHash?: string;
     contextId?: string;
+    snapshotHash?: string;
 }): SqlRunComparison;
 export function checkedRunComparisonCandidates(value: unknown, args: {
     runId: string;
     contextId?: string;
+    snapshotHash?: string;
 }): RunComparisonCandidates;
 export function readSqlRunComparison(client: Client, args: {
     runId: string;
@@ -124,10 +137,12 @@ export function readSqlRunComparison(client: Client, args: {
     currentRevisionHash?: string;
     baselineRevisionHash?: string;
     contextId?: string;
+    snapshotHash?: string;
 }): Promise<SqlRunComparison>;
 export function readRunComparisonCandidates(client: Client, args: {
     runId: string;
     contextId?: string;
+    snapshotHash?: string;
 }): Promise<RunComparisonCandidates>;
 export function readComparisonSql(client: Client, args: {
     comparison: SqlRunComparison;

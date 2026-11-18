@@ -32,7 +32,7 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,as
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
-import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, storedFundFileRehearsal, pinnedCloudDeliverySource } from "./agent-development-workflow.mjs";
+import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, storedFundFileRehearsal, pinnedCloudDeliverySource,storedBackgroundRehearsalEvidence } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import { exactPublicationReceipt, projectCloudReleaseBatchStage } from "./cloud-release-evidence.mjs";
 import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
@@ -45,9 +45,11 @@ import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource
 import { saveManualRevision, savedManualRevision } from "./manual-revisions.mjs";
 import { assertSyncSqlOutputSchema, currentSyncSqlInput, freezeSyncSqlInput, parseSyncSqlSelection, readSyncSqlInput, syncSqlColumnsMatch, syncSqlContextId, syncSqlContractId, syncSqlDeliverySource, syncSqlOutputColumns, syncSqlOutputSchemaCode, syncSqlOutputSchemaDetails, syncSqlOutputSchemaMessage, syncSqlRowsMatch } from "./sync-sql-input.mjs";
 import { isDeepStrictEqual } from "node:util";
-import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, syncApprovalExpiry, syncSqlReviewDigest, syncSqlScheduledSchemaDetails } from "./sync-sql-publication.mjs";
+import { activateSyncSqlRelease, assertSyncSqlBatch, assertSyncSqlConsent, assertSyncSqlReviewBinding, storedSyncSqlReviewEvidence, syncApprovalExpiry,
+  syncSqlRehearsalDigest, syncSqlReviewDigest, syncSqlScheduledSchemaDetails } from "./sync-sql-publication.mjs";
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence, syncServiceProtocol, syncSqlServiceSources } from "./sync-sql-service-source.mjs";
-import { isSyncAssetId, isSyncReportEvidence, syncAssetBatchId, syncAssetView, syncReportAsset } from "./sync-sql-report.mjs";
+import { isSyncAssetId, isSyncReportEvidence, syncAssetBatchId, syncAssetView, syncReportAsset, syncReportAssetId } from "./sync-sql-report.mjs";
+import { frozenAssetQuality } from "./frozen-asset-quality.mjs";
 import { createPrivateDataServices } from "./private-data-services.mjs";
 import {privateServiceAgentProfile,assertServiceAgentMutation,assertServiceAgentIngress,serviceAgentSession} from './private-service-agent-policy.mjs';
 import { privateServiceSourceSelection } from "./private-service-routes.mjs";
@@ -56,6 +58,10 @@ import { privateReleaseConfig, validatePrivateReleaseTimer } from "./private-rel
 import { createAgentDispatcher } from "./agent-dispatcher.mjs";
 import {createServiceAgentEvents} from './service-agent-events.mjs';
 import { createAgentEventDriver, agentEventConfigFromEnvironment, parseAgentObjectEvent } from "./agent-event-driver.mjs";
+import {createPublicationWakeDriver} from "./publication-wake.mjs";
+import {agentConsumptionPath,agentConsumptionReceiptPath} from './agent-consumption-request.mjs';
+import {createSignedTaskWakeDriver,signedTaskWakeView} from './signed-task-wake.mjs';
+import {rehearsalWakeFor,rehearsalWakeKey,rehearsalWakeMatches} from './rehearsal-wake.mjs';
 import { createAgentWakeOssTransport } from "./agent-wake-oss-transport.mjs";
 import { ossConfigFromEnvironment } from "./oss-client.mjs";
 import { queueConfigFromEnvironment } from "./remote-spark-queue.mjs";
@@ -64,7 +70,7 @@ import {
   getContext,
   publicContext,
   contextIds,
-  allContextIds,
+  publicV2Contexts,
   classicContextIds,
   validationFamilyForContext,
   referenceSql,
@@ -148,7 +154,7 @@ import { QualityManager } from "./quality.mjs";
 import { fundReportQuality } from "./fund-report-quality.mjs";
 import { readWealthReportConsumption } from "./wealth-report-consumption.mjs";
 import { SecurityManager } from "./security.mjs";
-import { ReportDataStore, ReportManager } from "./reports.mjs";
+import { hasPublishedBinding, ReportDataStore, ReportManager } from "./reports.mjs";
 import { privateBatchReportQuery, privateBatchReportRoute } from "./private-batch-report-request.mjs";
 import { readPrivateBatchReport } from "./private-batch-report.mjs";
 import { archiveSha, batchArchiveRoute } from "./private-batch-archive-client.mjs";
@@ -167,6 +173,8 @@ import{compareSqlRuns}from'./run-comparison.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
 import { storedAgentReviewEvidence } from "./agent-review-evidence.mjs";
 import { storedAgentExecutionEvidence } from "./agent-execution-evidence.mjs";
+import { storedBackgroundPreparationEvidence } from "./delivery-preparation-evidence.mjs";
+import { storedDevelopmentDrivers } from "./agent-execution-drivers.mjs";
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
 import {
   LocalArtifactStore,
@@ -194,42 +202,10 @@ import {
   validateAgentIntentRoute,
 } from "./agent-router.mjs";
 
-export const PROJECT = "project-securities-lab";
+import { assertV2RequestScope, PROJECT } from "./request-scope.mjs";
+export { assertV2RequestScope, PROJECT, publicV2Contexts };
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const fail = (status, message) => Object.assign(new Error(message), { status });
-export function assertV2RequestScope(req, { env, local }) {
-  const origin = req.headers.origin;
-  let localOriginAllowed = false;
-  if (local && typeof origin === "string") {
-    try {
-      const parsedOrigin = new URL(origin),
-        localPort = String(req.socket.localPort ?? env.V2_PORT ?? 3100);
-      localOriginAllowed =
-        origin === parsedOrigin.origin &&
-        parsedOrigin.protocol === "http:" &&
-        ["localhost", "127.0.0.1", "[::1]"].includes(parsedOrigin.hostname) &&
-        [localPort, "5173"].includes(parsedOrigin.port);
-    } catch {
-      localOriginAllowed = false;
-    }
-  }
-  if (
-    origin &&
-    !(
-      localOriginAllowed ||
-      (!local &&
-        typeof env.V2_PUBLIC_ORIGIN === "string" &&
-        origin === env.V2_PUBLIC_ORIGIN)
-    )
-  )
-    throw fail(403, "请求来源不允许");
-  if (
-    req.headers["x-project-id"] &&
-    req.headers["x-project-id"] !== PROJECT
-  )
-    throw fail(403, "无权访问此项目");
-}
-export const publicV2Contexts = () => allContextIds.map(publicContext);
 const validationFamily = contextId => {
   const family=validationFamilyForContext(contextId);
   if(!family)throw fail(409,"代码或运行绑定的业务口径版本不存在");
@@ -518,7 +494,8 @@ export function createV2Server(options = {}) {
     if (!item) throw fail(404, "未找到当前项目的记录");
     return item;
   };
-  const exposeDevelopmentRun = run => publicDevelopmentRun(run, store.get("revision", run?.revisionId ?? "", PROJECT));
+  const exposeDevelopmentRun = (run, includeSource = false) => publicDevelopmentRun(run,
+    store.get("revision", run?.revisionId ?? "", PROJECT), includeSource ? { store, project: PROJECT } : undefined);
   function validationFamilyForRun(run) {
     // Older persisted runs only carry the context on their immutable revision.
     // Missing duplicate metadata may be read, but conflicting metadata must not
@@ -561,7 +538,15 @@ export function createV2Server(options = {}) {
       (!item.agentTaskId || mayReadDurableAgent(store.get("agent", item.agentTaskId, PROJECT), session))));
   const requireDevelopmentOwner = (kind, item, req) => {
     const session = auth.sessionFromHeaders(req.headers);
-    if (item?.syncInput) requireSyncSqlLocal(req);
+    if (item?.syncInput) {
+      requireSyncSqlLocal(req);
+      if ((kind === "run" || kind === "revision") && req.method === "GET") {
+        const actor = workspaceReadActor(req);
+        const revision = kind === "revision" ? item : store.get("revision", item.revisionId, PROJECT);
+        if (!actor || actor !== revision?.author)
+          throw Object.assign(fail(403, "无权读取此冻结开发记录"), { code: "DEVELOPMENT_ACCESS_DENIED" });
+      }
+    }
     if (!(kind === "revision" || kind === "python_revision" ? mayReadRevision(item, session) : mayReadRun(item, session, kind === "python_run" ? "python_revision" : "revision")))
       throw Object.assign(fail(403, "无权读取或操作此开发记录"), { code: "DEVELOPMENT_ACCESS_DENIED" });
   };
@@ -582,10 +567,12 @@ export function createV2Server(options = {}) {
     ? {read:options.readPendingSparkResult} : undefined;
   const passiveRunner=resultEventRunner ?? (rawRunner.assertWriteReady && rawRunner.durable
     ? { read:prepared=>rawRunner.durable.read(prepared,{cancelOnTimeout:false}) } : undefined);
-  const assertSavedDevelopmentTarget=task=>{
+  const assertSavedDevelopmentTarget=(task,delivery)=>{
     if (developmentAccess?.taskId && task.id!==developmentAccess.taskId) throw targetDenied();
     if (developmentAccess?.requestDigest && developmentNow()<developmentAccess.expiresAt) {
-      const grant=store.list("agent_background",PROJECT).find(item=>item.taskId===task.id && item.actorId===task.submittedBy);
+      const wake=delivery?.rehearsalWakeId && rehearsalWakeFor(store,PROJECT,delivery.id);
+      const grant= wake && wake.id===delivery.rehearsalWakeId && rehearsalWakeMatches(wake,delivery)
+        ? wake.binding : store.list("agent_background",PROJECT).find(item=>item.taskId===task.id && item.actorId===task.submittedBy);
       const owner=store.get("auth_user",task.submittedBy,PROJECT);
       assertDevelopmentBackgroundScope(developmentAccess,task,owner,PROJECT,grant?.developmentBoundary,developmentNow());
     }
@@ -625,13 +612,66 @@ export function createV2Server(options = {}) {
     return createAgentWakeOssTransport({...oss,credentialsProvider:async()=>ossConfigFromEnvironment(env).credentials,
       wakePrefix:agentEventConfig.wakePrefix,resultPrefix:agentEventConfig.resultPrefix});
   })() : undefined;
+  const assertPublicationWakeScope=binding=>{
+    const actor=store.get("auth_user",binding.actorId,PROJECT),task=store.get("agent",binding.taskId,PROJECT);
+    const administrator=actor?.status==="ACTIVE" && actor.memberships?.some(member=>member.projectId===PROJECT && member.role==="ADMIN");
+    if (options.ingress?.status.publicReadOnly || executionUnavailable() || publicationAccess?.sourceKind!=="AGENT_TASK" ||
+        binding.approvalWindow.startsAt!==publicationAccess.startsAt || binding.approvalWindow.expiresAt!==publicationAccess.expiresAt ||
+        !administrator || task?.submittedBy!==binding.actorId || publicationSession(publicationAccess,{role:"ADMIN",user:actor},developmentNow())?.readOnly!==false)
+      throw Object.assign(fail(403,"原受邀批准的发布窗口已关闭或权限已变化"),{code:"PUBLICATION_WAKE_SCOPE_DENIED"});
+    assertPublicationTarget(publicationAccess,{agentId:binding.taskId,packageDigest:binding.packageDigest,verificationId:binding.verificationId},developmentNow());
+  };
+  const publicationWake=publicationAccess?.sourceKind==="AGENT_TASK" && privatePublicationConfig && cloudPublication && agentWakeTransport
+    ? createPublicationWakeDriver({store,project:PROJECT,transport:agentWakeTransport,config:agentEventConfig,persist:persistDevelopment,
+      assertScope:assertPublicationWakeScope,publish:(binding,activationWakeId)=>{
+        const {taskId,requestId,...scope}=binding, approval=store.get("release_approval",scope.approvalId,PROJECT);
+        const review=approval&&store.get("delivery_review",approval.reviewId,PROJECT);
+        return cloudPublication.publish({agent:store.get("agent",taskId,PROJECT),...scope,idempotencyKey:requestId,
+          attestations:review?.attestations,activationWakeId,assertWakeAuthority:assertPublicationWakeScope});
+      }}) : undefined;
+  const assertRehearsalWakeScope=binding=>{
+    const delivery=store.get('agent_delivery_task',binding.deliveryId,PROJECT),agent=store.get('agent',binding.taskId,PROJECT);
+    const owner=store.get('auth_user',binding.actorId,PROJECT),wake=delivery&&rehearsalWakeFor(store,PROJECT,delivery.id);
+    if(!developmentAccess || options.ingress?.status.publicReadOnly || executionUnavailable() ||
+      !delivery || delivery.sourcePinned!==true || delivery.mode!==durableDeliveryMode || !rehearsalWakeMatches({binding},delivery) ||
+      delivery.status==='CANCELLED' || !agent || agent.submittedBy!==binding.actorId ||
+      (delivery.verificationId ? !wake || delivery.rehearsalWakeId!==wake.id : delivery.stage!=='PACKAGE_READY'||delivery.version!==binding.expectedVersion))
+      throw Object.assign(fail(403,'演练委托须绑定当前有效窗口和原交付'),{code:'REHEARSAL_WAKE_SCOPE_DENIED'});
+    assertDevelopmentBackgroundScope(developmentAccess,agent,owner,PROJECT,binding.developmentBoundary,developmentNow());
+  };
+  const rehearsalWake=developmentAccess && durableDelivery && agentWakeTransport && !options.ingress?.status.publicReadOnly
+    ? createSignedTaskWakeDriver({store,project:PROJECT,transport:agentWakeTransport,config:agentEventConfig,persist:persistDevelopment,
+      assertScope:assertRehearsalWakeScope,kind:'rehearsal_wake',protocol:'shuduo-rehearsal-wake/v1',codePrefix:'REHEARSAL_WAKE',
+      completedState:'BATCH_RESERVED',bindingKey:binding=>rehearsalWakeKey(PROJECT,binding.deliveryId),execute:async(binding,rehearsalWakeId)=>{
+        const delivery=store.get('agent_delivery_task',binding.deliveryId,PROJECT),{packageId,packageDigest,verificationId}=delivery;
+        const advanced=await durableDelivery.advance(delivery.id,delivery.version,{packageId,packageDigest,...(verificationId?{verificationId}:{})},
+          {rehearsalWakeId,assertWakeAuthority:assertRehearsalWakeScope});
+        if(!advanced.verificationId)throw fail(409,'原演练批次尚未登记');
+        return {verificationId:advanced.verificationId};
+      }}) : undefined;
+  const rehearsalBackground=item=>{
+    const wake=item&&rehearsalWakeFor(store,PROJECT,item.id);
+    return wake&&rehearsalWakeMatches(wake,item)?{rehearsalBackground:signedTaskWakeView(wake)}:{};
+  };
+  const prepareBackgroundPackage=durableDelivery && !options.ingress?.status.publicReadOnly ? async (task,key)=>{
+    const source=pinnedCloudDeliverySource(task,store.get("revision",task.revisionId,PROJECT),store.get("run",task.runId,PROJECT),
+      (kind,id)=>store.get(kind,id,PROJECT));
+    if(!source)throw Object.assign(fail(409,"暂缺原代码或 Spark 核验证据，未准备交付包"),{code:"AGENT_BACKGROUND_PREPARATION_UNCONFIRMED"});
+    const prepared=await durableDelivery.create(task,key,source,{preparationTrigger:"SIGNED_BACKGROUND_EVENT"});
+    if(!prepared.packageId || !prepared.packageDigest || prepared.stage==="PACKAGE_PERSISTING" ||
+       !["QUEUED","RUNNING","SUCCEEDED"].includes(prepared.status))
+      throw Object.assign(fail(409,"未确认原交付包已保存"),{code:"AGENT_BACKGROUND_PREPARATION_UNCONFIRMED"});
+    return {deliveryId:prepared.id,packageId:prepared.packageId,packageDigest:prepared.packageDigest,
+      ...(prepared.preparationTrigger?{preparationTrigger:prepared.preparationTrigger}:{})};
+  } : undefined;
   const agentEventDriver = agentEventConfig ? createAgentEventDriver({store,project:PROJECT,dispatcher:agentDispatcher,engine:durableAgent,
     transport:agentWakeTransport,config:agentEventConfig,queueConfig:queueConfigFromEnvironment(env),persist:persistDevelopment,now:options.now ?? Date.now,
-    settleRehearsal:durableDelivery?.settleRehearsal,
+    settleRehearsal:durableDelivery?.settleRehearsal,preparePackage:prepareBackgroundPackage,
     assertExecutionScope:(task,boundary)=>assertDevelopmentBackgroundScope(developmentAccess,task,store.get('auth_user',task?.submittedBy??'',PROJECT),PROJECT,boundary,developmentNow())}) : undefined;
   const exposeDurableTask = task => {
     const background=agentEventDriver&&task.executionMode===durableSqlAgentMode?agentEventDriver.status(task.id):undefined;
     const visible={...publicDurableAgent(task)};
+    const drivers=storedDevelopmentDrivers(task,id=>store.get("run",id,PROJECT));
     // Older local SQL tasks retained the final run only inside attempts. Recover
     // its display pointer from the verified existing relationship, never by
     // choosing a newer run or modifying the stored task on a read.
@@ -642,7 +682,7 @@ export function createV2Server(options = {}) {
         run.revisionHash===revision.hash&&typeof revision.sql==="string"&&hash(revision.sql)===revision.hash&&task.sql===revision.sql)
         visible.runId=run.id;
     }
-    return {...visible,...(background&&background.status!=="INACTIVE"?{background}:{})};
+    return {...visible,...(drivers?{developmentDrivers:drivers}:{}),...(background&&background.status!=="INACTIVE"?{background}:{})};
   };
   const privateRuntimeBootId = randomUUID();
   const publicAgentIntent = ({ submittedBy, message, ...item }) => item;
@@ -964,7 +1004,7 @@ export function createV2Server(options = {}) {
       if (!packageItem.manifest?.source?.syncInput ||
           result.status !== "SUCCEEDED" && result.errorCode !== syncSqlOutputSchemaCode) return;
       const plan = validateAnyDeliveryPackage(packageItem);
-      const checked = result.status === "SUCCEEDED" ? checkedSyncSqlFileRehearsal(plan, packageItem, result) : result;
+      const checked = result.status === "SUCCEEDED" ? checkedSyncSqlFileRehearsal(plan, packageItem, result, run.businessScheduledFor) : result;
       if (checked.errorCode === syncSqlOutputSchemaCode) {
         const details = boundSyncSqlFileColumns(plan, packageItem, checked, run.businessScheduledFor);
         if (checked.status !== "FAILED" || checked.mode !== "LOCAL_FILE_REHEARSAL" ||
@@ -1244,6 +1284,7 @@ export function createV2Server(options = {}) {
   let serviceAgentEvents;
   const savedServiceEvidenceEnabled = privateSmokeEnabled && options.ingress?.status.publicReadOnly === true;
   const privateServiceRoutes = privateDataServicesEnabled || savedServiceEvidenceEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment,
+    consumptionTransport:serviceAccess&&agentWakeTransport&&!options.ingress?.status.publicReadOnly?{transport:agentWakeTransport,config:agentEventConfig}:undefined,
     agentConfig:serviceAgentAccess,planner:input=>servicePlanner(input),assertModelBudget:reservation=>budget.assertCanStartServiceModel(reservation),budgetOverview:()=>budget.overview(),modelLeaseMs:options.serviceAgentModelLeaseMs,
     waitForModel:serviceAgentAccess?start=>statefulRequests.waitForProvider(start):undefined,
     backgroundView:task=>serviceAgentEvents?.status(task.id),
@@ -1415,14 +1456,20 @@ export function createV2Server(options = {}) {
   const readSyncCalls = evidence => readSyncSqlCallEvidence({store,project:PROJECT,manager:dataServices,evidence});
   const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,reportStore,provenance:reportProvenance,
     resolveSource:resolveLocalReportSource,fundSignedExecutionFor,readSyncCalls,afterStep:options.publishedReportAfterStep});
-  const reportActor=req=>auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
+  const workspaceReadActor = req => {
+    if (req.headers.authorization !== undefined) return undefined;
+    const session = auth.sessionFromHeaders(req.headers);
+    if (session) return session.user.id;
+    const attemptedSession = /(?:^|;)\s*shuduo_session\s*(?:=|;|$)/.test(req.headers.cookie ?? "");
+    if (local && !options.ingress && isLoopbackRequest(req) && !attemptedSession) return "local-engineer";
+  };
   const publishedPlanContext=(source,actor)=>{
     if(!local)throw fail(403,'同源报表规划尚只在本机开发边界开放');
     return publishedReportPlanningContext(resolveLocalReportSource(source,actor));
   };
   const canReadReportPlan = (plan, req) => local
-    ? !plan.sourceBinding || plan.submittedBy === reportActor(req)
-    : plan.contextScope === "INVITED_PROJECT_REPORTS" && !plan.sourceBinding && plan.submittedBy === reportActor(req);
+    ? !plan.sourceBinding || plan.submittedBy === workspaceReadActor(req)
+    : plan.contextScope === "INVITED_PROJECT_REPORTS" && !plan.sourceBinding && plan.submittedBy === workspaceReadActor(req);
   const requireReportPlanOwner = (plan, req) => {
     if (!canReadReportPlan(plan, req)) throw fail(404, "未找到本账号的报表方案");
   };
@@ -1672,6 +1719,7 @@ export function createV2Server(options = {}) {
     localClassicSpark ? classicContextIds.map(publicContext) : publicV2Contexts();
   const prefetchedPrivateInputs=new WeakMap();
   const handleRequest = async (req, res) => {
+    const started = performance.now();
     try {
       const ingressChannel = options.ingress?.assertRequest(req);
       const url = new URL(req.url, "http://localhost"),
@@ -1690,7 +1738,7 @@ export function createV2Server(options = {}) {
         const pack = kind === "delivery_package" ? item : packageId && store.get("delivery_package", packageId, PROJECT);
         const source = pack?.manifest?.source;
         if (source?.syncInput && (!syncSqlLocal || !isLoopbackRequest(req) ||
-            source.syncInput.actorId !== (auth.sessionFromHeaders(req.headers)?.user.id ?? "local-engineer"))) return false;
+            source.syncInput.actorId !== workspaceReadActor(req))) return false;
         if (isFundContext(source?.contextId)) {
           if (!localClassicSpark)
             return Boolean(!local && source.fundDevelopment && source.attribution?.kind === fundAgentAttributionKind &&
@@ -1717,8 +1765,17 @@ export function createV2Server(options = {}) {
         return visible;
       };
       const exposeDeliveryVerification = item => {
-        const { rehearsalOutputSchema: storedSchema, ...visible } = protectedDeliveryPayload(item);
+        const { rehearsalOutputSchema: storedSchema, syncRehearsalDigest: storedDigest, ...visible } = protectedDeliveryPayload(item);
         const bundle = item.packageId && store.get("delivery_package", item.packageId, PROJECT);
+        if (bundle?.manifest?.source?.syncInput && item.status === "SUCCEEDED") {
+          try {
+            assertSyncSqlRehearsal(validateAnyDeliveryPackage(bundle), bundle, item);
+          } catch {
+            return exposeValidationRecord({ ...visible, status:"UNCONFIRMED", storedStatus:item.status, workflowTrace:undefined,
+              error:"原演练的调度、文件或结果证据未能核对，暂不可审阅。" });
+          }
+          return { ...exposeValidationRecord(visible), syncRehearsalDigest:syncSqlRehearsalDigest(item) };
+        }
         const rehearsalOutputSchema = syncSqlRehearsalSchemaDetails(bundle, item);
         return { ...exposeValidationRecord(visible), ...(rehearsalOutputSchema ? { rehearsalOutputSchema } : {}) };
       };
@@ -1801,24 +1858,40 @@ export function createV2Server(options = {}) {
       const visibleServices = type => dataServices.list(type).filter(canReadService);
       const syncSourcesFor = selection => syncSqlServiceSources({ store, project: PROJECT, selection,
         canRead: run => canReadDelivery("release_run", run), certify: certifySyncService });
-      const canReadSyncDataset = dataset => !isSyncAssetId(dataset?.assetId) && !isSyncReportEvidence(dataset?.sourceEvidence) ||
-        syncSqlLocal && isLoopbackRequest(req) && dataset.sourceActorId === reportActor(req);
-      const requireSyncDataset = dataset => {
-        if (!canReadSyncDataset(dataset)) throw fail(404, "未找到本账号的冻结持仓报表");
+      const canReadReportDataset = dataset => {
+        if (!dataset) return false;
+        if (!hasPublishedBinding(dataset)) return true;
+        const owner = workspaceReadActor(req);
+        return Boolean(owner && local && !options.ingress && isLoopbackRequest(req) && dataset.sourceActorId === owner &&
+          (syncSqlLocal || !(isSyncAssetId(dataset.assetId) || isSyncReportEvidence(dataset.sourceEvidence))));
       };
-      const canReadSyncReport = report => canReadSyncDataset(typeof report?.datasetId === "string" && store.get("report_dataset", report.datasetId, PROJECT));
+      const requireReportDataset = dataset => {
+        if (!canReadReportDataset(dataset)) throw fail(404, "未找到本账号的报表数据集");
+      };
+      const canReadReport = report => canReadReportDataset(typeof report?.datasetId === "string" && store.get("report_dataset", report.datasetId, PROJECT));
       const deliveryReceipt = item => {
         const {verification} = workflowDeliveryEvidence(item);
         const rehearsal = storedFileRehearsal(item,verification);
         const settledFailure = storedFileRehearsalFailure(store,PROJECT,item,verification);
-        return {...publicDeliveryTask(item),...(rehearsal?{rehearsal}:{}),...(settledFailure?{settledFailure}:{})};
+        const preparationEvidence=storedBackgroundPreparationEvidence(store,PROJECT,item);
+        const rehearsalInitiationEvidence=storedBackgroundRehearsalEvidence(store,PROJECT,item,verification);
+        return {...publicDeliveryTask(item),...rehearsalBackground(item),...(rehearsal?{rehearsal}:{}),...(settledFailure?{settledFailure}:{}),
+          ...(preparationEvidence?{preparationEvidence}:{}),...(rehearsalInitiationEvidence?{rehearsalInitiationEvidence}:{})};
       };
       assertV2RequestScope(req, { env, local });
+      const reportRoute = path === "/api/v2/reports" || path.startsWith("/api/v2/reports/");
+      const assetRoute = path === "/api/v2/assets" || path.startsWith("/api/v2/assets/");
+      if (reportRoute && req.headers.authorization !== undefined)
+        throw Object.assign(fail(403,"数据服务凭证无权读取或操作报表"),{code:"REPORT_SERVICE_CREDENTIAL_FORBIDDEN"});
+      if (assetRoute && req.headers.authorization !== undefined)
+        throw Object.assign(fail(403,"数据服务凭证无权读取或操作资产"),{code:"ASSET_SERVICE_CREDENTIAL_FORBIDDEN"});
       if (method === "GET" && !path.startsWith("/api/v2"))
-        return await serveV2Static(res, root, path, req.headers["accept-encoding"]);
+        return await serveV2Static(res, root, path, req.headers["accept-encoding"], publicReadOnly ? {started,phase:"ready"} : undefined);
       // This admitted HTTP read serves built-in fixtures independent of project state.
       if (isPublicContextRead(req, ingressChannel)) return json(res, 200, fixtureContexts());
       if (typeof persistence.refresh === "function") await persistence.refresh();
+      if (reportRoute && !workspaceReadActor(req))
+        throw Object.assign(fail(401,"请使用原报表账号登录"),{code:"AUTHENTICATION_REQUIRED"});
       const includeSession = method === "GET" && path === "/api/v2/status" &&
         url.searchParams.size === 1 && url.searchParams.get("include") === "session";
       const startupActor = includeSession ? auth.sessionFromHeaders(req.headers) : undefined;
@@ -1852,13 +1925,27 @@ export function createV2Server(options = {}) {
         if(serviceAgentAccess&&!['PRIVATE_STATUS_V1','PRIVATE_APPLICATION_HTTP_V1',...(serviceAgentEvents?['PRIVATE_AGENT_OBJECT_EVENT_V1']:[])].includes(privateInput.operation))throw Object.assign(fail(403,'服务规划窗口不接受计算、调度或其他私有操作'),{code:'PRIVATE_SERVICE_AGENT_SCOPE_DENIED'});
         if ((developmentAccess?.taskId || developmentAccess?.requestDigest) && !['PRIVATE_STATUS_V1','PRIVATE_AGENT_OBJECT_EVENT_V1'].includes(privateInput.operation))
           throw targetDenied();
-        if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation))
+        if (serviceAccess && !["PRIVATE_STATUS_V1", "PRIVATE_APPLICATION_HTTP_V1"].includes(privateInput.operation)) {
+          if(ingressChannel==='EVENT'&&privateInput.operation==='PRIVATE_AGENT_OBJECT_EVENT_V1'&&privateServices?.consumptionWake){
+            const object=parseAgentObjectEvent(privateInput.event,agentEventConfig);
+            const consumed=await privateServices.consumptionWake.consume(object);
+            if(consumed)return json(res,200,consumed);
+          }
           throw Object.assign(fail(403, "本次仅开放既有发布结果的接口交付；计算与调度保持关闭。"), { code: "PUBLIC_SERVICE_SCOPE_DENIED" });
+        }
         if (ingressChannel==="EVENT" && privateInput.operation==="PRIVATE_AGENT_OBJECT_EVENT_V1" &&
             resultEventConfig && !serviceAgentAccess) {
           let object;
           try { object=parseAgentObjectEvent(privateInput.event,resultEventConfig); }
           catch (error) { if (!publicationAccess) throw error; }
+          if (object?.kind==="WAKE" && publicationWake) {
+            const released=await publicationWake.consume(object);
+            if (released) return json(res,200,released);
+          }
+          if (object?.kind==='WAKE' && rehearsalWake) {
+            const launched=await rehearsalWake.consume(object);
+            if (launched) return json(res,200,launched);
+          }
           if (object?.kind==="RESULT") {
             const settled=!developmentAccess && await cloudPublicationHistory.settleResultEvent(object,
               release=>assertPublicationResultTarget(publicationAccess,release));
@@ -2022,6 +2109,8 @@ export function createV2Server(options = {}) {
         const identity = {user: body.user, role: body.role}, now = options.now?.() ?? Date.now();
         const constrained = {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSessionFor(identity) ?? developmentSessionFor(identity) ??
           (executionUnavailable() ? {permissions:["SESSION"],readOnly:true} : {}))};
+        if(privateServices?.consumptionWake&&constrained.consumptionPlan&&constrained.readOnly===false)
+          constrained.consumptionPlan={...constrained.consumptionPlan,agentConsumptionAvailable:true};
         // The scope projection only exposes these identifiers to the selected
         // administrator. Anonymous/other accounts do not get source metadata.
         if (constrained.publicationOnly && constrained.publicationTaskId && body.user?.id) {
@@ -2308,6 +2397,11 @@ export function createV2Server(options = {}) {
         return json(res, 200, await cloudReadiness());
       }
       if (privateSmokeEnabled && (path.startsWith("/api/v2/data-services/") || path.startsWith("/api/v2/open/"))) {
+        if(!privateServices&&publicReadOnly&&method==='GET'&&path.startsWith('/api/v2'+agentConsumptionPath+'/')) {
+          const requestId=path.slice(('/api/v2'+agentConsumptionPath+'/').length);
+          if(url.searchParams.size||path!=='/api/v2'+agentConsumptionReceiptPath(requestId))throw fail(422,'委托回执只接受原请求编号');
+          return json(res,200,privateServiceRoutes.readConsumptionJob(req,requestId));
+        }
         if (!privateServices && publicReadOnly && method === "GET" &&
             ["/api/v2/data-services/task-evidence","/api/v2/data-services/sources"].includes(path)) {
           const verifySavedRelease = (taskId, release, owner) => {
@@ -2322,7 +2416,7 @@ export function createV2Server(options = {}) {
         }
         if(!privateServices)throw fail(503,"私有数据服务尚未启用");
         if(typeof persistence.flush==="function" && (method!=="GET" || path.startsWith("/api/v2/open/")))res.metadataFlush=()=>persistence.flush();
-        const result=await privateServices.handle(req,url,readBody);return json(res,result.status,result.body);
+        const result=await privateServices.handle(req,url,readBody,ingressChannel);return json(res,result.status,result.body);
       }
       const openService = path.match(
         /^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/,
@@ -2501,12 +2595,22 @@ export function createV2Server(options = {}) {
         );
       }
       const syncTaskRecord = path.match(
-        /^\/api\/v2\/sync\/tasks\/([a-f0-9-]+)(?:\/(run))?$/,
+        /^\/api\/v2\/sync\/tasks\/([a-f0-9-]+)(?:\/(run|recovery))?$/,
       );
       if (syncTaskRecord) {
         const task = ingestion.taskDetail(syncTaskRecord[1]),
           action = syncTaskRecord[2];
         if (method === "GET" && !action) return json(res, 200, task);
+        if (action === "recovery") {
+          if (!local || options.ingress || !isLoopbackRequest(req) || !workspaceReadActor(req))
+            throw fail(403, "同步恢复须由本机工作台工程师审阅");
+          if (url.searchParams.size) throw fail(422, "同步恢复只接受原任务编号");
+          if (method === "GET") return json(res, 200, ingestion.syncRecoveryPreview(task.id));
+          if (method === "POST") {
+            const saved = ingestion.createSyncRecovery(task.id, await readBody(req));
+            return json(res, saved.replayed ? 200 : 201, ingestion.taskDetail(saved.id));
+          }
+        }
         if (method === "POST" && action === "run") {
           await readBody(req);
           const requestKey = text(req.headers["idempotency-key"], 1, 100),
@@ -2802,18 +2906,26 @@ export function createV2Server(options = {}) {
         throw fail(405, "标注请求方法不受支持");
       }
       const assetRecord = path.match(
-        /^\/api\/v2\/assets\/([^/]+)(?:\/(annotation|lineage|impact))?$/,
+        /^\/api\/v2\/assets\/([^/]+)(?:\/(annotation|lineage|impact|quality))?$/,
       );
       if (assetRecord) {
         const id = decodeURIComponent(assetRecord[1]),
           action = assetRecord[2];
         if (isSyncAssetId(id)) {
           requireSyncSqlLocal(req);
-          if (method !== "GET" || action && action !== "lineage") throw fail(405,"冻结发布资产支持读取原字段和血缘");
+          if (!workspaceReadActor(req)) throw Object.assign(fail(401,"请使用原资产账号登录"),{code:"AUTHENTICATION_REQUIRED"});
           const batch = get("release_run", publishedReportSourceBatchId(syncAssetBatchId(id)));
           requireDeliveryEvidence("release_run", batch);
           const proof = certifySyncService(batch);
           if (!proof) throw fail(404, "未找到已核对的原发布资产");
+          if (action === "quality" && (method === "GET" || method === "POST")) {
+            if (id !== syncReportAssetId(batch.id)) throw fail(404,"质量检测只支持原发布资产");
+            if (url.searchParams.size) throw fail(422,"质量回执须按原资产编号核对");
+            return json(res,200,frozenAssetQuality({store,project:PROJECT,quality,batch,source:proof.sourceEvidence,
+              asset:syncReportAsset(batch,proof,publishedReportHash),
+              confirmation:method==="POST"?await readBody(req):undefined}));
+          }
+          if (method !== "GET" || action && action !== "lineage") throw fail(405,"冻结发布资产支持读取原字段和血缘");
           const detail = syncAssetView({store,project:PROJECT,batch,proof,id,hash:publishedReportHash,
             fixtures:assets.listAssets({kind:"FIXTURE_TABLE"})});
           return json(res,200,action === "lineage" ? detail.lineage : detail);
@@ -3310,8 +3422,8 @@ export function createV2Server(options = {}) {
         }
       }
       if (path === "/api/v2/reports/overview" && method === "GET") {
-        const overview = reports.overview(), datasets = overview.datasets.filter(canReadSyncDataset),
-          visible = overview.reports.filter(canReadSyncReport);
+        const overview = reports.overview(), datasets = overview.datasets.filter(canReadReportDataset),
+          visible = overview.reports.filter(canReadReport);
         return json(res, 200, {...overview,datasets,reports:visible,counts:{
           datasets:datasets.length,readyDatasets:datasets.filter(item=>item.status==="READY").length,
           reports:visible.length,verifiedReports:visible.filter(item=>item.status==="VERIFIED_LOCAL").length,
@@ -3376,7 +3488,7 @@ export function createV2Server(options = {}) {
       if (reportQuality && ["GET", "POST"].includes(method)) {
         if (!localClassicSpark || options.ingress || !isLoopbackRequest(req)) throw fail(403, "基金报表质量检测仅支持本机");
         if (url.searchParams.size) throw fail(422, "请使用原报表编号，质量检测不接受切换批次");
-        const [, requestId] = reportQuality, actor = reportActor(req);
+        const [, requestId] = reportQuality, actor = workspaceReadActor(req);
         const confirmation = method === "POST" ? await readBody(req) : undefined;
         requireFundAgentReportOwner(publishedReports.lookup(requestId, actor).source);
         const { lineage, rows } = publishedReports.qualitySource(requestId, actor, releaseTimeUnitMs);
@@ -3389,7 +3501,7 @@ export function createV2Server(options = {}) {
         const downloadDigest = url.searchParams.get("download_digest");
         if (url.searchParams.size && (view !== "lineage" || url.searchParams.size !== 1 ||
             !/^[a-f0-9]{64}$/.test(downloadDigest ?? ""))) throw fail(422, "按原编号读取结果只接受确切溯源下载摘要");
-        const actor = reportActor(req);
+        const actor = workspaceReadActor(req);
         requireFundAgentReportOwner(publishedReports.lookup(requestId, actor).source);
         if (view === "export") {
           const { receipt } = publishedReports.readResult(requestId, actor);
@@ -3422,7 +3534,7 @@ export function createV2Server(options = {}) {
       const reportCreation=path.match(/^\/api\/v2\/reports\/published(?:\/(requests)\/([a-f0-9-]{36})|\/([a-f0-9-]{36})\/(advance))?$/);
       if(reportCreation){
         if(!local)throw fail(403,'确切发布报表创建尚只在本机开发边界开放');
-        const actorId=auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer';
+        const actorId=workspaceReadActor(req);
         if(method==='POST'&&!reportCreation[1]&&!reportCreation[3]){
           const body=await readBody(req);
           requireFundAgentReportOwner(body.source);
@@ -3438,7 +3550,7 @@ export function createV2Server(options = {}) {
         }
       }
       if (path === "/api/v2/reports/datasets" && method === "GET")
-        return json(res, 200, reports.listDatasets().filter(canReadSyncDataset));
+        return json(res, 200, reports.listDatasets().filter(canReadReportDataset));
       if (path === "/api/v2/reports/datasets" && method === "POST") {
         const body = await readBody(req),
           key = text(req.headers["idempotency-key"], 1, 100);
@@ -3454,7 +3566,7 @@ export function createV2Server(options = {}) {
           const manual = evidence.developmentMode === "MANUAL";
           fixedSource = { publishedSource: {kind:manual?"MANUAL":"AGENT",releaseId:evidence.releaseId,packageDigest:evidence.packageDigest,
             revisionId:evidence.sourceRevisionId,runId:evidence.sourceRunId,batchId,...(!manual?{taskId:evidence.sourceTaskId}:{})},
-            actorId:reportActor(req) };
+            actorId:workspaceReadActor(req) };
         }
         const dedup = store.deduplicate(
             fixedSource ? `${PROJECT}:report-dataset:sync:${fixedSource.actorId}:${key}` : `${PROJECT}:report-dataset:${key}`,
@@ -3462,7 +3574,7 @@ export function createV2Server(options = {}) {
             () => reports.createDataset(body,fixedSource),
           );
         const dataset = reports.datasetDetail(dedup.id);
-        requireSyncDataset(dataset);
+        requireReportDataset(dataset);
         return json(
           res,
           dedup.replayed ? 200 : 201,
@@ -3475,11 +3587,11 @@ export function createV2Server(options = {}) {
       if (reportDatasetRecord) {
         const dataset = reports.datasetDetail(reportDatasetRecord[1]),
           action = reportDatasetRecord[2];
-        requireSyncDataset(dataset);
+        requireReportDataset(dataset);
         if (method === "GET" && !action) return json(res, 200, dataset);
         if (method === "POST" && action === "refresh") {
           await readBody(req);
-          const boundSource=dataset.publishedSource?resolveLocalReportSource(dataset.publishedSource,auth.sessionFromHeaders(req.headers)?.user.id??'local-engineer'):undefined;
+          const boundSource=dataset.publishedSource?resolveLocalReportSource(dataset.publishedSource,workspaceReadActor(req)):undefined;
           const asset = boundSource?.asset??assets.detail(dataset.assetId),
             key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
@@ -3498,18 +3610,18 @@ export function createV2Server(options = {}) {
         }
       }
       if (path === "/api/v2/reports" && method === "GET")
-        return json(res, 200, reports.listReports().filter(canReadSyncReport));
+        return json(res, 200, reports.listReports().filter(canReadReport));
       if (path === "/api/v2/reports" && method === "POST") {
         const body = await readBody(req),
           key = text(req.headers["idempotency-key"], 1, 100);
-        if (typeof body.datasetId === "string") requireSyncDataset(store.get("report_dataset",body.datasetId,PROJECT));
+        if (typeof body.datasetId === "string") requireReportDataset(store.get("report_dataset",body.datasetId,PROJECT));
         const dedup = store.deduplicate(
             `${PROJECT}:report:${key}`,
             hash(JSON.stringify(body)),
             () => reports.createReport(body),
           );
         const report = reports.reportDetail(dedup.id);
-        if (!canReadSyncReport(report)) throw fail(404, "未找到本账号的冻结持仓报表");
+        if (!canReadReport(report)) throw fail(404, "未找到本账号的报表");
         return json(
           res,
           dedup.replayed ? 200 : 201,
@@ -3519,19 +3631,19 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/reports/agent/plans" && method === "GET") {
         const batchId=url.searchParams.has('source_batch_id')?publishedReportSourceBatchId(url.searchParams.get('source_batch_id')):undefined;
         if(batchId&&!local)throw fail(403,'同源报表规划仅供本机读取');
-        return json(res,200,store.list('report_agent_plan',PROJECT).filter(p=>canReadReportPlan(p,req)).filter(p=>batchId?p.sourceBinding?.batchId===batchId&&p.submittedBy===reportActor(req):!p.sourceBinding).map(publicReportPlan));
+        return json(res,200,store.list('report_agent_plan',PROJECT).filter(p=>canReadReportPlan(p,req)).filter(p=>batchId?p.sourceBinding?.batchId===batchId&&p.submittedBy===workspaceReadActor(req):!p.sourceBinding).map(publicReportPlan));
       }
       const sourceReportRequest=path.match(/^\/api\/v2\/reports\/agent\/requests\/([A-Za-z0-9_-]{1,100})$/);
       if(sourceReportRequest&&method==='GET'){
         if(!local)throw fail(403,'同源报表原请求仅供本机读取');
-        const id=store.deduplicatedId(`${PROJECT}:source-report-plan:${reportActor(req)}:${sourceReportRequest[1]}`),task=id?store.get('report_agent_plan',id,PROJECT):undefined;
+        const id=store.deduplicatedId(`${PROJECT}:source-report-plan:${workspaceReadActor(req)}:${sourceReportRequest[1]}`),task=id?store.get('report_agent_plan',id,PROJECT):undefined;
         if(!task)throw fail(404,'未找到本账号的原报表规划请求');requireReportPlanOwner(task,req);return json(res,200,publicReportPlan(task));
       }
       if (path === "/api/v2/reports/agent/plans" && method === "POST") {
         const body = await readBody(req),
           message = text(body.message, 4, 2000);
         if(Object.keys(body).some(k=>!['message','source'].includes(k)))throw fail(422,'报表规划只接受需求和可选确切发布来源');
-        const source=body.source===undefined?undefined:publishedReportSource(body.source),actor=reportActor(req);
+        const source=body.source===undefined?undefined:publishedReportSource(body.source),actor=workspaceReadActor(req);
         if (source) requireFundAgentReportOwner(source);
         const publication=source?publishedPlanContext(source,actor):undefined;
         if (!options.reportPlanner && !modelSettings(env).configured)
@@ -3557,8 +3669,8 @@ export function createV2Server(options = {}) {
           schedule("report_agent_plan", task, async (signal) => {
             const context = source ? {publication:publishedPlanContext(source,actor)} : (() => {
               const all = reports.agentContext();
-              return {datasets:all.datasets.filter(dataset=>canReadSyncDataset(store.get("report_dataset",dataset.id,PROJECT))),
-                reports:all.reports.filter(canReadSyncReport)};
+              return {datasets:all.datasets.filter(dataset=>canReadReportDataset(store.get("report_dataset",dataset.id,PROJECT))),
+                reports:all.reports.filter(canReadReport)};
             })(),
               generated = await reportPlanner({
                 message,
@@ -3588,11 +3700,11 @@ export function createV2Server(options = {}) {
         if (method === "GET" && !action) return json(res, 200, publicReportPlan(plan));
         if(method==='GET'&&action==='clarification'){
           if(!local||!plan.sourceBinding)throw fail(403,'报表澄清仅供本机原所属人使用');
-          return json(res,200,readReportClarification({store,project:PROJECT,planId:plan.id,actorId:reportActor(req),contextFor:publishedPlanContext}));
+          return json(res,200,readReportClarification({store,project:PROJECT,planId:plan.id,actorId:workspaceReadActor(req),contextFor:publishedPlanContext}));
         }
         if(method==='POST'&&action==='clarify'){
           const body=await readBody(req);if(!local||!plan.sourceBinding||Object.keys(body).length!==2||!['evidenceDigest','answer'].every(k=>Object.hasOwn(body,k)))throw fail(422,'回答须绑定原问题摘要');
-          const actor=reportActor(req),key=sourceReportKey(req.headers['idempotency-key']),resolved=deriveReportClarification({store,project:PROJECT,planId:plan.id,actorId:actor,contextFor:publishedPlanContext,...body});
+          const actor=workspaceReadActor(req),key=sourceReportKey(req.headers['idempotency-key']),resolved=deriveReportClarification({store,project:PROJECT,planId:plan.id,actorId:actor,contextFor:publishedPlanContext,...body});
           const dedup=store.deduplicate(`${PROJECT}:source-report-plan:${actor}:${key}`,reportClarificationSignature(plan.id,body.evidenceDigest,resolved.answer),()=>{
             if(!options.reportPlanner&&!modelSettings(env).configured)throw new ModelUnavailable();budget.assertCanStartModel();
             return store.create('report_agent_plan',PROJECT,{message:resolved.answer,status:'QUEUED',mode:'LIVE_MODEL',completionScope:'REPORT_DESIGN',fullLifecycleE2E:false,agentIndependentE2E:false,...sourceReportInitial(privateRuntimeBootId),sourceBinding:resolved.parent.sourceBinding,submittedBy:actor,requestId:key,planMode:'PUBLISHED_SOURCE_REPORT_V1',sourceEvidenceHash:resolved.parent.sourceEvidenceHash,contextHash:resolved.parent.contextHash,derivationKind:'REPORT_CLARIFICATION_V1',originPlanId:plan.id,clarification:resolved.frame});
@@ -3605,7 +3717,7 @@ export function createV2Server(options = {}) {
           if(!local||!current.sourceBinding||Object.keys(body).length||!publicReportPlan(current).recovery?.canResume)throw fail(409,'仅能显式续接模型尚未调用的原报表规划；未知结果不重试');
           if(!options.reportPlanner&&!modelSettings(env).configured)throw new ModelUnavailable();
           assertReportClarificationPlan(current,{store,project:PROJECT,contextFor:publishedPlanContext});
-          if(publishedReportHash(publishedPlanContext(current.sourceBinding,reportActor(req)))!==current.contextHash)throw fail(409,'原来源变化，未重新调用模型');
+          if(publishedReportHash(publishedPlanContext(current.sourceBinding,workspaceReadActor(req)))!==current.contextHash)throw fail(409,'原来源变化，未重新调用模型');
           const resumed=store.update('report_agent_plan',current.id,PROJECT,{...sourceReportInitial(privateRuntimeBootId),status:'QUEUED',resumeCount:(current.resumeCount??0)+1},{expectedVersion:current.version});scheduleSourceReport(resumed);return json(res,202,publicReportPlan(resumed));
         }
         if (method === "POST" && action === "cancel") {
@@ -3631,8 +3743,8 @@ export function createV2Server(options = {}) {
             if(Object.keys(body).some(k=>k!=='proposalHash')||body.proposalHash!==plan.proposalHash||!['SUCCEEDED','APPLYING','APPLIED'].includes(plan.status)||plan.proposal?.kind!=='PUBLISHED_REPORT'||
               reportProposalHash(plan,plan.proposal)!==plan.proposalHash)throw fail(409,'请先审阅并提交此确切同源报表方案摘要');
             assertReportClarificationPlan(plan,{store,project:PROJECT,contextFor:publishedPlanContext});
-            const context=publishedPlanContext(plan.sourceBinding,reportActor(req));if(publishedReportHash(context)!==plan.contextHash)throw fail(409,'来源或指标定义已变化，请重新审阅方案');
-            const created=publishedReports.submit({name:plan.proposal.name,source:plan.sourceBinding,metricIds:plan.proposal.metricIds},reportActor(req),plan.id,reviewedReportBasis(plan,reportActor(req),body.proposalHash));
+            const context=publishedPlanContext(plan.sourceBinding,workspaceReadActor(req));if(publishedReportHash(context)!==plan.contextHash)throw fail(409,'来源或指标定义已变化，请重新审阅方案');
+            const created=publishedReports.submit({name:plan.proposal.name,source:plan.sourceBinding,metricIds:plan.proposal.metricIds},workspaceReadActor(req),plan.id,reviewedReportBasis(plan,workspaceReadActor(req),body.proposalHash));
             store.update('report_agent_plan',plan.id,PROJECT,{status:created.status==='SUCCEEDED'?'APPLIED':'APPLYING',reportCreation:created,...(created.reportId?{reportId:created.reportId}:{}),appliedAt:plan.appliedAt??new Date().toISOString()});return json(res,created.status==='SUCCEEDED'?200:202,created);
           }
           if (plan.status === "APPLIED" && plan.reportId)
@@ -3658,11 +3770,11 @@ export function createV2Server(options = {}) {
           if (url.searchParams.size !== 1 || !url.searchParams.has('run_id')) throw fail(422, '消费回看须选择一个确切报表运行');
           const reportId = publishedReportSourceBatchId(reportRecord[1]), runId = publishedReportSourceBatchId(url.searchParams.get('run_id'));
           return json(res, 200, readWealthReportConsumption({ store, reportStore, businessStore, project: PROJECT,
-            reportId, runId, actor: reportActor(req), now: options.now?.() ?? Date.now() }));
+            reportId, runId, actor: workspaceReadActor(req), now: options.now?.() ?? Date.now() }));
         }
         const report = reports.reportDetail(reportRecord[1]),
           action = reportRecord[2];
-        if (!canReadSyncReport(report)) throw fail(404, "未找到本账号的冻结持仓报表");
+        if (!canReadReport(report)) throw fail(404, "未找到本账号的报表");
         if(method==='GET'&&action==='provenance'){
           if(!local)throw fail(403,'报表需求溯源尚仅在本机所属人边界开放');
           const query = url.searchParams;
@@ -3673,7 +3785,7 @@ export function createV2Server(options = {}) {
           const downloadDigest = query.get('download_digest');
           if (downloadDigest !== null && !/^[a-f0-9]{64}$/.test(downloadDigest))
             throw fail(422, '下载须提供已核对的溯源摘要');
-          const evidence = reportProvenance.read(report.id, runId, reportActor(req));
+          const evidence = reportProvenance.read(report.id, runId, workspaceReadActor(req));
           if (downloadDigest === null) return json(res, 200, evidence);
           if (downloadDigest !== evidence.digest) throw fail(409, '溯源摘要已变化，请重新核对');
           return json(res, 200, evidence, {
@@ -3716,9 +3828,9 @@ export function createV2Server(options = {}) {
       }
       const opsSession = () => auth.sessionFromHeaders(req.headers);
       const canReadOpsSource = (kind, item) => {
-        if (kind === "report_run" && !canReadSyncReport(item)) return false;
-        if (local) return true;
+        if (kind === "report_run" && !canReadReport(item)) return false;
         if (kind === "release_run") return canReadDelivery(kind, item);
+        if (local) return true;
         if (kind === "report_run") return reports.canReadRun(item);
         if (kind === "run") return Boolean(item && mayReadRun(item, opsSession()));
         return true;
@@ -3729,14 +3841,24 @@ export function createV2Server(options = {}) {
           task.submittedBy === session.user.id &&
           (!task.diagnosis || operations.canReadIncident(store.get("ops_incident", task.diagnosis.incidentId, PROJECT), canReadOpsSource)));
       };
-      if (path === "/api/v2/operations/overview" && method === "GET")
+      if (path === "/api/v2/operations/overview" && method === "GET") {
+        const overview=operations.overview(canReadOpsSource);
+        const recentActivity=syncSqlLocal&&isLoopbackRequest(req)?overview.recentActivity.map(item=>{
+          if(item.kind!=="release_run"||item.status!=="SUCCEEDED")return item;
+          const batch=store.get("release_run",item.id,PROJECT),sync=batch?.source?.syncInput;
+          if(!sync||!batch.published||!batch.schedulerTriggered||!batch.validation?.passed||
+             !Array.isArray(batch.rows)||batch.rows.length<1||batch.rows.length>1000)return item;
+          return {...item,frozenQualitySource:{assetId:syncReportAssetId(batch.id),batchId:batch.id,releaseId:batch.releaseId,
+            snapshotHash:sync.snapshotHash,evidenceHash:publishedReportHash(batch.rows),rowCount:batch.rows.length}};
+        }):overview.recentActivity;
         return json(res, 200, {
-          ...operations.overview(canReadOpsSource),
+          ...overview,recentActivity,
           externalModelContextAllowed: Boolean(
             options.opsPlanner ||
               env.V2_ALLOW_EXTERNAL_OPS_CONTEXT === "true",
           ),
         });
+      }
       if (path === "/api/v2/operations/refresh" && method === "POST") {
         await readBody(req);
         return json(res, 200, operations.refresh(canReadOpsSource));
@@ -3899,10 +4021,17 @@ export function createV2Server(options = {}) {
         });
         return json(res, 200, configured);
       }
-      if (path === "/api/v2/revisions" && method === "GET")
-        return json(res, 200, store.list("revision", PROJECT).filter(item => mayReadRevision(item, auth.sessionFromHeaders(req.headers))));
-      if (path === "/api/v2/runs" && method === "GET")
-        return json(res, 200, await Promise.all(store.list("run", PROJECT).filter(item => mayReadRun(item, auth.sessionFromHeaders(req.headers))).map(async run => exposeDevelopmentRun(await reconcileDevelopment(run)))));
+      if (path === "/api/v2/revisions" && method === "GET") {
+        const session = auth.sessionFromHeaders(req.headers), actor = workspaceReadActor(req);
+        return json(res, 200, store.list("revision", PROJECT).filter(item =>
+          mayReadRevision(item, session) && (!item.syncInput || Boolean(actor && actor === item.author))));
+      }
+      if (path === "/api/v2/runs" && method === "GET") {
+        const session = auth.sessionFromHeaders(req.headers), actor = workspaceReadActor(req);
+        const readable = store.list("run", PROJECT).filter(item => mayReadRun(item, session) &&
+          (!item.syncInput || Boolean(actor && actor === store.get("revision", item.revisionId, PROJECT)?.author)));
+        return json(res, 200, await Promise.all(readable.map(async run => exposeDevelopmentRun(await reconcileDevelopment(run)))));
+      }
       if (path === "/api/v2/python/revisions" && method === "GET")
         return json(res, 200, store.list("python_revision", PROJECT).filter(item => mayReadRevision(item, auth.sessionFromHeaders(req.headers))));
       if (path === "/api/v2/python/revisions" && method === "POST") {
@@ -4075,7 +4204,7 @@ export function createV2Server(options = {}) {
             if(Object.keys(body).length)throw fail(422,"停止后台请求不接受额外字段");
             return json(res,200,await agentEventDriver.cancel(task.id,actor,{developmentBoundary:developmentBackgroundBoundary(developmentAccess,task.id,developmentNow())}));
           }
-          if(Object.keys(body).some(k=>!["expectedVersion","maxEvents","durationMs"].includes(k)))throw fail(422,"后台请求字段不受支持");
+          if(Object.keys(body).some(k=>!["expectedVersion","maxEvents","durationMs","prepareFiles"].includes(k)))throw fail(422,"后台请求字段不受支持");
           const window = ingressChannel === 'HTTP' ? developmentBackgroundWindow(developmentAccess, options.now?.() ?? Date.now(), body) : {};
           return json(res,202,await agentEventDriver.enable(task.id,actor,{...body,...window,
             developmentBoundary:developmentBackgroundBoundary(developmentAccess,task.id,developmentNow())}));
@@ -4091,7 +4220,7 @@ export function createV2Server(options = {}) {
         if (Object.keys(body).some(k => !["expectedVersion", "confirmModelRetry"].includes(k)) ||
             (body.confirmModelRetry !== undefined && typeof body.confirmModelRetry !== "boolean"))
           throw fail(422, "恢复请求包含无效字段");
-        await durableAgent.advance(task.id, body);
+        await durableAgent.advance(task.id, {...body,executionTrigger:"OWNER_ADVANCE"});
         return json(res, 200, exposeDurableTask(get("agent",task.id)));
       }
       if (path === "/api/v2/agent/tools" && method === "GET")
@@ -4192,7 +4321,7 @@ export function createV2Server(options = {}) {
         });
         if(destinationId==='reports'&&(intent.reportSource||body.input.source)){
           if(!intent.reportSource||!body.input.source||!samePublishedReportSource(intent.reportSource,body.input.source))throw Object.assign(fail(409,'报表工具来源须与原意图保存的发布上下文一致'),{code:'AGENT_REPORT_SOURCE_MISMATCH'});
-          publishedPlanContext(body.input.source,reportActor(req));
+          publishedPlanContext(body.input.source,workspaceReadActor(req));
         }
         if (
           !approval ||
@@ -4967,7 +5096,7 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/delivery/verifications" && method === "GET")
         return json(res, 200, visibleDelivery("delivery_verification").map(exposeDeliveryVerification));
       if (path === "/api/v2/release/approvals" && method === "GET")
-        return json(res, 200, visibleDelivery("release_approval"));
+        return json(res, 200, visibleDelivery("release_approval").map(({approvalRequestId,...approval})=>approval));
       if (path === "/api/v2/releases" && method === "GET")
         return json(
           res,
@@ -5056,10 +5185,10 @@ export function createV2Server(options = {}) {
         const selected = privateServiceSourceSelection(url.searchParams,true);
         if (!selected)
           throw fail(422, "需提供任务编号与确切包摘要");
-        if (selected.batchId) throw fail(422, "原发布批次的消费历史仅支持受邀发布");
-        const {taskId,packageDigest,releaseId,callIdDigest}=selected;
+        const {taskId,packageDigest,releaseId,callIdDigest,batchId}=selected;
         const agent = get("agent", taskId); requireDurableAgentOwner(agent, req);
-        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, callIdDigest, manager: dataServices, timeUnitMs: releaseTimeUnitMs, fundSignedExecutionFor, syncSourcesFor }));
+        if (batchId && (!syncSqlLocal || workspaceReadActor(req)!==agent.submittedBy)) throw deliveryDenied();
+        return json(res, 200, await localTaskConsumption({ store, project: PROJECT, agent, packageDigest, releaseId, callIdDigest, batchId, manager: dataServices, timeUnitMs: releaseTimeUnitMs, fundSignedExecutionFor, syncSourcesFor }));
       }
       if (path === "/api/v2/data-services/dapis" && method === "GET")
         return json(res, 200, visibleServices("DAPI"));
@@ -5399,7 +5528,7 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/delivery/reviews" && method === "GET")
         return json(res, 200, visibleDelivery("delivery_review"));
       const deliveryRecord = path.match(
-        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|review|approve))?$/,
+        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|review|approve|review-evidence))?$/,
       );
       if (deliveryRecord) {
         const kind =
@@ -5408,6 +5537,13 @@ export function createV2Server(options = {}) {
             : "delivery_verification";
         const item = get(kind, deliveryRecord[2]);
         requireDeliveryEvidence(kind, item);
+        if (method === "GET" && kind === "delivery_verification" && deliveryRecord[3] === "review-evidence") {
+          if (url.searchParams.size) throw fail(422, "审阅导出仅接受原演练编号");
+          const bundle = get("delivery_package",item.packageId);
+          requireDeliveryEvidence("delivery_package",bundle);
+          if (!bundle.manifest?.source?.syncInput) throw fail(409, "原演练不是冻结持仓交付");
+          return json(res, 200, storedSyncSqlReviewEvidence(validateAnyDeliveryPackage(bundle),bundle,item));
+        }
         if (method === "GET" && !deliveryRecord[3]) {
           if (kind === "delivery_package" && (item.manifest?.source?.syncInput || item.manifest?.source?.fundDevelopment)) validateAnyDeliveryPackage(item);
           return json(res, 200, kind === "delivery_verification" ? exposeDeliveryVerification(item) : protectedDeliveryPayload(item));
@@ -5466,6 +5602,8 @@ export function createV2Server(options = {}) {
             throw fail(409, "原演练已变化，请重新读取审阅依据");
           assertFundRehearsal(item, latestRehearsal);
           assertSyncSqlRehearsal(plan, item, latestRehearsal);
+          const syncRehearsalDigest = plan.source.syncInput ? syncSqlRehearsalDigest(latestRehearsal) : undefined;
+          if (plan.source.syncInput) assertSyncSqlReviewBinding(latestRehearsal, body.syncRehearsalDigest);
           const rehearsalDigest = fundSignedRehearsalDigest(item, latestRehearsal, fundSignedExecutionFor(item));
           if (body.fundRehearsalDigest !== rehearsalDigest)
             throw fail(409, "审阅必须确认当前基金签名演练摘要");
@@ -5489,6 +5627,7 @@ export function createV2Server(options = {}) {
                   review.packageDigest === item.digest &&
                   review.verificationId === latestRehearsal.id &&
                   review.fundRehearsalDigest === rehearsalDigest &&
+                  review.syncRehearsalDigest === syncRehearsalDigest &&
                   review.reviewer?.id === reviewer.id &&
                   review.status === "REVIEWED",
               );
@@ -5504,6 +5643,7 @@ export function createV2Server(options = {}) {
                   packageDigest: item.digest,
                   verificationId: latestRehearsal.id,
                   ...(rehearsalDigest ? {fundRehearsalDigest:rehearsalDigest} : {}),
+                  ...(syncRehearsalDigest ? {syncRehearsalDigest} : {}),
                   reviewerId: reviewer.id,
                   reviewNote,
                   attestations,
@@ -5515,6 +5655,7 @@ export function createV2Server(options = {}) {
                   packageDigest: item.digest,
                   verificationId: latestRehearsal.id,
                   ...(rehearsalDigest ? {fundRehearsalDigest:rehearsalDigest} : {}),
+                  ...(syncRehearsalDigest ? {syncRehearsalDigest} : {}),
                   reviewer,
                   reviewNote,
                   attestations,
@@ -5601,12 +5742,14 @@ export function createV2Server(options = {}) {
             if(distributionConsent&&!sameDistributionConsent(existingApproval.distributionConsent,distributionConsent))throw fail(409,"原批准绑定另一份分布测试发布计划");
             if(fundConsent&&!sameDistributionConsent(existingApproval.fundConsent,fundConsent))throw fail(409,"原批准绑定另一份基金测试发布计划");
             if (syncConsent && (!isDeepStrictEqual(existingApproval.syncConsent, syncConsent) ||
-                existingApproval.reviewId !== review.id || existingApproval.syncReviewDigest !== syncReviewDigest))
+                existingApproval.reviewId !== review.id || existingApproval.syncReviewDigest !== syncReviewDigest ||
+                existingApproval.syncRehearsalDigest !== latestReview.syncRehearsalDigest))
               throw fail(409, "原批准绑定另一份持仓测试发布计划");
             return existingApproval;
           };
           const existingApproval = findExistingApproval();
           if (existingApproval) return json(res, 200, checkExistingApproval(existingApproval));
+          if (syncConsent) assertSyncSqlReviewBinding(latestRehearsal, latestReview.syncRehearsalDigest);
           const key = text(req.headers["idempotency-key"], 1, 100),
             dedup = store.deduplicate(
               PROJECT + ":release-approval:" + key,
@@ -5640,7 +5783,8 @@ export function createV2Server(options = {}) {
                   reviewedBy: review.reviewer,
                   ...(distributionConsent?{distributionConsent,approver}:{}),
                   ...(fundConsent ? { fundConsent, approver } : {}),
-                  ...(syncConsent ? { syncConsent, syncReviewDigest, approver, expiresAt: syncApprovalExpiry(approvedAt) } : {}),
+                  ...(syncConsent ? { syncConsent, syncReviewDigest, syncRehearsalDigest:latestReview.syncRehearsalDigest,
+                    approver, expiresAt: syncApprovalExpiry(approvedAt) } : {}),
                   decision: "APPROVED",
                   status: "APPROVED",
                   reviewNote: review.reviewNote,
@@ -5690,7 +5834,8 @@ export function createV2Server(options = {}) {
           const key = text(req.headers["idempotency-key"], 1, 100);
           const existing = plan.source.syncInput && store.list("delivery_verification", PROJECT)
             .find(record => record.packageId === item.id && record.packageDigest === item.digest &&
-              record.scheduledFor === scheduledFor && ["QUEUED", "RUNNING", "SUCCEEDED"].includes(record.status));
+              (record.scheduledFor === scheduledFor || record.occurrence?.scheduledFor === scheduledFor) &&
+              ["QUEUED", "RUNNING", "SUCCEEDED"].includes(record.status));
           if (existing?.status === "SUCCEEDED") assertSyncSqlRehearsal(plan, item, existing);
           const dedup = store.deduplicate(
             PROJECT + ":delivery-verify:" + key,
@@ -5738,7 +5883,7 @@ export function createV2Server(options = {}) {
               });
               if (result.status === "SUCCEEDED" && plan.source.syncInput) {
                 assertRequirementSource(item);
-                result = checkedSyncSqlFileRehearsal(plan, item, result);
+                result = checkedSyncSqlFileRehearsal(plan, item, result, scheduledFor);
               }
               if (
                 !["SUCCEEDED", "FAILED", "VALIDATION_FAILED"].includes(
@@ -5756,6 +5901,7 @@ export function createV2Server(options = {}) {
                   PROJECT,
                   {
                     ...result,
+                    scheduledFor,
                     published: false,
                     fullLifecycleE2E: false,
                     finishedAt: new Date().toISOString(),
@@ -6241,7 +6387,9 @@ export function createV2Server(options = {}) {
           ...(preparationSource ? {preparationSource} : {}),
           ...(fileReview?{fileReview:{id:fileReview.id,status:fileReview.status,packageId:fileReview.packageId,packageDigest:fileReview.packageDigest,verificationId:fileReview.verificationId,reviewedAt:fileReview.reviewedAt,scope:fileReview.scope,
             ...(fileReview.fundRehearsalDigest ? {fundRehearsalDigest:fileReview.fundRehearsalDigest} : {})}}:{}),
-          delivery: publicDeliveryTask(delivery),
+          delivery: delivery?{...publicDeliveryTask(delivery),...rehearsalBackground(delivery)}:undefined,
+          ...(rehearsalWake && (delivery?delivery.sourcePinned===true && !delivery.verificationId && delivery.stage==='PACKAGE_READY':Boolean(preparationSource)) &&
+            !publicReadOnly && developmentSessionFor(scopeActor())?.readOnly===false ? {backgroundRehearsalAvailable:true}:{}),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt,
             ...(workerResult?{workerResult}:{}),
@@ -6289,7 +6437,13 @@ export function createV2Server(options = {}) {
               url.searchParams.get("verificationId")!==publicationAccess.verificationId))
             throw fail(403,"只可审阅本次开放的基金交付");
           const selector = validatePublicationSelector(publicationSelectorFromUrl(url),actorId);
-          return json(res,200,await cloudPublication.publicationPreflight(agent.id,selector));
+          const access=publicationAccess;
+          const window=!publicReadOnly && access?.sourceKind==="AGENT_TASK" && access.taskId===agent.id &&
+            access.packageDigest===selector.packageDigest && access.verificationId===selector.verificationId &&
+            publicationSession(access,scopeActor(),developmentNow())?.readOnly===false
+            ? {startsAt:access.startsAt,expiresAt:access.expiresAt} : undefined;
+          const preflight=await cloudPublication.publicationPreflight(agent.id,selector,window);
+          return json(res,200,{...preflight,...(window&&publicationWake?{backgroundPublicationSupported:true}:{})});
         }
         if (local && method === "GET" && !privatePublication[2]) {
           const selector=url.search?validatePublicationSelector(publicationSelectorFromUrl(url),actorId):undefined;
@@ -6321,17 +6475,23 @@ export function createV2Server(options = {}) {
         }
         if (method==="POST" && !privatePublication[2]) {
           const body=await readBody(req);
-          if(Object.keys(body).some(k=>!["sourceKind","sourceRunId","packageDigest","verificationId","attestations","reviewDigest"].includes(k)))throw fail(422,"发布请求包含未支持字段");
+          if(Object.keys(body).some(k=>!["sourceKind","sourceRunId","packageDigest","verificationId","attestations","reviewDigest","approvalOnly","approvalId","dispatchInBackground"].includes(k)))throw fail(422,"发布请求包含未支持字段");
+          const dispatch=Object.hasOwn(body,"dispatchInBackground");
+          if (dispatch && (body.dispatchInBackground!==true || typeof body.approvalId!=="string" || body.approvalOnly!==undefined))
+            throw fail(422,"后台发起须使用当前确切版本的原批准");
+          if (dispatch && !publicationWake) throw fail(503,"当前没有可用的后台发布驱动");
           const exact = Object.hasOwn(body,"reviewDigest");
           if (exact && (typeof body.reviewDigest !== "string" || !/^[a-f0-9]{64}$/.test(body.reviewDigest)))
             throw fail(422,"人工审阅摘要格式不合法");
           if (exact && !publicationAccess) throw fail(403,"确切版本须在独立发布窗口提交");
+          const approvalWindow=publicationAccess && {startsAt:publicationAccess.startsAt,expiresAt:publicationAccess.expiresAt};
           const selector = validatePublicationSelector({packageDigest:text(body.packageDigest,64,64),verificationId:text(body.verificationId,1,100),
             ...(Object.hasOwn(body,"sourceKind")?{sourceKind:body.sourceKind}:{}),...(Object.hasOwn(body,"sourceRunId")?{sourceRunId:body.sourceRunId}:{})},actorId);
           if (publicationAccess && (agent.requestBound === true || agent.derivedFrom) && selector.sourceKind === "AGENT" && !exact)
             throw fail(422,"此任务须先审阅原交付、文件演练及发布预检摘要");
           return json(res,202,await cloudPublication.publish({agent,...selector,attestations:body.attestations,
-            ...(exact?{reviewDigest:body.reviewDigest}:{}),idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
+            approvalOnly:body.approvalOnly,approvalId:body.approvalId,approvalWindow,...(dispatch?{deferToWake:publicationWake.enqueue}:{}),
+            ...(exact?{reviewDigest:body.reviewDigest,initiatedBySession:true}:{}),idempotencyKey:text(req.headers["idempotency-key"],1,100)}));
         }
       }
       if (path === "/api/v2/agent/deliveries" && method === "GET") {
@@ -6421,10 +6581,17 @@ export function createV2Server(options = {}) {
             return json(res, 200, await durableDelivery.reconcile(item.id));
           }
           if (method === "POST" && agentDeliveryRecord[2] === "advance") {
-            const {version,rehearsal} = readDeliveryAdvance(await readBody(req));
+            const {version,rehearsal,dispatchInBackground} = readDeliveryAdvance(await readBody(req));
             if ((rehearsal || item.sourcePinned || item.rehearsalPinned) && (item.submittedBy !== agent.submittedBy ||
                 item.submittedBy !== auth.sessionFromHeaders(req.headers)?.user.id))
               throw fail(403,"确切包演练须由原任务创建者操作");
+            if(dispatchInBackground){
+              if (!rehearsalWake || ingressChannel!=='HTTP' || publicReadOnly) throw fail(503,'后台文件演练尚未启用');
+              await rehearsalWake.enqueue({deliveryId:item.id,taskId:agent.id,actorId:item.submittedBy,expectedVersion:version,
+                packageId:rehearsal.packageId,packageDigest:rehearsal.packageDigest,
+                developmentBoundary:developmentBackgroundBoundary(developmentAccess,agent.id,developmentNow())});
+              return json(res,202,deliveryReceipt(get('agent_delivery_task',item.id)));
+            }
             const advanced = await durableDelivery.advance(item.id,version,rehearsal);
             return json(res,200,deliveryReceipt(get("agent_delivery_task",advanced.id)));
           }
@@ -6659,11 +6826,12 @@ export function createV2Server(options = {}) {
               }
               if (actual && plan.source.syncInput) {
                 assertRequirementSource(packageItem);
-                receipt = checkedSyncSqlFileRehearsal(plan, packageItem, receipt);
+                receipt = checkedSyncSqlFileRehearsal(plan, packageItem, receipt, scheduledFor);
                 actual = receipt.status === "SUCCEEDED";
               }
               store.update("delivery_verification", verification.id, PROJECT, {
                 ...receipt,
+                scheduledFor,
                 status: actual ? "SUCCEEDED" : "FAILED",
                 published: false,
                 fullLifecycleE2E: false,
@@ -6697,7 +6865,7 @@ export function createV2Server(options = {}) {
         if (url.searchParams.size) throw fail(422, "输出结构只接受原运行编号");
         const run = get("run", schemaRead[1]);
         requireDevelopmentOwner("run", run, req);
-        const schema = syncSqlOutputSchemaDetails(run, store.get("revision", run.revisionId ?? "", PROJECT));
+        const schema = syncSqlOutputSchemaDetails(run, store.get("revision", run.revisionId ?? "", PROJECT), syncSqlResources);
         if (!schema) throw fail(409, "原运行、版本或冻结快照的输出结构未能核对");
         return json(res, 200, schema);
       }
@@ -6706,8 +6874,26 @@ export function createV2Server(options = {}) {
         const current=get('run',comparisonRead[1]);requireDevelopmentOwner('run',current,req);
         if(comparisonRead[2]==='comparison-candidates'){
           if(url.searchParams.size)throw fail(422,'运行候选读取不接受其他参数');
-          const revision=get('revision',current.revisionId),session=auth.sessionFromHeaders(req.headers),all=store.list('run',PROJECT).filter(r=>r.id!==current.id&&['SUCCEEDED','VALIDATION_FAILED','FAILED','CANCELLED','INTERRUPTED'].includes(r.status)&&mayReadRun(r,session)&&store.get('revision',r.revisionId,PROJECT)?.contextId===revision.contextId);
-          return json(res,200,{protocol:'shuduo-run-comparison-candidates/v1',currentRunId:current.id,contextId:revision.contextId,truncated:all.length>50,candidates:all.slice(0,50).map(r=>{const rev=store.get('revision',r.revisionId,PROJECT);return{runId:r.id,revisionId:rev.id,revisionHash:r.revisionHash,contextId:rev.contextId,runStatus:r.status,createdAt:r.createdAt,sourceKind:rev.source==='MANUAL'?'MANUAL':'AGENT_OR_OTHER'};})});
+          const revision = get('revision', current.revisionId);
+          const session = auth.sessionFromHeaders(req.headers);
+          const frozen = current.syncInput;
+          if (frozen) {
+            if (!syncSqlOutputSchemaDetails(current, revision)) throw fail(409, '当前冻结持仓运行尚无可核验的 Spark 证据');
+            readSyncSqlInput({ store, project: PROJECT, actorId: revision.author, binding: frozen });
+          }
+          const all = store.list('run', PROJECT).filter(run => {
+            if (run.id === current.id || !['SUCCEEDED','VALIDATION_FAILED','FAILED','CANCELLED','INTERRUPTED'].includes(run.status) ||
+                !isDeepStrictEqual(run.syncInput, frozen) || !mayReadRun(run, session)) return false;
+            const candidate = store.get('revision', run.revisionId, PROJECT);
+            return candidate?.contextId === revision.contextId &&
+              (!frozen || candidate.author === revision.author && Boolean(syncSqlOutputSchemaDetails(run, candidate)));
+          });
+          return json(res, 200, { protocol:'shuduo-run-comparison-candidates/v1', currentRunId:current.id, contextId:revision.contextId,
+            ...(frozen ? { snapshotHash:frozen.snapshotHash } : {}), truncated:all.length>50, candidates:all.slice(0,50).map(run => {
+              const candidate = store.get('revision', run.revisionId, PROJECT);
+              return { runId:run.id, revisionId:candidate.id, revisionHash:run.revisionHash, contextId:candidate.contextId,
+                runStatus:run.status, createdAt:run.createdAt, sourceKind:candidate.source==='MANUAL'?'MANUAL':'AGENT_OR_OTHER' };
+            }) });
         }
         if([...url.searchParams.keys()].some(k=>k!=='baseline_run_id')||url.searchParams.getAll('baseline_run_id').length!==1||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(url.searchParams.get('baseline_run_id')??''))throw fail(422,'需要一个确切的基线运行编号');
         const baseline=get('run',url.searchParams.get('baseline_run_id'));requireDevelopmentOwner('run',baseline,req);
@@ -6744,7 +6930,7 @@ export function createV2Server(options = {}) {
         if (kind !== "agent") requireDevelopmentOwner(kind, original, req);
         const item = kind === "run" ? await reconcileDevelopment(original) : original;
         if (kind === "agent") requireDurableAgentOwner(item, req);
-        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? exposeDevelopmentRun(item) : kind === "agent" ? exposeDurableTask(item) : item);
+        if (method === "GET" && !record[3]) return json(res, 200, kind === "run" ? exposeDevelopmentRun(item, true) : kind === "agent" ? exposeDurableTask(item) : item);
         if (method === "GET" && record[3] === "journey" && kind === "agent")
           return json(
             res,
@@ -6968,9 +7154,10 @@ export function createV2Server(options = {}) {
       }
       if (method === "GET" && path === "/api/v2/development/synced-positions") {
         requireSyncSqlLocal(req);
+        if (!workspaceReadActor(req)) throw fail(403, "请使用有效工作台身份核对同步持仓");
         if (url.searchParams.size) throw fail(422, "同步开发输入不接受附加参数");
-        const { selection, source } = currentSyncSqlInput(syncSqlResources);
-        return json(res, 200, { selection, ...source, contextId: syncSqlContextId });
+        const { selection, source, verifiedCurrency } = currentSyncSqlInput(syncSqlResources);
+        return json(res, 200, { selection, ...source, contextId: syncSqlContextId, verifiedCurrency });
       }
       if (method === "POST" && path === "/api/v2/agent/tasks") {
         const body = await readBody(req),
@@ -6987,6 +7174,7 @@ export function createV2Server(options = {}) {
         let syncSelection;
         if (body.syncInput !== undefined) {
           requireSyncSqlLocal(req);
+          if (!workspaceReadActor(req)) throw fail(403, "请使用有效工作台身份选择同步持仓");
           if (language !== "SPARK_SQL" || body.contextId !== syncSqlContextId ||
               Object.keys(body).some(key => !["message", "sql", "language", "contextId", "syncInput"].includes(key)))
             throw fail(422, "同步批次只支持客户资产 T+1 的本机 SQL 开发");

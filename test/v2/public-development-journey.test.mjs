@@ -43,6 +43,7 @@ import { cloudPublicationRequest } from '../../web/src/publication-selection.ts'
 import { privateReleasePendingLabel } from '../../src/v2/private-release-stage.mjs';
 import { serviceSourceFromLocation } from '../../web/src/service-source-binding.ts';
 import { serviceBatchFromLocation } from '../../web/src/service-batch-scope.ts';
+import { agentConsumptionLocation, agentConsumptionReceiptSelection, checkedAgentConsumptionReceipt } from '../../web/src/agent-consumption-view.ts';
 import { privateBatchReportPath } from '../../src/v2/private-batch-report-request.mjs';
 import { reportEvidenceDigest } from '../../src/v2/report-provenance-client.mjs';
 import { batchArchiveRoute, batchArchiveListPath, batchArchiveRequestPath, prepareBatchArchive, readBatchArchive, submitBatchArchive } from '../../src/v2/private-batch-archive-client.mjs';
@@ -182,7 +183,8 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   queueTimeoutMs=180000,contextualModel=false,sqlForAttempt,fundProviderFixture=false}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'shuduo-pilot-journey-'));
   let now = Date.now(), app, store, base, cookie, csrf, cloudState, modelCalls = 0, jobCreates = 0, loseSubmission = false, modelFault=false;
-  let loseArtifactAcknowledgement=false, packageWrites=0, warmWorkerReady=true;
+  let loseArtifactAcknowledgement=false, loseWakeAcknowledgement=false, loseReleaseAcknowledgement=false,loseConsumptionAfter=undefined, packageWrites=0, warmWorkerReady=true;
+  const signedCalls=()=>store.list('service_call',PROJECT).filter(record=>record.invocationEvidence?.channel==='SIGNED_AGENT_CONSUMPTION').length;
   let jobWriteAttempts=0, cancellationWrites=0, resultReads=0;
   const objects = new Map();
   const wakes=[];
@@ -210,6 +212,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   const agentWakeTransport={read:async key=>objects.get(key),create:async(key,body)=>{
     if(objects.has(key)){assert.equal(objects.get(key),body);return;}
     objects.set(key,body);wakes.push({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',eventTime:new Date(now).toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key}}}]});
+    if(loseWakeAcknowledgement){loseWakeAcknowledgement=false;throw Error('SYNTHETIC_WAKE_ACK_LOST');}
   }};
   const resultEvent=key=>({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',
     eventTime:new Date(now).toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key}}}]});
@@ -225,6 +228,15 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   };
   const open = async () => {
     store = new MetadataStore(join(directory, 'metadata.sqlite'));
+    store.flush=async()=>{
+      if(loseConsumptionAfter!==undefined&&signedCalls()>loseConsumptionAfter){
+        loseConsumptionAfter=undefined;throw Error('SYNTHETIC_AGENT_CONSUMPTION_ACK_LOST');
+      }
+      if(loseReleaseAcknowledgement&&store.list('release_initiation',PROJECT).some(record=>record.trigger==='SIGNED_PUBLICATION_WAKE')){
+        loseReleaseAcknowledgement=false;
+        throw Error('SYNTHETIC_RELEASE_ACK_LOST');
+      }
+    };
     const artifactStore=new LocalArtifactStore(join(directory,'artifacts')), put=artifactStore.put.bind(artifactStore);
     artifactStore.put=async(kind,digest,value)=>{
       const result=await put(kind,digest,value);
@@ -314,6 +326,10 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   }, later:ms=>now+=ms,now:()=>now,modelFault:value=>modelFault=value, lose: () => { loseSubmission = true; }, get store() { return store; }, counts: () => ({ modelCalls, jobCreates }),
     get businessStore(){return app.businessStore;}, addAdmin:input=>app.auth.bootstrapAdmin(input),
     loseArtifact:()=>{loseArtifactAcknowledgement=true;}, packageWrites:()=>packageWrites,
+    loseWake:()=>{loseWakeAcknowledgement=true;}, loseRelease:()=>{loseReleaseAcknowledgement=true;},
+    loseConsumption:()=>{loseConsumptionAfter=signedCalls();}, replaceWake:(event,replace)=>{
+      const key=event.events[0].oss.object.key, original=objects.get(key);objects.set(key,replace(original));return ()=>objects.set(key,original);
+    },
     queueCounts:()=>({jobWriteAttempts,cancellationWrites,resultReads}),
     alignWallClock:()=>{now=Date.now();},
     privateCall:async body=>{const r=await fetch(base.replace(/\/api\/v2$/,'')+'/invoke',{method:'POST',headers:{'content-type':'application/octet-stream','x-fc-control-path':'/invoke',...(stableOrigin?{connection:'close'}:{})},body:JSON.stringify(body)});return{status:r.status,body:await r.json()};} };
@@ -568,7 +584,7 @@ async function measuredSpark(t,f,prepared,label,expectedStatus='SUCCEEDED'){
 }
 
 async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchId,sequence,origin,expectedRows=baseConsumerRows,
-  differentContextRows}){
+  differentContextRows,agentConsumption=false,withAgentEvidence=false}){
   const [holdingsSpec,cashSpec]=[
     {name:'虚构持仓原批次 '+sequence,slug:'verified-holdings-'+sequence,
       fields:['client_id','holding_market_value','security_count'],timeoutMs:3000,rateLimitPerMinute:12},
@@ -580,7 +596,7 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   const applicationName='原批次独立验收应用 '+sequence;
   f.alignWallClock();
   Object.assign(f.env,{V2_PRIVATE_DATA_SERVICES_ENABLED:'true',V2_FC_PUBLIC_WRITE_SCOPE:'SERVICE_CONSUMPTION_ONLY',
-    V2_PUBLIC_SERVICE_STARTS_AT:new Date(f.now()-1000).toISOString(),V2_PUBLIC_SERVICE_EXPIRES_AT:new Date(f.now()+60000).toISOString(),
+    V2_PUBLIC_SERVICE_STARTS_AT:new Date(f.now()-1000).toISOString(),V2_PUBLIC_SERVICE_EXPIRES_AT:new Date(f.now()+(withAgentEvidence?180000:60000)).toISOString(),
     V2_PUBLIC_SERVICE_PLAN:JSON.stringify({taskId,packageDigest,sourceReleaseRunId:batchId,dapis:[holdingsSpec,cashSpec],xapi:xapiSpec,applicationName})});
   await f.restart();
   const sourceFile=join(f.directory,'consumer-source-'+sequence+'.json');
@@ -602,17 +618,106 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   const cash=await createService('dapis',{...cashSpec,sourceReleaseRunId:batchId});
   const xapi=await createService('xapis',{...xapiSpec,steps:[{alias:'holdings',dapiId:holdings.id,dapiVersionId:holdings.currentVersion.id},
     {alias:'cash',dapiId:cash.id,dapiVersionId:cash.currentVersion.id}]});
-  const app=await f.call('/data-services/applications',{name:applicationName,serviceIds:[holdings.id,xapi.id]},randomUUID());
+  const issuanceKey=randomUUID();
+  const app=await f.call('/data-services/applications',{name:applicationName,serviceIds:[holdings.id,xapi.id]},issuanceKey);
   assert.equal(app.status,201);
+  assert.equal(app.body.application.issuanceEvidence,undefined);
+  let agentRequestId;
+  if(agentConsumption||withAgentEvidence){
+    assert.equal((await f.call('/auth/session')).body.consumptionPlan.agentConsumptionAvailable,true);
+    f.alignWallClock();
+    const path='/data-services/agent/consumption-jobs',requestId=randomUUID(),receiptPath=path+'/'+requestId;
+    const binding={sourceBinding:{taskId,releaseId,packageDigest,sourceReleaseRunId:batchId},applicationId:app.body.application.id,
+      dapiVersionId:holdings.currentVersion.id,xapiVersionId:xapi.currentVersion.id};
+    const wakes=f.wakes.length,calls=f.store.list('service_call',PROJECT).length,compute=f.counts();
+    f.store.update('service_app',binding.applicationId,PROJECT,{customerAccess:{clientId:'CLIENT-001',maskedFields:[]}});
+    assert.equal((await f.call(path,binding,requestId)).body.code,'AGENT_CONSUMPTION_GRANT_INVALID');
+    assert.equal(f.wakes.length,wakes);
+    assert.equal(f.store.list('service_call',PROJECT).length,calls);
+    f.store.update('service_app',binding.applicationId,PROJECT,{customerAccess:undefined});
+    assert.equal((await f.call(path,{...binding,dapiVersionId:cash.currentVersion.id},requestId)).status,403);
+    assert.equal((await f.call(path,{...binding,sourceBinding:{...binding.sourceBinding,sourceReleaseRunId:randomUUID()}},requestId)).status,403);
+    assert.equal((await f.call(path,{...binding,token:app.body.token},requestId)).status,422);
+    const delegatedClient=new V2Client({baseUrl:f.base,fetchImpl:async(url,options)=>{
+      const response=await f.call(new URL(url).pathname.slice('/api/v2'.length),options.body?JSON.parse(options.body):undefined,options.headers['Idempotency-Key']);
+      return new Response(JSON.stringify(response.body),{status:response.status});
+    }});
+    const requestFile=join(f.directory,'agent-consumption.json');
+    writeFileSync(requestFile,JSON.stringify(binding),{mode:0o600});
+    let queued;
+    f.loseWake();
+    assert.equal(await runV2Cli(['agent','consume-services','--file',requestFile,'--request-id',requestId,'--confirm'],{},
+      {client:delegatedClient,output:line=>{queued=JSON.parse(line);},error:line=>assert.fail(line)}),0);
+    assert.equal(queued.state,'DELIVERY_UNKNOWN');
+    assert.deepEqual(queued.calls,[]);
+    assert.equal(f.wakes.length,wakes+1);
+    assert.equal((await f.call(path,binding,randomUUID())).status,409);
+    const wake=f.wakes.at(-1);
+    const restore=f.replaceWake(wake,raw=>raw.replace('signature','signatureChanged'));
+    assert.equal((await f.privateCall(wake)).status,401);
+    restore();
+    f.loseConsumption();
+    assert.equal((await f.privateCall(wake)).status,500);
+    const partial=await f.call(receiptPath);
+    assert.equal(partial.body.state,'RESULT_UNCONFIRMED');
+    assert.deepEqual(partial.body.calls.map(call=>call.type),['DAPI']);
+    assert.equal(partial.body.agentInitiated,false);
+    await f.restart();
+    assert.equal((await f.privateCall(wake)).body.state,'COMPLETED');
+    assert.equal((await f.privateCall(wake)).body.state,'REPLAYED');
+    const completed=await f.call(receiptPath);
+    assert.equal(completed.status,200,completed.body.message);
+    assert.equal(completed.body.wakeId,queued.wakeId);
+    assert.equal(completed.body.agentInitiated,true);
+    assert.equal(completed.body.externalSystemVerified,false);
+    assert.deepEqual(completed.body.calls.map(call=>[call.type,call.versionId,call.rowCount]),[
+      ['DAPI',binding.dapiVersionId,expectedRows.length],['XAPI',binding.xapiVersionId,expectedRows.length]]);
+    assert.ok(!JSON.stringify(completed.body).includes(app.body.token));
+    assert.equal(f.store.list('service_call',PROJECT).length,calls+2);
+    assert.equal(f.store.list('agent_consumption_step',PROJECT).filter(step=>step.wakeId===queued.wakeId).length,2);
+    const mcp=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'service_agent_consumption_request',arguments:{requestId}}},{client:delegatedClient}));
+    assert.deepEqual(mcp.result.structuredContent,completed.body);
+    assert.deepEqual(f.counts(),compute);
+    const evidence='/data-services/task-evidence?'+new URLSearchParams({agent_task_id:taskId,package_digest:packageDigest,release_id:releaseId,
+      call_id_digest:completed.body.calls[1].callIdDigest});
+    const history=(await f.call(evidence)).body.services[0];
+    assert.equal(history.status,'VERIFIED',history.code);
+    const attribution=history.call.attribution;
+    assert.equal(attribution.channel,'SIGNED_AGENT_CONSUMPTION');
+    assert.equal(attribution.delegation.requestDigest,sha256(requestId));
+    if(withAgentEvidence){
+      agentRequestId=requestId;
+      // Advance the service's fixture clock past its existing one-minute
+      // quota. The independent HTTP checks still use the normal rate limits.
+      f.later(61000);
+    } else {
+      assert.equal((await f.call('/data-services/applications/'+binding.applicationId+'/revoke',{})).status,200);
+      assert.equal((await f.privateCall(wake)).status,403);
+      f.env.V2_FC_PUBLIC_READ_ONLY='true';
+      f.env.V2_PRIVATE_DATA_SERVICES_ENABLED='false';
+      delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
+      await f.restart();
+      assert.equal((await f.call('/auth/session')).body.consumptionPlan?.agentConsumptionAvailable,undefined);
+      assert.deepEqual((await f.call(receiptPath)).body,completed.body);
+      assert.equal((await fetch(f.base+receiptPath)).status,401);
+      const other=f.addAdmin({email:'other-agent-consumption@example.invalid',password:'SyntheticJourney!2026',displayName:'另一位虚构工程师'});
+      const alternate=await f.call('/auth/login',{email:other.email,password:'SyntheticJourney!2026'});
+      const otherCookie=alternate.cookies.map(cookie=>cookie.split(';',1)[0]).join('; ');
+      assert.equal((await fetch(f.base+receiptPath,{headers:{cookie:otherCookie}})).status,404);
+      assert.equal((await f.call(path,binding,requestId)).status,403);
+      assert.equal(f.store.list('service_call',PROJECT).length,calls+2);
+      return;
+    }
+  }
   // Store creation timestamps use wall time. The fixture's fixed invocation
   // clock must start after the application grant it is testing.
-  f.alignWallClock();
+  if(!withAgentEvidence)f.alignWallClock();
   const tokenFile=join(f.directory,'consumer-token-'+sequence),planFile=join(f.directory,'consumer-plan-'+sequence+'.json');
   const reportFile=join(f.directory,'consumer-report-'+sequence+'.json');
   writeFileSync(tokenFile,app.body.token,{mode:0o600});
   const describe=service=>({id:service.id,slug:service.slug,versionId:service.currentVersion.id,configHash:service.currentVersion.configHash});
   const plan={protocol:'SERVICE_CONSUMER_V2',authorized:true,testOnly:true,privateFixture:true,origin,approvedOrigin:origin,
-    startedAt:new Date(f.now()-1000).toISOString(),deadline:new Date(f.now()+50000).toISOString(),timeoutMs:5000,maxRequests:20,
+    startedAt:new Date((withAgentEvidence?Date.now():f.now())-1000).toISOString(),deadline:new Date(f.now()+50000).toISOString(),timeoutMs:5000,maxRequests:20,
     reportFile,expectedRows,source,dapis:[{...describe(holdings),alias:'holdings',fields:holdingsSpec.fields,granted:true},
       {...describe(cash),alias:'cash',fields:cashSpec.fields,granted:false}],xapi:describe(xapi),
     ungranted:{type:'DAPI',slug:cash.slug},rateLimit:{serviceId:xapi.id,perMinute:6}};
@@ -625,16 +730,42 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   assert.deepEqual(report.phases,{consume:'PASSED',revoked:'PASSED'});
   const dapiCall=report.requests.find(row=>row.type==='DAPI'&&row.statusCode===200);
   const xapiCall=report.requests.find(row=>row.type==='XAPI'&&row.statusCode===200);
-  const flags=['--plan',planFile,'--call-id-digest',xapiCall.callIdDigest];
+  const flags=['--plan',planFile,'--call-id-digest',xapiCall.callIdDigest,...(agentRequestId?['--agent-request-id',agentRequestId]:[])];
   const storedCalls=f.store.list('service_call',PROJECT).length;
   const bound=await cli('v3-consumption',flags);
   assert.equal(bound.status,'CONSUMPTION_BOUND',bound.reason);
   assert.equal(bound.consumption.status,'MATCHED_ONLY');
   assert.equal(bound.consumption.dapiCallIdDigest,dapiCall.callIdDigest);
   assert.equal(bound.consumption.xapiCallIdDigest,xapiCall.callIdDigest);
+  if(agentRequestId){
+    assert.equal(bound.consumption.agent.requestId,agentRequestId);
+    assert.equal(bound.consumption.agent.applicationId,app.body.application.id);
+    assert.equal(bound.consumption.agent.batchId,batchId);
+    assert.notEqual(bound.consumption.agent.xapi.callIdDigest,xapiCall.callIdDigest);
+  }
+  const attribution=bound.consumption.attribution;
+  assert.equal(attribution.batchId,batchId);
+  for (const [kind,request] of [['dapi',dapiCall],['xapi',xapiCall]]) {
+    assert.equal(attribution[kind].callIdDigest,request.callIdDigest);
+    assert.equal(attribution[kind].evidence.channel,'BEARER_HTTP');
+    assert.equal(attribution[kind].evidence.issuanceMode,'AUTHENTICATED_SESSION');
+    assert.equal(attribution[kind].evidence.issuanceRequestDigest,sha256(issuanceKey));
+    assert.deepEqual(attribution[kind].evidence.serviceDesign,{kind:'UNRECORDED'});
+  }
   assert.equal(bound.agentIndependentE2E,false);
   assert.equal(f.store.list('service_call',PROJECT).length,storedCalls);
   assert.ok(!JSON.stringify(bound).includes(app.body.token));
+  assert.ok(!JSON.stringify(bound).includes(issuanceKey));
+  const wrongToken={...report,credentialDigest:'b'.repeat(64)};
+  writeFileSync(reportFile,JSON.stringify(wrongToken));
+  assert.equal((await cli('v3-consumption',flags)).reason,'CALL_ATTRIBUTION_UNCONFIRMED');
+  writeFileSync(reportFile,JSON.stringify(report));
+  const storedXapi=f.store.list('service_call',PROJECT).find(call=>sha256(call.id)===xapiCall.callIdDigest);
+  for (const patch of [{queryDigest:'c'.repeat(64)},{channel:'BEARER_PRIVATE_BRIDGE'}]) {
+    f.store.update('service_call',storedXapi.id,PROJECT,{invocationEvidence:{...storedXapi.invocationEvidence,...patch}});
+    assert.equal((await cli('v3-consumption',flags)).reason,'CALL_ATTRIBUTION_UNCONFIRMED');
+  }
+  f.store.update('service_call',storedXapi.id,PROJECT,{invocationEvidence:storedXapi.invocationEvidence});
   const missing=structuredClone(report);
   missing.requests[dapiCall.sequence-1].callIdDigest='a'.repeat(64);
   writeFileSync(reportFile,JSON.stringify(missing));
@@ -995,8 +1126,88 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
   assert.deepEqual(f.counts(),{modelCalls:0,jobCreates:0});
 });
 
-test('a request-bound base task requires the exact verified version for delivery and publication',async t=>{
-  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true});
+async function developWorkbenchInBackground(t,f,taskPath,created,definition,measure) {
+  const delegated=await f.call(taskPath+'/background',{expectedVersion:created.version,prepareFiles:true,maxEvents:12});
+  assert.equal(delegated.status,202,delegated.body.message);
+  assert.equal(delegated.body.status,'ACTIVE');
+  assert.equal(delegated.body.prepareFiles,true);
+  const initialStore=f.store;
+  await f.restart();
+  assert.notEqual(f.store,initialStore);
+  const attempts=[];
+  let wakeIndex=0, failedRun;
+  const takeWake=()=>{
+    const event=f.wakes[wakeIndex++];
+    assert.ok(event,`Missing signed wake ${wakeIndex}`);
+    return event;
+  };
+  const fire=async event=>{
+    const receipt=await f.privateCall(event);
+    assert.equal(receipt.status,200,receipt.body.code??receipt.body.message);
+    return receipt.body;
+  };
+  for(const attempt of [1,2]){
+    const modelWake=takeWake();
+    await fire(modelWake);
+    await fire(modelWake);
+    assert.equal(f.counts().modelCalls,attempt);
+    await fire(takeWake());
+    const waiting=f.store.get('agent',created.id,PROJECT);
+    assert.equal(waiting.stage,'WAITING_FOR_RUN');
+    const prepared=f.store.get('run',waiting.runId,PROJECT).remoteSubmission.prepared;
+    assert.equal(prepared.job.jobId,waiting.runId);
+    attempts.push({attempt,modelTrigger:'SIGNED_BACKGROUND_EVENT',spark:{runId:waiting.runId,submissionTriggers:['SIGNED_BACKGROUND_EVENT']}});
+    const resultStatus=attempt===1?'VALIDATION_FAILED':'SUCCEEDED';
+    const family=validationFamilyForContext(definition.contextId);
+    f.complete(prepared,measure?await measuredSpark(t,f,prepared,`signed development attempt ${attempt}`,resultStatus):attempt===1?{
+      status:resultStatus,engine:'Apache Spark',engineVersion:'3.5.9',mainSqlExecuted:true,rows:[{wrong_metric:1}],durationMs:100,
+      validation:{passed:false,issues:['虚构持仓字段不符合业务契约'],regressions:family.contextIds.map(contextId=>({contextId,passed:false}))},
+    }:undefined);
+    await fire(f.resultEvent(prepared.resultKey));
+    const finishWake=takeWake();
+    if(attempt===1){
+      await fire(finishWake);
+      failedRun=f.store.get('run',waiting.runId,PROJECT);
+      assert.equal(failedRun.status,'VALIDATION_FAILED');
+      assert.equal(failedRun.validation.passed,false);
+      assert.equal(f.store.get('agent',created.id,PROJECT).stage,'READY_FOR_MODEL');
+      assert.equal(f.store.list('delivery_package',PROJECT).length,0);
+      continue;
+    }
+    f.loseArtifact();
+    assert.equal((await f.privateCall(finishWake)).status,500);
+    const [pending]=f.store.list('agent_delivery_task',PROJECT);
+    assert.equal(pending.stage,'PACKAGE_PERSISTING');
+    assert.equal(pending.sourceRunId,waiting.runId);
+    assert.equal(f.packageWrites(),1);
+    const counts=f.counts();
+    await f.restart();
+    const restored=await fire(finishWake);
+    assert.equal(restored.status,'COMPLETED');
+    assert.equal(restored.preparedDelivery.deliveryId,pending.id);
+    assert.equal(restored.preparedDelivery.packageId,pending.packageId);
+    assert.equal((await fire(finishWake)).state,'INACTIVE');
+    assert.deepEqual(f.counts(),counts);
+    assert.deepEqual(f.store.get('run',failedRun.id,PROJECT),failedRun);
+  }
+  const current=(await f.call(taskPath)).body,[delivery]=f.store.list('agent_delivery_task',PROJECT);
+  assert.equal(current.status,'SUCCEEDED');
+  assert.equal(current.attempts[0].status,'VALIDATION_FAILED');
+  assert.notEqual(attempts[0].spark.runId,current.runId);
+  assert.deepEqual(f.counts(),{modelCalls:2,jobCreates:2});
+  assert.equal(f.store.list('delivery_package',PROJECT).length,1);
+  assert.equal(f.store.list('release',PROJECT).length,0);
+  assert.equal(delivery.stage,'PACKAGE_READY');
+  const deliveryRequestId=delivery.preparationRequestId;
+  const preparedFiles=await f.call(taskPath+'/delivery-requests/'+deliveryRequestId);
+  assert.equal(preparedFiles.status,200,preparedFiles.body.message);
+  assert.equal(preparedFiles.body.preparationEvidence.trigger,'SIGNED_BACKGROUND_EVENT');
+  return {current,drivers:attempts,preparedFiles,deliveryRequestId};
+}
+
+async function requestBoundPublicationJourney(t,{separateApproval=false,backgroundPublication=false,agentConsumption=false,withAgentEvidence=false,backgroundDevelopment=false}={}) {
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true,
+    ...(backgroundDevelopment?{sqlForAttempt:(attempt,input)=>attempt===1?'SELECT 1 AS wrong_metric':referenceSqlForContext(input.context.id)}:{})});
   const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_WORKBENCH==='true';
   const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
   const body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
@@ -1025,6 +1236,7 @@ test('a request-bound base task requires the exact verified version for delivery
   };
   const saved=()=>JSON.parse(readFileSync(checkpoint,'utf8'));
   f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)));
+  if(backgroundDevelopment)f.env.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT='5';
   await f.restart();
   const created=await f.call('/agent/tasks',body,key);
   assert.equal(created.status,202,created.body.message);
@@ -1038,27 +1250,38 @@ test('a request-bound base task requires the exact verified version for delivery
       actions:{agent:{key,status:'CONFIRMED',id:created.body.id,bodyHash:sha256(JSON.stringify(body))}}}]}),{mode:0o600});
   const taskPath='/agent/tasks/'+created.body.id;
   const evidencePath='/agent/requests/'+key+'/execution-evidence';
+  assert.equal((await f.call(taskPath+'/advance',{
+    expectedVersion:created.body.version,executionTrigger:'SIGNED_BACKGROUND_EVENT',
+  })).status,422);
   const advance=async current=>{
     const response=await f.call(taskPath+'/advance',{expectedVersion:current.version});
     assert.equal(response.status,200,response.body.message);
     return response.body;
   };
-  let current=await advance(created.body);
-  current=await advance(current);
-  const developmentJob=f.store.get('run',current.runId,PROJECT).remoteSubmission.prepared;
-  f.complete(developmentJob,measure?await measuredSpark(t,f,developmentJob,'workbench development'):undefined);
-  current=await advance(current);
+  const signedDevelopment=backgroundDevelopment?await developWorkbenchInBackground(t,f,taskPath,created.body,definition,measure):undefined;
+  let current, drivers;
+  if(signedDevelopment){
+    ({current,drivers}=signedDevelopment);
+  } else {
+    current=await advance(await advance(created.body));
+    const developmentJob=f.store.get('run',current.runId,PROJECT).remoteSubmission.prepared;
+    f.complete(developmentJob,measure?await measuredSpark(t,f,developmentJob,'workbench development'):undefined);
+    current=await advance(current);
+    drivers=[{attempt:1,modelTrigger:'OWNER_ADVANCE',spark:{runId:current.runId,submissionTriggers:['OWNER_ADVANCE']}}];
+  }
+  assert.deepEqual(current.developmentDrivers,drivers);
+  assert.deepEqual((await f.call(evidencePath)).body.developmentDrivers,drivers);
   const sourceView=(await f.call(taskPath+'/workflow')).body.preparationSource;
   assert.equal(sourceView.runId,current.runId);
   assert.equal(sourceView.revisionId,current.revisionId);
   const beforeFiles=f.counts();
   assert.equal((await f.call(taskPath+'/prepare-delivery',{},randomUUID())).status,422);
   assert.equal((await f.call(taskPath+'/prepare-delivery',{expectedSource:{...sourceView,revisionHash:'0'.repeat(64)}},randomUUID())).status,409);
-  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,signedDevelopment?1:0);
   assert.deepEqual(f.counts(),beforeFiles);
-  const deliveryRequestId=randomUUID();
-  const preparedFiles=await f.call(taskPath+'/prepare-delivery',{expectedSource:sourceView},deliveryRequestId);
-  assert.equal(preparedFiles.status,202,preparedFiles.body.message);
+  const deliveryRequestId=signedDevelopment?.deliveryRequestId??randomUUID();
+  const preparedFiles=signedDevelopment?.preparedFiles??await f.call(taskPath+'/prepare-delivery',{expectedSource:sourceView},deliveryRequestId);
+  assert.equal(preparedFiles.status,signedDevelopment?200:202,preparedFiles.body.message);
   assert.equal(preparedFiles.body.sourcePinned,true);
   const bundle=f.store.get('delivery_package',preparedFiles.body.packageId,PROJECT);
   assert.equal(bundle.manifest.source.runId,current.runId);
@@ -1068,8 +1291,21 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal(preparedFiles.body.preparationRequestId,undefined);
   assert.deepEqual((await f.call(evidencePath)).body.originalDelivery,{id:preparedFiles.body.id,requestId:deliveryRequestId});
   assert.ok(!(await (await fetch(f.base+evidencePath)).text()).includes(deliveryRequestId));
-  assert.equal((await cli('v3-inspect')).delivery.status,'REQUEST_NOT_SUBMITTED');
+  const unbound=readFileSync(checkpoint,'utf8');
+  alter=(path,value)=>{if(path===evidencePath)value.developmentDrivers[0].spark.runId=randomUUID();};
+  assert.equal((await cli('v3-inspect')).reason,'ORIGINAL_DEVELOPMENT_DRIVERS_MISMATCH');
+  assert.equal(readFileSync(checkpoint,'utf8'),unbound);
+  alter=undefined;
+  const driverEvidence={taskId:current.id,revisionId:current.revisionId,developmentRunId:current.runId,attempts:drivers};
+  const initialInspection=await cli('v3-inspect');
+  assert.equal(initialInspection.delivery.status,'REQUEST_NOT_SUBMITTED');
+  assert.deepEqual(initialInspection.developmentDriverEvidence,driverEvidence);
   const beforeImport=readFileSync(checkpoint,'utf8');
+  assert.deepEqual(saved().outcomes[0].developmentDriverEvidence,driverEvidence);
+  alter=(path,value)=>{if(path===evidencePath)value.developmentDrivers[0].modelTrigger=signedDevelopment?'OWNER_ADVANCE':'SIGNED_BACKGROUND_EVENT';};
+  assert.equal((await cli('v3-inspect')).reason,'ORIGINAL_DEVELOPMENT_DRIVERS_MISMATCH');
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeImport);
+  alter=undefined;
   assert.equal((await cli('v3-inspect',['--workbench','--delivery-request-id',randomUUID()])).reason,'WORKBENCH_DELIVERY_REQUEST_MISMATCH');
   await cli('v3-inspect',['--workbench','--delivery-request-id','../fake'],1);
   assert.equal(readFileSync(checkpoint,'utf8'),beforeImport);
@@ -1083,8 +1319,49 @@ test('a request-bound base task requires the exact verified version for delivery
   const exactPackage={packageId:bundle.id,packageDigest:bundle.digest};
   const deliveryPath='/agent/deliveries/'+preparedFiles.body.id+'/advance';
   // The queue accepts the original rehearsal while its acknowledgement is lost.
-  f.lose();
-  assert.equal((await f.call(deliveryPath,{expectedVersion:preparedFiles.body.version,rehearsal:exactPackage})).status,500);
+  const developmentWakes=f.wakes.length;
+  let rehearsalWakeId;
+  if (backgroundPublication) {
+    assert.equal((await f.call(taskPath+'/workflow')).body.backgroundRehearsalAvailable,true);
+    const wakeCount=f.wakes.length,activity=f.counts();
+    const delegation={expectedVersion:preparedFiles.body.version,rehearsal:exactPackage,dispatchInBackground:true};
+    assert.equal((await f.call(deliveryPath,{...delegation,rehearsal:{...exactPackage,verificationId:randomUUID()}})).status,422);
+    assert.equal((await f.call(deliveryPath,{...delegation,rehearsal:{...exactPackage,packageDigest:'0'.repeat(64)}})).status,403);
+    f.loseWake();
+    let queued;
+    assert.equal(await runV2Cli(['agent','advance-delivery','--id',preparedFiles.body.id,'--version',String(preparedFiles.body.version),
+      '--package-id',bundle.id,'--package-digest',bundle.digest,'--confirm','--dispatch-in-background'],{},{client,
+      output:line=>{queued=JSON.parse(line);},error:line=>assert.fail(line)}),0);
+    rehearsalWakeId=queued.rehearsalBackground.wakeId;
+    assert.equal(queued.rehearsalBackground.state,'DELIVERY_UNKNOWN');
+    assert.equal(f.wakes.length,wakeCount+1);
+    assert.deepEqual(f.counts(),activity);
+    const rejected=await f.call(deliveryPath,{expectedVersion:preparedFiles.body.version,rehearsal:exactPackage});
+    assert.equal(rejected.status,409);
+    const wakeEvent=f.wakes.at(-1);
+    const restore=f.replaceWake(wakeEvent,raw=>raw.replace('signature','signatureChanged'));
+    assert.equal((await f.privateCall(wakeEvent)).status,401);
+    restore();
+    await f.restart();
+    const replayed=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'agent_delivery_advance',
+      arguments:{deliveryTaskId:preparedFiles.body.id,...delegation,confirm:true}}},{client}));
+    assert.deepEqual(replayed.result.structuredContent.rehearsalBackground,{wakeId:rehearsalWakeId,state:'QUEUED'});
+    assert.equal(f.wakes.length,wakeCount+1);
+    f.lose();
+    assert.equal((await f.privateCall(wakeEvent)).status,500);
+    const originalBatch=f.store.get('agent_delivery_task',preparedFiles.body.id,PROJECT);
+    assert.equal(originalBatch.rehearsalWakeId,rehearsalWakeId);
+    const submitted=f.queueCounts();
+    await f.restart();
+    assert.equal((await f.privateCall(wakeEvent)).body.state,'BATCH_RESERVED');
+    assert.equal((await f.privateCall(wakeEvent)).body.state,'REPLAYED');
+    assert.equal(f.queueCounts().jobWriteAttempts,submitted.jobWriteAttempts);
+    assert.equal(f.store.get('agent_delivery_task',preparedFiles.body.id,PROJECT).verificationId,originalBatch.verificationId);
+    assert.equal(f.store.list('delivery_verification',PROJECT).length,1);
+  } else {
+    f.lose();
+    assert.equal((await f.call(deliveryPath,{expectedVersion:preparedFiles.body.version,rehearsal:exactPackage})).status,500);
+  }
   const stored=f.store.get('agent_delivery_task',preparedFiles.body.id,PROJECT);
   const {verificationId}=stored;
   assert.equal(stored.stage,'FILE_REHEARSAL_SUBMITTING');
@@ -1125,7 +1402,7 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.deepEqual(f.queueCounts(),{...beforeSettlement,resultReads:beforeSettlement.resultReads+1});
   assert.equal(f.store.list('delivery_verification',PROJECT).length,1);
   assert.equal(f.store.list('release_approval',PROJECT).length,0);
-  assert.equal(f.wakes.length,0);
+  assert.equal(f.wakes.length,developmentWakes+(backgroundPublication?1:0));
   const readback=await f.call(taskPath+'/delivery-requests/'+deliveryRequestId);
   assert.equal(readback.body.verificationId,verificationId);
   assert.equal(readback.body.status,'SUCCEEDED');
@@ -1158,12 +1435,148 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal((await f.call(publication,{...selector,attestations,reviewDigest:'0'.repeat(64)},randomUUID())).status,409);
   assert.equal(f.store.list('release',PROJECT).length,0);
   const request=cloudPublicationRequest(selector,bundle.id,attestations,preflight.body.reviewDigest);
-  const accepted=await f.call(publication,request.body,request.idempotencyKey);
-  assert.equal(accepted.status,202,accepted.body.message);
+  const readPublicationTool=async(name,args)=>{
+    const response=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}},{client}));
+    assert.ok(response.result?.structuredContent,JSON.stringify(response));
+    return response.result.structuredContent;
+  };
+  if(separateApproval){
+    assert.match(preflight.body.approvalRequestId,/^approval-[a-f0-9]{64}$/);
+    assert.equal((await f.call(preflightPath)).body.approvalRequestId,preflight.body.approvalRequestId);
+    assert.equal((await f.call(publication,{...request.body,approvalOnly:true},'invalid request')).status,422);
+    const saveApproval=await f.call(publication,{...request.body,approvalOnly:true},request.idempotencyKey);
+    assert.equal(saveApproval.status,202,saveApproval.body.message);
+    const approved=saveApproval.body;
+    assert.equal(approved.protocol,'shuduo-cloud-publication-approval/v1');
+    assert.equal(approved.status,'APPROVED');
+    assert.equal(approved.releaseId,undefined);
+    assert.equal(approved.taskId,created.body.id);
+    assert.equal(approved.packageDigest,bundle.digest);
+    assert.equal(approved.sourceRunId,current.runId);
+    const afterReload=await f.call(preflightPath);
+    assert.equal(afterReload.status,200);
+    assert.equal(afterReload.body.approvalRequestId,request.idempotencyKey);
+    assert.equal(afterReload.body.reviewDigest,preflight.body.reviewDigest);
+    const approvalLookup=publicationRequestReceiptPath(created.body.id,request.idempotencyKey);
+    assert.deepEqual((await f.call(approvalLookup)).body,approved);
+    const reviewFile=join(f.directory,'exact-publication-review.json');
+    writeFileSync(reviewFile,JSON.stringify(request.body),{mode:0o600});
+    for(const [action,flags] of [['publish',['--file',reviewFile,'--approve-only']],['publication-request',[]]]){
+      let received;
+      assert.equal(await runV2Cli(['agent',action,'--id',created.body.id,'--request-id',request.idempotencyKey,...flags],{},
+        {client,output:line=>{received=JSON.parse(line);},error:line=>assert.fail(line)}),0);
+      assert.deepEqual(received,approved);
+    }
+    assert.deepEqual(await readPublicationTool('agent_publication_request',{taskId:created.body.id,requestId:request.idempotencyKey}),approved);
+    assert.deepEqual((await f.call(publication,{...request.body,approvalOnly:true},request.idempotencyKey)).body,approved);
+    assert.equal((await f.call(publication,{...request.body,approvalOnly:true},randomUUID())).status,409);
+    assert.equal((await f.call(publication,request.body,request.idempotencyKey)).status,409);
+    assert.equal((await f.call(publication,{...request.body,approvalId:randomUUID()},request.idempotencyKey)).status,409);
+    assert.equal(f.store.list('release_approval',PROJECT).length,1);
+    assert.equal(f.store.list('release',PROJECT).length,0);
+    assert.equal(f.store.list('release_run',PROJECT).length,0);
+    assert.deepEqual(f.counts(),counts);
+    const originalExpiry=f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT;
+    f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT=new Date(Date.parse(originalExpiry)+1000).toISOString();
+    await f.restart();
+    const changedWindow=await f.call(preflightPath);
+    assert.match(changedWindow.body.approvalRequestId,/^approval-[a-f0-9]{64}$/);
+    assert.notEqual(changedWindow.body.approvalRequestId,preflight.body.approvalRequestId);
+    assert.notEqual(changedWindow.body.approvalRequestId,request.idempotencyKey);
+    assert.equal((await f.call(publication,{...request.body,approvalId:approved.approvalId},request.idempotencyKey)).status,409);
+    assert.equal(f.store.list('release',PROJECT).length,0);
+    f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT=originalExpiry;
+    await f.restart();
+    f.later(100);
+    request.body={...request.body,approvalId:approved.approvalId};
+  }
+  assert.equal((await f.call(publication,{...request.body,initiatedBySession:true},request.idempotencyKey)).status,422);
+  let accepted,wakeId;
+  const originalPublicationPath=publicationRequestReceiptPath(created.body.id,request.idempotencyKey);
+  if(backgroundPublication){
+    assert.equal(preflight.body.backgroundPublicationSupported,true);
+    const delegated={...request.body,dispatchInBackground:true};
+    assert.equal((await f.call(publication,{...delegated,approvalId:undefined},request.idempotencyKey)).status,422);
+    assert.equal((await f.call(publication,{...delegated,approvalId:randomUUID()},request.idempotencyKey)).status,409);
+    const priorWakes=f.wakes.length;
+    f.loseWake();
+    const reviewFile=join(f.directory,'exact-publication-review.json');
+    let queued;
+    assert.equal(await runV2Cli(['agent','publish','--id',created.body.id,'--request-id',request.idempotencyKey,'--file',reviewFile,
+      '--approval-id',request.body.approvalId,'--dispatch-in-background'],{},{client,output:line=>{queued=JSON.parse(line);},error:line=>assert.fail(line)}),0);
+    wakeId=queued.background?.wakeId;
+    assert.ok(wakeId);
+    assert.equal(queued.background.state,'DELIVERY_UNKNOWN');
+    assert.equal(f.wakes.length,priorWakes+1);
+    assert.equal(f.store.list('release_run',PROJECT).length,0);
+    assert.deepEqual((await f.call(originalPublicationPath)).body,queued);
+    assert.equal((await f.call(publication,request.body,request.idempotencyKey)).status,409);
+    assert.equal(f.wakes.length,priorWakes+1);
+    assert.deepEqual(f.counts(),counts);
+    const event=f.wakes.at(-1);
+    const restore=f.replaceWake(event,raw=>raw.replace('signature','signatureChanged'));
+    assert.equal((await f.privateCall(event)).status,401);
+    restore();
+    const actor=f.store.get('auth_user',actorId,PROJECT);
+    f.store.update('auth_user',actorId,PROJECT,{status:'DISABLED'});
+    assert.equal((await f.privateCall(event)).status,403);
+    f.store.update('auth_user',actorId,PROJECT,{status:actor.status});
+    const originalExpiry=f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT;
+    f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT=new Date(Date.parse(originalExpiry)+1000).toISOString();
+    await f.restart();
+    assert.equal((await f.privateCall(event)).status,403);
+    assert.equal(f.store.list('release_run',PROJECT).length,0);
+    f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT=originalExpiry;
+    await f.restart();
+    f.loseRelease();
+    assert.equal((await f.privateCall(event)).status,500);
+    assert.equal(f.store.list('release',PROJECT).length,1);
+    assert.equal(f.store.list('release_run',PROJECT).length,2);
+    assert.equal(f.store.get('publication_wake',wakeId,PROJECT).state,'DELIVERY_UNKNOWN');
+    await f.restart();
+    assert.deepEqual((await f.privateCall(event)).body,{protocol:'shuduo-publication-wake/v1',state:'RELEASED'});
+    assert.deepEqual((await f.privateCall(event)).body,{protocol:'shuduo-publication-wake/v1',state:'REPLAYED'});
+    assert.deepEqual(f.counts(),counts);
+    assert.equal(f.store.list('publication_wake',PROJECT).length,1);
+    accepted=await f.call(originalPublicationPath);
+    assert.equal(accepted.status,200,accepted.body.message);
+    assert.deepEqual(await readPublicationTool('agent_publication_create',{taskId:created.body.id,requestId:request.idempotencyKey,...delegated}),accepted.body);
+  }else{
+    accepted=await f.call(publication,request.body,request.idempotencyKey);
+    assert.equal(accepted.status,202,accepted.body.message);
+  }
   assert.equal(accepted.body.release.sourceRunId,current.runId);
+  const initialRelease=accepted.body.release;
+  const initiation=initialRelease.initiationEvidence;
+  assert.deepEqual(initiation,{trigger:backgroundPublication?'SIGNED_PUBLICATION_WAKE':'INVITED_SESSION_CONFIRMATION',
+    originalRequestDigest:sha256(request.idempotencyKey),acceptedAt:new Date(f.now()).toISOString(),
+    taskId:created.body.id,revisionId:current.revisionId,developmentRunId:current.runId,
+    releaseId:initialRelease.id,approvalId:initialRelease.approvalId,packageDigest:bundle.digest,
+    reviewDigest:initialRelease.reviewDigest,...(backgroundPublication?{wakeId}:{})});
+  assert.ok(!JSON.stringify(initialRelease).includes(request.idempotencyKey));
+  if(separateApproval){
+    assert.equal(initialRelease.approvalId,request.body.approvalId);
+    assert.ok(Date.parse(initiation.acceptedAt)>Date.parse(initialRelease.approvalTiming.approvedAt));
+    assert.equal(f.store.get('release_approval',request.body.approvalId,PROJECT).usedByReleaseId,initialRelease.id);
+    assert.deepEqual((await f.call(publication,request.body,request.idempotencyKey)).body,accepted.body);
+    const replay=await readPublicationTool('agent_publication_create',{taskId:created.body.id,requestId:request.idempotencyKey,...request.body});
+    assert.deepEqual(replay,accepted.body);
+  }
   assert.deepEqual(accepted.body.runs.map(run=>[run.sequence,run.status,run.schedulerTriggered]),[[1,'SCHEDULED',false],[2,'SCHEDULED',false]]);
   const original=await f.call(publicationRequestReceiptPath(created.body.id,request.idempotencyKey));
   assert.deepEqual(original.body,accepted.body);
+  const aliasKey=randomUUID();
+  const alias=await f.call(publication,request.body,aliasKey);
+  if(separateApproval)assert.equal(alias.status,404);
+  else{
+    assert.equal(alias.status,202);
+    assert.deepEqual(alias.body.release.initiationEvidence,initiation);
+  }
+  assert.equal(f.store.list('release_initiation',PROJECT).length,1);
+  const [storedInitiation]=f.store.list('release_initiation',PROJECT);
+  f.store.update('release_initiation',storedInitiation.id,PROJECT,{requestId:aliasKey});
+  assert.equal((await f.call(publicationRequestReceiptPath(created.body.id,request.idempotencyKey))).status,409);
+  f.store.update('release_initiation',storedInitiation.id,PROJECT,{requestId:storedInitiation.requestId});
   assert.equal(f.store.list('release_approval',PROJECT).length,1);
   assert.deepEqual(f.counts(),counts);
 
@@ -1185,6 +1598,7 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.deepEqual(batchIds,accepted.body.runs.map(run=>run.id));
   assert.equal(saved().outcomes[0].actions.publication.key,request.idempotencyKey);
   assert.deepEqual(saved().outcomes[0].actions.publication.approvalTiming,accepted.body.release.approvalTiming);
+  assert.deepEqual(saved().outcomes[0].actions.publication.initiationEvidence,initiation);
   assert.ok(Date.parse(accepted.body.release.approvalTiming.approvedAt)>=Date.parse(accepted.body.release.approvalTiming.readyAt));
   assert.equal(saved().submission.bill.unsettledReserveCny,64);
   const afterPublication=readFileSync(checkpoint,'utf8');
@@ -1226,17 +1640,40 @@ test('a request-bound base task requires the exact verified version for delivery
   const monitored=await cli('v3-publish',['--reconcile']);
   assert.equal(monitored.publication.monitoringStatus,'VERIFIED');
   assert.deepEqual(monitored.publication.monitoring.map(row=>row.batchId),batchIds);
+  const scheduledBatches=[firstResult,secondResult].map(row=>({
+    batchId:row.id,clockMode:'FC_TIMER',scheduledTriggerAt:row.scheduledTriggerAt,
+    triggeredAt:row.triggeredAt,finishedAt:row.finishedAt,workerResultDigest:row.workerResultDigest,
+  }));
+  assert.deepEqual(monitored.publication.scheduledBatches,scheduledBatches);
+  assert.deepEqual(saved().outcomes[0].actions.publication.scheduledBatches,scheduledBatches);
   assert.deepEqual(requests,[['GET','/auth/session'],['GET',receiptPath],['GET','/status']]);
+  const afterMonitored=readFileSync(checkpoint,'utf8');
+  alter=(path,value)=>{if(path===receiptPath)value.monitoring.scheduledBatches[0].workerResultDigest='0'.repeat(64);};
+  assert.equal((await cli('v3-publish',['--reconcile'])).reason,'ORIGINAL_PUBLICATION_UNCONFIRMED');
+  assert.equal(readFileSync(checkpoint,'utf8'),afterMonitored);
+  alter=undefined;
+  const legacyPath=join(f.directory,'legacy-monitoring-summary.json'), legacy=saved();
+  delete legacy.outcomes[0].actions.publication.scheduledBatches;
+  const legacyBytes=JSON.stringify(legacy);
+  writeFileSync(legacyPath,legacyBytes,{mode:0o600});
+  const legacyRead=await cli('v3-publish',['--reconcile'],0,legacyPath);
+  assert.equal(legacyRead.publication.monitoringStatus,'VERIFIED');
+  assert.equal(legacyRead.publication.scheduledBatches,undefined);
+  assert.equal(readFileSync(legacyPath,'utf8'),legacyBytes);
   const usage=saved().outcomes[0].workbenchUsage;
-  assert.equal(usage.modelCalls,1);
-  assert.equal(usage.remoteSparkRuns,4);
+  assert.equal(usage.modelCalls,signedDevelopment?2:1);
+  assert.equal(usage.remoteSparkRuns,signedDevelopment?5:4);
   assert.deepEqual(monitored.workbenchUsage,usage);
   assert.deepEqual(f.queueCounts(),queueBeforeReadback);
-  assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:4});
+  assert.deepEqual(f.counts(),{modelCalls:signedDevelopment?2:1,jobCreates:signedDevelopment?5:4});
+  if(agentConsumption){
+    await consumeOriginalBatch(f,cli,{taskId:created.body.id,releaseId,packageDigest:bundle.digest,batchId:batchIds[0],sequence:1,origin,agentConsumption:true});
+    return;
+  }
   const consumed=[];
   for (const [index,batchId] of batchIds.entries())
     consumed.push(await consumeOriginalBatch(f,cli,{taskId:created.body.id,releaseId,packageDigest:bundle.digest,
-      batchId,sequence:index+1,origin}));
+      batchId,sequence:index+1,origin,withAgentEvidence}));
   const selection=new URLSearchParams({agent_task_id:created.body.id,package_digest:bundle.digest,release_id:releaseId});
   const sourcesPath='/data-services/sources?'+selection;
   const originalSources=await f.call(sourcesPath);
@@ -1267,21 +1704,125 @@ test('a request-bound base task requires the exact verified version for delivery
   assert.equal((await f.call(sourcesPath)).status,409);
   f.store.update('monitor_event',recordedEvent.id,PROJECT,{observedAt:recordedEvent.observedAt});
   assert.equal((await f.call('/data-services/dapis')).status,503);
+  if(withAgentEvidence){
+    const receipts=await Promise.all(consumed.map(({bound})=>f.call('/data-services/agent/consumption-jobs/'+bound.consumption.agent.requestId)));
+    const links=receipts.map(({status,body},index)=>{
+      assert.equal(status,200);
+      assert.equal(body.sourceBinding.sourceReleaseRunId,batchIds[index]);
+      const {sourceBinding,applicationId,dapiVersionId,xapiVersionId,requestId}=body;
+      const href=agentConsumptionLocation(origin+'/v2/?module=services',requestId,
+        {sourceBinding,applicationId,dapiVersionId,xapiVersionId}).href;
+      const verified=checkedAgentConsumptionReceipt(body,requestId,agentConsumptionReceiptSelection(href));
+      assert.equal(verified.state,'COMPLETED');
+      assert.equal(verified.calls.length,2);
+      return href;
+    });
+    assert.throws(()=>checkedAgentConsumptionReceipt(receipts[1].body,receipts[1].body.requestId,agentConsumptionReceiptSelection(links[0])),
+      {code:'AGENT_CONSUMPTION_SCOPE_MISMATCH'});
+  }
   const consumerToken=readFileSync(join(f.directory,'consumer-token-1'),'utf8');
   const closedQuery=await fetch(f.base+'/open/xapis/verified-assets-1',{headers:{authorization:'Bearer '+consumerToken}});
   assert.equal(closedQuery.status,503);
   assert.equal((await f.call('/data-services/applications',{},randomUUID())).status,403);
   assert.equal((await cli('v3-publish',['--reconcile'])).publication.monitoringStatus,'VERIFIED');
   const completionFile=join(f.directory,'workbench-completion.json');
-  const completion=await cli('v3-complete',['--first-plan',consumed[0].flags[1],'--second-plan',consumed[1].flags[1],'--out-file',completionFile]);
+  const completionFlags=['--first-plan',consumed[0].flags[1],'--second-plan',consumed[1].flags[1],'--out-file',completionFile];
+  const beforeCompletion=readFileSync(checkpoint,'utf8');
+  alter=(path,value)=>{if(path===receiptPath)delete value.release.initiationEvidence;};
+  await cli('v3-complete',completionFlags,1);
+  assert.equal(existsSync(completionFile),false);
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+  alter=(path,value)=>{if(path===receiptPath)delete value.monitoring.scheduledBatches;};
+  await cli('v3-complete',completionFlags,1);
+  assert.equal(existsSync(completionFile),false);
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+  alter=(path,value)=>{if(path==='/agent/requests/'+key)delete value.developmentDrivers;};
+  await cli('v3-complete',completionFlags,1);
+  assert.equal(existsSync(completionFile),false);
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+  alter=undefined;
+  if(backgroundPublication){
+    alter=(path,value)=>{if(path===taskPath+'/delivery-requests/'+deliveryRequestId)delete value.rehearsalInitiationEvidence;};
+    await cli('v3-complete',completionFlags,1);
+    assert.equal(existsSync(completionFile),false);
+    assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+    alter=undefined;
+  }
+  if(withAgentEvidence){
+    const first=consumed[0].bound.consumption,jobPath='/data-services/agent/consumption-jobs/'+first.agent.requestId;
+    for(const change of [job=>{job.calls[1].callIdDigest=first.xapiCallIdDigest;},job=>{job.sourceBinding.sourceReleaseRunId=batchIds[1];}]){
+      alter=(path,value)=>{if(path===jobPath)change(value);};
+      await cli('v3-complete',completionFlags,1);
+      assert.equal(existsSync(completionFile),false);
+      assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+    }
+    alter=undefined;
+  }
+  const completion=await cli('v3-complete',completionFlags);
   assert.equal(completion.scope,'LOCAL_MATCHED_ONLY');
   assert.equal(completion.independentlyVerifiedCloudCase,false);
-  assert.equal(requests.length,10);
+  assert.equal(requests.length,withAgentEvidence?16:10);
+  assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).publicationInitiationEvidence,initiation);
+  const consumptionAttribution=consumed.map(value=>value.bound.consumption.attribution);
+  assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).consumptionAttribution,consumptionAttribution);
   assert.deepEqual(f.store.list('service_call',PROJECT),savedCalls);
   assert.deepEqual(f.store.list('service_app',PROJECT),savedApplications);
   const run=await cli('v3-run',['--completion-file',completionFile]);
   assert.equal(run.verifiedCloudCaseCount,0);
   assert.equal(run.cases[0].status,'LOCAL_MATCHED_ONLY');
+  assert.deepEqual(run.cases[0].developmentDriverEvidence,driverEvidence);
+  assert.deepEqual(run.cases[0].publicationScheduleEvidence,{releaseId,packageDigest:bundle.digest,batches:scheduledBatches});
+  assert.deepEqual(run.cases[0].publicationInitiationEvidence,initiation);
+  assert.deepEqual(run.cases[0].consumptionAttribution,consumptionAttribution);
+  assert.deepEqual(run.cases[0].phaseAttribution.phases,{
+    requirements:'STRUCTURED_MODEL_RESULT',code:signedDevelopment?'SIGNED_BACKGROUND_EVENT':'OWNER_ADVANCE',
+    sparkDebugging:signedDevelopment?'SIGNED_BACKGROUND_EVENT':'OWNER_ADVANCE',deliveryFiles:signedDevelopment?'SIGNED_BACKGROUND_EVENT':'ORIGIN_UNCONFIRMED',
+    fileRehearsal:backgroundPublication?'SIGNED_BACKGROUND_EVENT':'ORIGIN_UNCONFIRMED',publication:initiation.trigger,schedulingAndMonitoring:'FC_TIMER_AND_SIGNED_WORKER_RESULT',
+    authorizedConsumption:withAgentEvidence?'SIGNED_AGENT_AND_INDEPENDENT_HTTP':'AUTHENTICATED_HTTP_CALLER_UNCONFIRMED',
+  });
+  if(withAgentEvidence){
+    const proofs=consumed.map(value=>value.bound.consumption.agent);
+    assert.deepEqual(run.cases[0].agentConsumption,proofs);
+    assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).agentConsumption,proofs);
+    const wrongAgentPath=join(f.directory,'wrong-signed-agent-call.json'),wrongAgent=saved();
+    wrongAgent.outcomes[0].consumption[batchIds[1]].agent.dapi.callIdDigest=proofs[0].dapi.callIdDigest;
+    writeFileSync(wrongAgentPath,JSON.stringify(wrongAgent),{mode:0o600});
+    await cli('v3-run',[],1,wrongAgentPath);
+  }
+  assert.equal(run.cases[0].phaseAttribution.approval.status,'RECORDED');
+  assert.equal(run.cases[0].phaseAttribution.ownerAdvanceRecorded,!signedDevelopment);
+  assert.equal(run.cases[0].phaseAttribution.intervention,'NO_RESCUE_RECORDED');
+  assert.equal(run.cases[0].phaseAttribution.directAutonomousEligible,false);
+  assert.equal(run.score.recordedPhaseAttributionCases,1);
+  assert.equal(run.score.ownerAdvanceObserved,signedDevelopment?0:1);
+  assert.equal(run.score.engineerRescueObserved,0);
+  if(signedDevelopment){
+    assert.deepEqual(run.cases[0].deliveryPreparationEvidence,preparedFiles.body.preparationEvidence);
+    assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).deliveryPreparationEvidence,preparedFiles.body.preparationEvidence);
+    assert.deepEqual(run.cases[0].phaseAttribution.unconfirmedAutonomousStages,[]);
+    assert.equal(run.cases[0].phaseAttribution.approval.status,'RECORDED');
+    assert.equal(f.store.list('agent',PROJECT).length,1);
+    t.diagnostic(JSON.stringify({case:'fictional-holdings-t1',scope:completion.scope,modelSource:'DETERMINISTIC_TEST_FIXTURE',
+      cloudEventTransport:'LOCAL_TEST_FIXTURE',spark:measure?'ACTUAL_LOCAL_SPARK':'SYNTHETIC_WORKER_RECEIPTS',
+      developmentAttempts:drivers.length,firstAttempt:'VALIDATION_FAILED',approval:'REQUIRED_AND_RECORDED',
+      phases:run.cases[0].phaseAttribution.phases,verifiedCloudCases:run.verifiedCloudCaseCount}));
+  }
+  if (backgroundPublication) {
+    const proof=saved().outcomes[0].rehearsal.initiationEvidence;
+    assert.equal(proof.wakeId,rehearsalWakeId);
+    assert.equal(proof.verificationId,verificationId);
+    assert.equal(proof.workerResultDigest,f.store.get('delivery_verification',verificationId,PROJECT).workerResultDigest);
+    assert.deepEqual(run.cases[0].rehearsalInitiationEvidence,proof);
+    assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).rehearsalInitiationEvidence,proof);
+  }
+  const wrongConsumptionPath=join(f.directory,'wrong-consumption-attribution.json'),wrongConsumption=saved();
+  wrongConsumption.outcomes[0].consumption[batchIds[0]].attribution.dapi.callIdDigest='a'.repeat(64);
+  writeFileSync(wrongConsumptionPath,JSON.stringify(wrongConsumption),{mode:0o600});
+  await cli('v3-run',[],1,wrongConsumptionPath);
+  assert.equal(run.score.directAutonomousCompletionRate,null);
+  assert.equal(run.score.directAutonomousSuccesses,0);
+  assert.equal(run.score.directAutonomousSettledCases,0);
+  assert.equal(run.score.directAutonomousTargetStatus,'INCOMPLETE');
   assert.equal(run.score.localOnlySuccesses,1);
   assert.equal(run.score.reviewedCloudCompletionRate,null);
   assert.equal(run.score.reviewedCloudTargetStatus,'INCOMPLETE');
@@ -1291,11 +1832,31 @@ test('a request-bound base task requires the exact verified version for delivery
   const next=JSON.parse(readFileSync(nextFile,'utf8'));
   assert.equal(next.previousCase.reserveCny,64);
   assert.deepEqual(next.previousCase.usageFloor,usage);
+  const alteredCheckpoint=join(f.directory,'wrong-development-driver.json'), altered=saved();
+  altered.outcomes[0].developmentDriverEvidence.taskId=randomUUID();
+  writeFileSync(alteredCheckpoint,JSON.stringify(altered),{mode:0o600});
+  await cli('v3-run',[],1,alteredCheckpoint);
+  const wrongSchedulePath=join(f.directory,'wrong-schedule-order.json'), wrongSchedule=saved();
+  wrongSchedule.outcomes[0].actions.publication.scheduledBatches.reverse();
+  writeFileSync(wrongSchedulePath,JSON.stringify(wrongSchedule),{mode:0o600});
+  await cli('v3-run',[],1,wrongSchedulePath);
   assert.equal((await cli('v3-run',['--completion-file',completionFile,'--next-checkpoint',nextFile])).verifiedCloudCaseCount,0);
   assert.equal(f.store.list('release_approval',PROJECT).length,1);
   assert.equal(f.store.list('release_run',PROJECT).length,2);
   assert.deepEqual(f.queueCounts(),queueBeforeReadback);
-});
+}
+
+test('a request-bound base task requires the exact verified version for delivery and publication',requestBoundPublicationJourney);
+test('a request-bound exact approval starts no batches until the original approval launches publication',t=>
+  requestBoundPublicationJourney(t,{separateApproval:true}));
+test('a purpose-signed publication wake resumes the original exact approval after restart without duplicate batches',t=>
+  requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true}));
+test('a signed Agent delegate consumes the exact DAPI and XAPI once despite a lost result acknowledgement',t=>
+  requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true,agentConsumption:true}));
+test('v3 keeps separate signed and independent HTTP consumption on both original batches',t=>
+  requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true,withAgentEvidence:true}));
+test('one signed holdings case repairs its Spark result and reaches both consumers after reviewed publication',t=>
+  requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true,withAgentEvidence:true,backgroundDevelopment:true}));
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.
@@ -2120,6 +2681,137 @@ test('a killed publication CLI recovers both original batches through signed sch
   }
 });
 
+test('signed background opt-in prepares one original package and recovers a lost artifact acknowledgement',async t=>{
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
+  const plan=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}), [definition]=plan.selectedCases;
+  const key=randomUUID(),body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
+  const bodyHash=sha256(JSON.stringify(body));
+  f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),bodyHash);
+  await f.restart();
+  const created=await f.call('/agent/tasks',body,key);
+  assert.equal(created.status,202,created.body.message);
+  const checkpoint=join(f.directory,'background-package-case.json'), evaluationRunId=randomUUID();
+  const startedAt=new Date(f.now()-1000).toISOString(), actor=(await f.call('/auth/session')).body.user;
+  writeFileSync(checkpoint,JSON.stringify({evaluationRunId,contract:plan.contract,startedAt,caseSetDigest:plan.caseSetDigest,
+    caseLimit:1,origin:new URL(f.base).origin,projectId:PROJECT,reviewedSource:'a'.repeat(40),submission:{actorId:actor.id},
+    outcomes:[{...liveCaseCheckpoint(definition,startedAt,plan.caseSetDigest,{contractId:plan.contract.id,evaluationRunId}),
+      phase:'CODE_AND_DEBUG',status:'PAUSED',taskId:created.body.id,
+      actions:{agent:{key,bodyHash,id:created.body.id,status:'CONFIRMED'}}}]}),{mode:0o600});
+  const readOnlyClient={baseUrl:f.base,projectId:PROJECT,request:async(path,options)=>{
+    assert.equal(options?.method??'GET','GET');
+    const response=await f.call(path);
+    assert.ok(response.status<300,response.body.message);
+    return response.body;
+  }};
+  const cli=async(action,flags=[],expectedExit=0,path=checkpoint)=>{
+    let output,error;
+    assert.equal(await runV2Cli(['agent',action,'--checkpoint',path,...flags],{},{
+      client:readOnlyClient,output:line=>{output=JSON.parse(line);},error:line=>{error=line;},
+    }),expectedExit,error);
+    return output;
+  };
+  const route='/agent/tasks/'+created.body.id, background=route+'/background';
+  assert.equal((await f.call(background,{expectedVersion:created.body.version,prepareFiles:'true'})).status,422);
+  assert.equal(f.wakes.length,0);
+  let approval;
+  const client={request:async(path,options)=>{
+    const response=await f.call(path,options?.body);
+    assert.ok(response.status<300,response.body.message);
+    return response.body;
+  }};
+  assert.equal(await runV2Cli(['agent','enable-background','--id',created.body.id,'--version',String(created.body.version),
+    '--confirm','--prepare-files'],{},{client,output:line=>{approval=JSON.parse(line);},error:line=>assert.fail(line)}),0);
+  assert.equal(approval.prepareFiles,true);
+  assert.equal(approval.preparedDelivery,undefined);
+  const replayedOptIn=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{
+    name:'agent_background_enable',arguments:{taskId:created.body.id,expectedVersion:created.body.version,confirm:true,prepareFiles:true},
+  }},{client}));
+  assert.equal(replayedOptIn.result.structuredContent.prepareFiles,true);
+  assert.equal(f.wakes.length,1);
+  const fire=event=>f.privateCall(event);
+  assert.equal((await fire(f.wakes[0])).status,200);
+  assert.equal((await fire(f.wakes[1])).status,200);
+  const waiting=f.store.get('agent',created.body.id,PROJECT);
+  const originalRun=f.store.get('run',waiting.runId,PROJECT);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
+  f.complete(originalRun.remoteSubmission.prepared);
+  assert.equal((await fire(f.resultEvent(originalRun.remoteSubmission.prepared.resultKey))).status,200);
+  const finishWake=f.wakes[2];
+  f.loseArtifact();
+  assert.equal((await fire(finishWake)).status,500);
+  const [pending]=f.store.list('agent_delivery_task',PROJECT);
+  assert.equal(pending.stage,'PACKAGE_PERSISTING');
+  assert.equal(pending.sourceRunId,originalRun.id);
+  assert.equal(pending.preparationTrigger,'SIGNED_BACKGROUND_EVENT');
+  const unconfirmed=await cli('v3-inspect',['--workbench']);
+  assert.equal(unconfirmed.delivery.storagePending,true);
+  assert.equal(unconfirmed.delivery.preparationEvidence,undefined);
+  assert.equal(f.packageWrites(),1);
+  const counts=f.counts();
+  assert.deepEqual(counts,{modelCalls:1,jobCreates:1});
+
+  f.later(15*60000+1);
+  await f.restart();
+  assert.equal((await fire(finishWake)).body.status,'EXPIRED');
+  assert.equal(f.packageWrites(),1);
+  const version=f.store.get('agent',created.body.id,PROJECT).version;
+  assert.equal((await f.call(background+'/resume',{expectedVersion:version})).status,403);
+  // Only a separately scoped continuation window may resume a past grant.
+  delete f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST;
+  f.env.V2_PUBLIC_DEVELOPMENT_TASK_ID=created.body.id;
+  await f.restart();
+  assert.equal((await f.call(background+'/resume',{expectedVersion:version,confirmModelRetry:true})).status,422);
+  const resumed=await f.call(background+'/resume',{expectedVersion:version});
+  assert.equal(resumed.status,202,resumed.body.message);
+  assert.equal(resumed.body.prepareFiles,true);
+  assert.equal(resumed.body.consumedEvents,3);
+  const retryWake=f.wakes[3];
+  assert.notDeepEqual(retryWake,finishWake);
+  assert.equal((await fire(finishWake)).body.state,'IGNORED_SUPERSEDED');
+  const restored=await fire(retryWake);
+  assert.equal(restored.status,200,restored.body.message);
+  assert.equal(restored.body.status,'COMPLETED');
+  const packageReceipt={deliveryId:pending.id,packageId:pending.packageId,packageDigest:pending.packageDigest,
+    preparationTrigger:'SIGNED_BACKGROUND_EVENT'};
+  assert.deepEqual(restored.body.preparedDelivery,packageReceipt);
+  const status=(await f.call(background)).body;
+  assert.deepEqual(status.preparedDelivery,packageReceipt);
+  const task=(await f.call(route)).body;
+  assert.deepEqual(task.background.preparedDelivery,packageReceipt);
+  const evidence=(await f.call('/agent/requests/'+key+'/execution-evidence')).body;
+  assert.deepEqual(evidence.originalDelivery,{id:pending.id,requestId:pending.preparationRequestId});
+  assert.equal((await f.call('/agent/deliveries/'+pending.id)).body.preparationTrigger,'SIGNED_BACKGROUND_EVENT');
+  const expectedPreparation={trigger:'SIGNED_BACKGROUND_EVENT',taskId:created.body.id,
+    revisionId:pending.sourceRevisionId,revisionHash:pending.sourceSqlHash,
+    developmentRunId:originalRun.id,deliveryId:pending.id,packageId:pending.packageId,packageDigest:pending.packageDigest};
+  assert.deepEqual((await cli('v3-inspect')).delivery.preparationEvidence,expectedPreparation);
+  const confirmedBytes=readFileSync(checkpoint,'utf8');
+  assert.deepEqual(JSON.parse(confirmedBytes).outcomes[0].actions.delivery.preparationEvidence,expectedPreparation);
+  const report=await cli('v3-run');
+  assert.deepEqual(report.cases[0].deliveryPreparationEvidence,expectedPreparation);
+  assert.equal(report.verifiedCloudCaseCount,0);
+  assert.equal((await cli('v3-review')).reason,'CLOUD_REHEARSAL_PENDING');
+  const grant=f.store.get('agent_background',pending.preparationRequestId,PROJECT);
+  f.store.update('agent_background',grant.id,PROJECT,{preparedDelivery:{...grant.preparedDelivery,packageDigest:'0'.repeat(64)}});
+  assert.equal((await cli('v3-inspect')).delivery.status,'UNCONFIRMED');
+  assert.equal((await cli('v3-review')).reason,'ORIGINAL_DELIVERY_PREPARATION_MISMATCH');
+  assert.equal(readFileSync(checkpoint,'utf8'),confirmedBytes);
+  f.store.update('agent_background',grant.id,PROJECT,{preparedDelivery:grant.preparedDelivery});
+  const invalid=JSON.parse(confirmedBytes), invalidPath=join(f.directory,'wrong-background-source.json');
+  invalid.outcomes[0].actions.delivery.preparationEvidence.revisionId=randomUUID();
+  writeFileSync(invalidPath,JSON.stringify(invalid),{mode:0o600});
+  await cli('v3-run',[],1,invalidPath);
+  assert.equal(f.store.get('agent_delivery_task',pending.id,PROJECT).stage,'PACKAGE_READY');
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,1);
+  const [artifact]=f.store.list('delivery_package',PROJECT);
+  assert.equal(artifact.id,pending.packageId);
+  assert.equal(Object.keys(artifact.files).length,8);
+  assert.equal((await fire(retryWake)).body.state,'INACTIVE');
+  assert.deepEqual(f.counts(),counts);
+  assert.equal(f.store.list('delivery_verification',PROJECT).length,0);
+  assert.equal(f.store.list('release',PROJECT).length,0);
+});
+
 test('an invited derived task progresses on original events after client disconnect and controller reopen',async t=>{
   const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,contextualModel:true});
   const definition=liveLifecyclePlan(11,{contractId:currentLiveLifecycleContract.id}).selectedCases.at(-1);
@@ -2178,6 +2870,7 @@ test('an invited derived task progresses on original events after client disconn
   assert.deepEqual(f.counts(),{modelCalls:1,jobCreates:1});
   const settled=f.store.get('agent',id,PROJECT), savedRun=f.store.get('run',waiting.runId,PROJECT);
   assert.equal(settled.status,'SUCCEEDED');
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
   assert.equal(settled.revisionId,waiting.revisionId);
   assert.deepEqual(settled.derivedFrom,derivedFrom);
   assert.equal(savedRun.validation.passed,true);

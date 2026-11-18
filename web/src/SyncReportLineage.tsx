@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { checkedSyncReportLineage } from "../../src/v2/published-report-client.mjs";
 import type { PublishedReportReceipt, SyncReportLineage as Lineage } from "../../src/v2/published-report-client.mjs";
+import { FrozenAssetQualityPanel } from "./FrozenAssetQualityPanel";
 
 export function SyncReportLineage({ api, receipt }: {
   api: <T>(path: string) => Promise<T>;
@@ -27,10 +28,14 @@ export function SyncReportLineage({ api, receipt }: {
       <h4>同批次授权调用</h4>
       <p>业务日 {value.release.businessDate} · 原同步 {value.release.syncRunId.slice(0,8)} · 快照 {value.release.snapshotHash.slice(0,12)}。</p>
       <p>{value.calls.length} 条原调用已核对结果、分页和固定版本。</p>
-      <ul>{value.calls.map(call => <li key={call.callId}>{call.serviceType} · 版本 {call.versionId.slice(0,8)} · {call.rowCount} 行 · 应用
+      <ul>{value.calls.map(call => <li key={call.callId}>{call.serviceType} · 版本 {call.versionId.slice(0,8)} · {call.rowCount} 行 · {call.coverage==="SINGLE_CUSTOMER"&&"单客户授权 · "}应用
         {call.applicationStatus === "REVOKED" ? "已撤销" : call.applicationStatus === "EXPIRED" ? "已过期" : "有效"}</li>)}</ul>
       <a className="button" href={"/api/v2"+path+"?download_digest="+value.digest}>下载原批次溯源 JSON</a>
       <a className="button" href={"?module=assets&asset="+encodeURIComponent(value.snapshot.assetId)}>查看原批次资产血缘</a>
+      <FrozenAssetQualityPanel key={value.digest} api={api} canWrite={false} source={{
+        assetId:value.snapshot.assetId,batchId:value.source.batchId,releaseId:value.source.releaseId,
+        snapshotHash:value.release.snapshotHash,evidenceHash:value.snapshot.contentHash,rowCount:value.snapshot.rowCount,
+      }}/>
     </> : error ? <p role="alert">{error}</p> : <p role="status">正在核对原批次与历史授权…</p>)}
   </section>;
 }

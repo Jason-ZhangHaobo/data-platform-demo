@@ -499,7 +499,7 @@ export class SecurityManager {
   }
 }
 
-function mask(value, action) {
+export function mask(value, action) {
   if (action === "ALLOW") return value;
   if (action === "MASK_FULL") return "******";
   if (action === "HASH") return `sha256:${hash(value).slice(0, 16)}`;

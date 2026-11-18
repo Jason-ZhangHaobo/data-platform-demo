@@ -18,6 +18,7 @@ import {
   Table2,
 } from "lucide-react";
 import { RealtimeWorkbench } from "./RealtimeWorkbench";
+import { SyncRecoveryPanel } from "./SyncRecoveryPanel";
 import { createIngestionReader } from "./ingestion-read";
 import type { IngestionReadStatus } from "./ingestion-read";
 
@@ -77,6 +78,7 @@ type SyncRun = {
   watermark?: string;
   durationMs: number;
   error?: string;
+  errorCode?: string;
   actualExecution: boolean;
 };
 type SyncTask = {
@@ -89,8 +91,10 @@ type SyncTask = {
   mode: string;
   status: string;
   keyFields: string[];
+  mapping?: Record<string,string>;
   watermarkField?: string;
   configHash: string;
+  recovery?: { previousTaskId:string; failedRunId:string; basisDigest:string };
   runs: SyncRun[];
 };
 type AgentPlan = {
@@ -192,6 +196,10 @@ export function IngestionWorkbench({
       [tasks],
     );
 
+  const lastRun = selectedTask?.runs[0];
+  const recoverableFailure = selectedTaskSource?.sourceType === "LOCAL_CSV" && lastRun?.status === "FAILED" &&
+    (lastRun.errorCode ? ["SOURCE_REVISION_STALE","METADATA_STALE"].includes(lastRun.errorCode)
+      : ["数据源版本已变化，请新建同步任务版本","元数据版本已变化，请重新配置同步任务"].includes(lastRun.error ?? ""));
   const reader = useRef<ReturnType<typeof createIngestionReader<Source, SyncTask, AgentPlan, Record<string, unknown>>> | undefined>(undefined);
   const reload = () => reader.current?.reload() ?? Promise.resolve(false);
   useEffect(() => {
@@ -502,12 +510,22 @@ export function IngestionWorkbench({
             </aside>
             <section className="sync-detail">
               {selectedTask ? <>
-                <header className="sync-detail-head"><div><span className="eyebrow">{selectedTask.mode} · VERSION BOUND</span><h3>{selectedTask.name}</h3><p>{selectedTaskSource?.name} → {selectedTask.targetTable}</p></div><button className="button primary" onClick={runTask} disabled={!canWrite || !!busy}>{busy === "run-task" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际执行</button></header>
+                <header className="sync-detail-head"><div><span className="eyebrow">{selectedTask.mode} · VERSION BOUND</span><h3>{selectedTask.name}</h3><p>{selectedTaskSource?.name} → {selectedTask.targetTable}</p></div><button className="button primary" onClick={runTask} disabled={!canWrite || !!busy || recoverableFailure}>{busy === "run-task" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际执行</button></header>
                 <div className="sync-proof"><div><span>源版本</span><code>{selectedTask.sourceRevisionId.slice(0, 8)}</code></div><div><span>元数据版本</span><code>{selectedTask.metadataVersionId.slice(0, 8)}</code></div><div><span>主键</span><strong>{selectedTask.keyFields.join(", ")}</strong></div><div><span>水位</span><strong>{selectedTask.watermarkField ?? "无"}</strong></div></div>
                 <div className="sync-runs">
                   <header><h4>运行证据</h4><span>{selectedTask.runs.length}次</span></header>
                   {selectedTask.runs.map((run) => <article key={run.id}><span className={"status-pill " + run.status.toLowerCase()}>{statusLabels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><span>读取 {run.readCount ?? "—"}</span><span>新增 {run.inserted ?? "—"}</span><span>更新 {run.updated ?? "—"}</span><span>最终 {run.finalCount ?? "—"}</span></div><small>{run.error ?? `${run.durationMs}ms · ${run.targetHash?.slice(0, 12)}`}</small></article>)}
                 </div>
+                {selectedTask.recovery && <div className="sync-recovery-origin">
+                  <p>来自原失败 <code>{selectedTask.recovery.failedRunId.slice(0,8)}</code> <button className="button" onClick={()=>setSelectedTaskId(selectedTask.recovery!.previousTaskId)}>查看原任务</button></p>
+                  <details><summary>已保存的恢复映射</summary><ul>{Object.entries(selectedTask.mapping??{}).map(([source,target])=><li key={source}><code>{source}</code> → <code>{target}</code></li>)}</ul></details>
+                </div>}
+                {recoverableFailure && lastRun && <SyncRecoveryPanel key={lastRun.id} api={api} taskId={selectedTask.id} failedRunId={lastRun.id}
+                  canWrite={canWrite} disabled={Boolean(busy)} onSaved={async id=>{
+                    if (!await reload()) throw Error("恢复草稿已保存，目录暂未确认。请重读任务目录。");
+                    setSelectedTaskId(id);
+                    setNotice("已保存恢复草稿。核对目标表后，可选择实际执行。");
+                  }}/>}
               </> : <div className="ingestion-empty"><GitBranch size={26} /><p>创建或选择同步任务。</p></div>}
             </section>
           </div>

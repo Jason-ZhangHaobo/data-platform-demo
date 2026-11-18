@@ -1,7 +1,8 @@
 import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { consumerCanonical, consumerDigest, consumerV2PlanEvidence, validateConsumerSource,
-  consumerDenialEvidence, consumerDenialCodes } from "./consumer-source.mjs";
+  consumerDenialEvidence, consumerDenialCodes,consumerCredentialProof,consumerWireQueryDigest } from "./consumer-source.mjs";
+import {validBatchConsumptionAttribution,validServiceCallAttribution} from './service-consumption-attribution.mjs';
 
 const hash = value => consumerDigest(consumerCanonical(value));
 const record = value => Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -44,7 +45,7 @@ function expectedRequests(plan, metadata) {
   return requests;
 }
 
-function independentResponse(plan, service, query) {
+export function independentConsumerResponse(plan, service, query) {
   const all = [...plan.expectedRows].sort((a, b) => a.client_id.localeCompare(b.client_id)).filter(row => !query.client_id || row.client_id === query.client_id);
   const page = all.slice((query.page - 1) * query.page_size, query.page * query.page_size);
   const projection = (row, fields) => Object.fromEntries(fields.map(field => [field, row[field]]));
@@ -83,7 +84,7 @@ function verifyReport(plan, report, metadata, program) {
     if (denial) check(typeof consumerDenialCodes[expected.check] === "string" &&
       entry.applicationCode === consumerDenialCodes[expected.check], "DENIAL_EVIDENCE_INVALID");
     if (entry.statusCode !== 200) return; // Denials do not prove a returned data version.
-    const response = independentResponse(plan, service, expected.query);
+    const response = independentConsumerResponse(plan, service, expected.query);
     check(entry.versionBindingsVerified === true && entry.childBindingsVerified === (service.type === "XAPI") &&
       (service.type !== "XAPI" || entry.childBindingsDigest === childBindingsDigest) && entry.rowsDigest === hash(response.data) &&
       entry.responseDigest === hash(response) && entry.rowCount === response.data.length && digest(entry.callIdDigest) && !calls.has(entry.callIdDigest), "INDEPENDENT_RESULT_MISMATCH");
@@ -97,6 +98,14 @@ const evidenceKeys = ["protocol", "taskId", "packageDigest", "releaseId", "scope
 const entryKeys = ["serviceId", "serviceType", "name", "versionId", "configHash", "status", "sourceRunIds", "notice", "sourceKind", "sourceAttribution", "agentIndependentE2E", "releaseId", "sourceVersions", "fullAssetComposition", "call", "code", "source"];
 const versionKeys = ["serviceId", "versionId", "configHash", "releaseId", "sourceReleaseRunId", "packageDigest", "sourceKind", "sourceAttribution", "fields"];
 const callKeys = ["callId", "versionId", "configHash", "rowCount", "resultHash", "verified", "applicationId", "applicationStatus", "finishedAt"];
+const exactCallProof=call=>call && (call.coverage===undefined||call.coverage==="SINGLE_CUSTOMER" && call.rowCount===1) &&
+  exact(call,[...callKeys,...(call.coverage===undefined?[]:["coverage"]),...(call.attribution===undefined?[]:["attribution"])]) &&
+  (call.attribution===undefined||validServiceCallAttribution(call.attribution));
+function checkCallAttribution(attribution,report,program,match) {
+  if(!attribution) return;
+  check(attribution.channel==='BEARER_HTTP' && attribution.credentialProofDigest===consumerCredentialProof(report.credentialDigest) &&
+    attribution.queryDigest===consumerWireQueryDigest(program[match.sequence-1].query),'CALL_ATTRIBUTION_UNCONFIRMED');
+}
 const attributionMatches = (value, source) => source.sourceKind === "MANUAL" ? value.sourceAttribution === (source.manualDeliveryTaskId?"ENGINEER_AUTHORED":"ENGINEER_ASSISTED") : value.sourceAttribution === undefined;
 const textFieldsSafe = value => ["name", "notice", "code"].every(key => value[key] === undefined || typeof value[key] === "string" && value[key].length <= 4000);
 const inactiveApplication = (call, report) => report.denialEvidence === consumerDenialEvidence
@@ -119,7 +128,7 @@ function platformMatch(source, plan, report, evidence) {
     // The API also lists services from other successful batches of this same
     // release. They may coexist, but cannot supply the selected XAPI's proof.
     (entry.source === undefined || samePublicationSource(entry.source, source)) &&
-    (entry.call === undefined || exact(entry.call, callKeys)) &&
+    (entry.call === undefined || exactCallProof(entry.call)) &&
     (entry.sourceVersions === undefined || Array.isArray(entry.sourceVersions) && entry.sourceVersions.length <= 5 && entry.sourceVersions.every(version => only(version, versionKeys)))), "PLATFORM_RECORD_INVALID");
   const entry = evidence.services.find(value => value.serviceId === plan.xapi.id);
   check(entry && entry.serviceType === "XAPI" && entry.status === "VERIFIED" && entry.versionId === plan.xapi.versionId && entry.configHash === plan.xapi.configHash &&
@@ -134,7 +143,7 @@ function platformMatch(source, plan, report, evidence) {
       Array.isArray(version.fields) && same([...version.fields].sort(), [...service.fields].sort());
   }), "CHILD_VERSION_MISMATCH");
   const call = entry.call;
-  check(exact(call, callKeys) && id(call.callId) && id(call.applicationId) && call.verified === true && call.versionId === entry.versionId && call.configHash === entry.configHash &&
+  check(exactCallProof(call) && call.coverage === undefined && id(call.callId) && id(call.applicationId) && call.verified === true && call.versionId === entry.versionId && call.configHash === entry.configHash &&
     integer(call.rowCount, 1, 100) && digest(call.resultHash) && inactiveApplication(call, report) &&
     timestamp(call.finishedAt) && Date.parse(call.finishedAt) <= Date.parse(evidence.checkedAt), "CALL_PROOF_INVALID");
   // Client/server clocks are not compared at per-request millisecond precision.
@@ -144,13 +153,13 @@ function platformMatch(source, plan, report, evidence) {
     request.serviceId === entry.serviceId && request.type === "XAPI" && request.versionId === entry.versionId && request.configHash === entry.configHash && request.callIdDigest === callIdDigest);
   check(matches.length === 1, "CALL_UNMATCHED");
   check(matches[0].rowsDigest === call.resultHash && matches[0].rowCount === call.rowCount, "CALL_RESULT_MISMATCH");
-  return matches[0];
+  return {request:matches[0],attribution:call.attribution};
 }
 
 // Consistency only. No IO, clock reads, invocation, credential creation or eval
 // changes. Even a completely self-consistent report can be fabricated; it is
 // not proof that a real environment or independent system was exercised.
-function matchedDapiReceipt(source,plan,report,evidence,xapiEvidence) {
+function matchedDapiReceipt(source,plan,report,evidence,xapiEvidence,program) {
   check(only(evidence,evidenceKeys) && evidence.protocol==="shuduo-private-task-consumption/v1" && evidence.taskId===source.taskId &&
     evidence.packageDigest===source.packageDigest && evidence.releaseId===source.releaseId &&
     evidence.scope===source.scope && evidence.sourceKind==="AGENT" && evidence.truncated===false &&
@@ -169,7 +178,7 @@ function matchedDapiReceipt(source,plan,report,evidence,xapiEvidence) {
     versions[0].sourceKind==="AGENT" &&
     Array.isArray(versions[0].fields) && same([...versions[0].fields].sort(),[...service.fields].sort()),
     "DAPI_SOURCE_MISMATCH");
-  check(exact(call,callKeys) && id(call.callId) && call.applicationId===xapi?.call?.applicationId &&
+  check(exactCallProof(call) && call.coverage === undefined && id(call.callId) && call.applicationId===xapi?.call?.applicationId &&
     call.verified===true && call.versionId===service.versionId && call.configHash===service.configHash &&
     inactiveApplication(call, report) && timestamp(call.finishedAt) &&
     Date.parse(call.finishedAt)>=Date.parse(plan.startedAt) && Date.parse(call.finishedAt)<Date.parse(plan.deadline) &&
@@ -179,7 +188,8 @@ function matchedDapiReceipt(source,plan,report,evidence,xapiEvidence) {
     row.versionId===service.versionId && row.callIdDigest===callIdDigest);
   check(matches.length===1 && matches[0].rowsDigest===call.resultHash && matches[0].rowCount===call.rowCount,
     "DAPI_CALL_RESULT_MISMATCH");
-  return {dapiCallIdDigest:callIdDigest,dapiRowsDigest:call.resultHash};
+  checkCallAttribution(call.attribution,report,program,matches[0]);
+  return {dapiCallIdDigest:callIdDigest,dapiRowsDigest:call.resultHash,attribution:call.attribution};
 }
 
 export function bindExternalConsumption({ expectedSource, plan, report, taskEvidence, dapiEvidence } = {}) {
@@ -195,13 +205,21 @@ export function bindExternalConsumption({ expectedSource, plan, report, taskEvid
     check(same(source, metadata.source), "SOURCE_MISMATCH");
     const program = expectedRequests(plan, metadata);
     verifyReport(plan, report, metadata, program);
-    const matched = platformMatch(source, plan, report, taskEvidence);
-    const dapi = dapiEvidence===undefined ? {} : matchedDapiReceipt(source,plan,report,dapiEvidence,taskEvidence);
+    const {request:matched,attribution:xapiAttribution} = platformMatch(source, plan, report, taskEvidence);
+    checkCallAttribution(xapiAttribution,report,program,matched);
+    const {attribution:dapiAttribution,...dapi} = dapiEvidence===undefined ? {} : matchedDapiReceipt(source,plan,report,dapiEvidence,taskEvidence,program);
+    let consumptionAttribution;
+    if(dapiEvidence!==undefined && (xapiAttribution||dapiAttribution)) {
+      consumptionAttribution={batchId:source.sourceReleaseRunId,dapi:{callIdDigest:dapi.dapiCallIdDigest,evidence:dapiAttribution},
+        xapi:{callIdDigest:matched.callIdDigest,evidence:xapiAttribution}};
+      check(validBatchConsumptionAttribution(consumptionAttribution,{batchId:source.sourceReleaseRunId,...dapi,xapiCallIdDigest:matched.callIdDigest}),"CALL_ATTRIBUTION_PAIR_MISMATCH");
+    }
     const eligible = source.scope === "PRIVATE_CLOUD_TEST" && source.sourceKind === "AGENT" && plan.testOnly === false && report.evidence === "HTTP_CONSUMER_ONLY";
     return { ...base, status: eligible ? "MATCHED" : "MATCHED_ONLY", reason: eligible ? "REPORT_AND_RECEIPT_MATCHED" : "LOCAL_OR_MANUAL_CONSISTENCY_ONLY",
       eligibleForExternalAcceptance: eligible, source, sourceDigest: metadata.sourceDigest, expectedRowsDigest: metadata.expectedRowsDigest,
       planDigest: report.planDigest, reportDigest: hash(report), servicesDigest: hash(metadata.services),
-      callIdDigest: matched.callIdDigest, rowsDigest: matched.rowsDigest, matchedRequestSequence: matched.sequence, ...dapi };
+      callIdDigest: matched.callIdDigest, rowsDigest: matched.rowsDigest, matchedRequestSequence: matched.sequence, ...dapi,
+      ...(consumptionAttribution?{consumptionAttribution}:{}) };
   } catch (error) {
     return { ...base, status: "UNMATCHED", reason: error instanceof BindingError ? error.code : "INVALID_DOCUMENT" };
   }

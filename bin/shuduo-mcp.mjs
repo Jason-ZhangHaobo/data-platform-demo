@@ -4,11 +4,12 @@ import { submitFundPreparation, readFundPreparation, executeFundPreparation, rea
 import { recheckFundRehearsal } from "../src/v2/fund-rehearsal-recheck.mjs";
 import {distributionReportMetricIds} from '../src/v2/distribution-report-contract.mjs';
 import { assetResourcePath } from "../src/v2/asset-resource-path.mjs";
+import { readFrozenAssetQuality } from "../src/v2/frozen-asset-quality-client.mjs";
 import { submitAssetAnnotation, readAssetAnnotationRequest } from "../src/v2/asset-annotation-client.mjs";
 import readline from "node:readline";
 import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
-import {readSyncSqlOutputSchema} from "../src/v2/sync-sql-output-schema-client.mjs";
+import {readSyncSqlOutputSchema,readSyncedPositions,readSyncReviewEvidence} from "../src/v2/sync-sql-output-schema-client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
 import { readWealthConsumption } from '../src/v2/wealth-report-consumption-client.mjs';
@@ -27,7 +28,8 @@ import {readStandaloneWorkflow,readStandaloneDetail,prepareStandaloneManual,muta
 import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublication} from '../src/v2/standalone-manual-publication-client.mjs';
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
-import {agentReviewEvidencePath,publicationSelectorInput,publicationPreflightPath,publicationReadPath} from "../src/v2/publication-request.mjs";
+import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} from '../src/v2/agent-consumption-request.mjs';
+import {agentReviewEvidencePath,publicationApprovalStep,publicationSelectorInput,publicationPreflightPath,publicationReadPath,publicationRequestReceiptPath} from "../src/v2/publication-request.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
@@ -88,15 +90,22 @@ const tools = [
   {name:'agent_repair_comparison_create',description:'明确委托后新建对照辅助修正任务；后台重核双方归属、代码和证据，只传脱敏摘要。记为人工辅助，不计自主完成，不批准发布。未知结果用同一requestId查询原请求，不另建任务。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceRunId:{type:'string',format:'uuid'},baselineRunId:{type:'string',format:'uuid'},message:{type:'string',minLength:4,maxLength:2000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['sourceRunId','baselineRunId','message','requestId','confirm']},annotations:{readOnlyHint:false}},
   {name:'sql_run_comparison_candidates',description:'只读当前用户可见的同口径运行候选，最多50条元数据；不读业务行、不推进运行。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'}},required:['runId']},annotations:{readOnlyHint:true}},
   {name:'sql_run_output_schema',description:'按原运行编号只读冻结持仓的实际与预期输出结构差异。读取保存回执，不执行 SQL。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'}},required:['runId']},annotations:{readOnlyHint:true}},
+  {name:'sql_synced_positions',description:'只读核对可选择的全量持仓同步批次、元数据、摘要及币种条件。',inputSchema:{type:'object',additionalProperties:false,properties:{}},annotations:{readOnlyHint:true}},
   {name:'sql_run_compare',description:'只读两个确切已保存运行的代码/值来源/条件引用及验证对照；缺旧证据不当新增或删除，不证明业务因果，不解析草稿或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{runId:{type:'string',format:'uuid'},baselineRunId:{type:'string',format:'uuid'}},required:['runId','baselineRunId']},annotations:{readOnlyHint:true}},
   {name:'service_agent_plan_advance',description:'显式推进已读取的持久私有服务规划。直接模式可能调用模型，事件模式只登记原任务的受控唤醒。须有效独立窗口和原版本；未知结果不自动重试，confirmModelRetry仅表示本次明确确认。不会确认草稿、发布或发凭证。',inputSchema:{type:'object',additionalProperties:false,properties:{planId:{type:'string',format:'uuid'},expectedVersion:{type:'integer',minimum:1},confirmModelRetry:{type:'boolean'}},required:['planId','expectedVersion']}},
   {name:'service_agent_context',description:'只读核对确切私有发布批次、业务口径和可用DAPI固定版本。不调用模型，不创建任务或接口，不构成规划/发布授权。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceBinding:servicePlanSourceSchema},required:['sourceBinding']},annotations:{readOnlyHint:true}},
+  {name:'service_agent_consume',description:'经明确确认后委托 Agent 调用同一发布批次的 DAPI 和 XAPI 各一次。应用及接口必须已授权，未知结果查询原请求。',inputSchema:{type:'object',additionalProperties:false,
+    properties:{sourceBinding:servicePlanSourceSchema,applicationId:{type:'string',format:'uuid'},dapiVersionId:{type:'string',format:'uuid'},
+      xapiVersionId:{type:'string',format:'uuid'},requestId:{type:'string',format:'uuid'},confirm:{const:true}},
+    required:['sourceBinding','applicationId','dapiVersionId','xapiVersionId','requestId','confirm']}},
+  {name:'service_agent_consumption_request',description:'按原请求编号只读 Agent 消费委托及确切版本结果。',inputSchema:{type:'object',additionalProperties:false,
+    properties:{requestId:{type:'string',format:'uuid'}},required:['requestId']},annotations:{readOnlyHint:true}},
   {name:'service_agent_plan_create',description:'基于确切发布来源创建DAPI/XAPI规划；本机模式排队模型，持久私有模式仅保存待推进任务。未知结果查询原requestId，不自动重试，不创建草稿、发布或发凭证。',inputSchema:{type:'object',additionalProperties:false,properties:{message:{type:'string',minLength:4,maxLength:2000},sourceBinding:servicePlanSourceSchema,requestId:{type:'string',format:'uuid'}},required:['message','sourceBinding','requestId']}},
   {name:'service_agent_plan_list',description:'只读当前确切来源的本人规划记录。',inputSchema:{type:'object',additionalProperties:false,properties:{sourceBinding:servicePlanSourceSchema},required:['sourceBinding']},annotations:{readOnlyHint:true}},
   ...['detail','request','apply','cancel'].map(operation=>({name:'service_agent_plan_'+operation,description:operation==='apply'?'应用本人原同源方案为草稿；不测试、发布或发令牌。':operation==='cancel'?'取消本人原同源规划并保留记录，不取消其他资源。':operation==='request'?'按原请求编号只读找回规划，不重新调用模型。':'只读原同源规划与固定版本。',inputSchema:{type:'object',additionalProperties:false,properties:{[operation==='request'?'requestId':'planId']:{type:'string',format:'uuid'}},required:[operation==='request'?'requestId':'planId']},annotations:{readOnlyHint:['detail','request'].includes(operation)}})),
   {name:"agent_background_status",description:"读取原任务的有界云后台状态；不会推进任务或调用模型。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"}},required:["taskId"]}},
   {name:"agent_background_resume",description:"审阅后恢复原任务15分钟后台；保留原预算和次数。未知模型结果可能已收费，必须明确确认重试。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},expectedVersion:{type:"integer",minimum:1},confirm:{type:"boolean",const:true},confirmModelRetry:{type:"boolean"}},required:["taskId","expectedVersion","confirm"]}},
-  {name:"agent_background_enable",description:"委托原任务的云端事件后台，15分钟/最多20事件，不自动发布。可能调用真实模型和Spark；必须先取得用户对任务与预算的明确确认。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},expectedVersion:{type:"integer",minimum:1},confirm:{type:"boolean",const:true}},required:["taskId","expectedVersion","confirm"]}},
+  {name:"agent_background_enable",description:"委托原任务的云端事件后台，15分钟/最多20事件。prepareFiles 可授权核验成功后准备一个原交付包，演练和发布须单独确认。必须先取得用户对任务、预算和所选范围的确认。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},expectedVersion:{type:"integer",minimum:1},confirm:{type:"boolean",const:true},prepareFiles:{type:"boolean",const:true}},required:["taskId","expectedVersion","confirm"]}},
   {name:"agent_background_cancel",description:"停止指定任务后续后台推进，已提交计算及检查点保留；须确认，不删除记录。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:{type:"string",format:"uuid"},confirm:{type:"boolean",const:true}},required:["taskId","confirm"]}},
   { name: "v2_status", description: "读取数舵V2真实/本机/公网能力边界。", inputSchema: { type: "object", properties: {} } },
   { name: "budget_status", description: "读取当月模型估算、远程Spark用量、账号账单连接状态和预算门；未连接账号账单时不代表全站费用。", inputSchema: { type: "object", properties: {} } },
@@ -122,12 +131,13 @@ const tools = [
   { name: "agent_request_lookup",description:"按当前创建者与原幂等请求编号找回Agent任务；只读，不重发需求或调用模型。",inputSchema:{type:"object",additionalProperties:false,properties:{requestId:{type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"}},required:["requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},
   { name: "agent_execution_evidence",description:"按原创建请求编号读取已保存的模型用量、Spark阶段及通过核验的版本。",inputSchema:{type:"object",additionalProperties:false,properties:{requestId:publicationIdSchema},required:["requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},
   { name: "agent_publication_detail", description: "按来源、包摘要及演练读取云端测试发布，不创建计算。MANUAL必须提供sourceRunId、packageDigest、verificationId；已知releaseId时一并绑定，不选择其他历史包。执行者来自会话。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(false)]} },
-  { name: "agent_publication_create", description: "人工逐项审阅当前不可变包及成功演练后创建两个云端测试批次，不代批或自动重试。MANUAL须提供sourceKind与sourceRunId，不计Agent自主完成。可提供原requestId复用幂等编号；未知结果先查原发布，执行者不能指定。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceKind:publicationProperties.sourceKind,sourceRunId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema,requestId:publicationIdSchema,attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"],allOf:[manualPublicationCondition(false)]} },
+  { name: "agent_publication_create", description: "人工逐项审阅当前不可变包及成功演练后创建两个云端测试批次。指定 approvalOnly 仅保存批准。凭原 requestId、reviewDigest 和 approvalId 发起发布，可显式选择 dispatchInBackground 委托签名事件。未知结果先查原请求。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceKind:publicationProperties.sourceKind,sourceRunId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema,requestId:publicationIdSchema,reviewDigest:publicationProperties.packageDigest,approvalOnly:{const:true},approvalId:{type:"string",format:"uuid"},dispatchInBackground:{const:true},attestations:{type:"object",additionalProperties:false,properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},cloudScope:{const:true}},required:["code","assertions","deliveryFiles","cloudScope"]}},required:["taskId","packageDigest","verificationId","attestations"],dependentRequired:{dispatchInBackground:["approvalId","requestId","reviewDigest"]},allOf:[manualPublicationCondition(false)]} },
+  { name: "agent_publication_request", description: "按原请求编号只读核对已保存的确切批准或发布回执。", inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,requestId:publicationIdSchema},required:["taskId","requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false} },
   { name: "agent_publication_stop", description:"停止指定来源、交付包及演练的后续云端批次，保留记录。不选择其他历史发布。MANUAL必须提供sourceRunId、packageDigest、verificationId、releaseId；提供任何selector时也须releaseId，执行者来自会话。",inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(true)]} },
-  { name: "agent_delivery_advance", description: "按当前版本推进原持久交付任务一个步骤；可提交真实Spark文件演练，不审批或发布。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 }, rehearsal:{type:"object",additionalProperties:false,properties:{
+  { name: "agent_delivery_advance", description: "按当前版本推进原持久交付任务。明确指定 dispatchInBackground 可委托原包的一次 Spark 文件演练，须先确认授权。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 },dispatchInBackground:{const:true}, rehearsal:{type:"object",additionalProperties:false,properties:{
     packageId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema},
     required:["packageId","packageDigest"]},confirm:{const:true} }, required: ["deliveryTaskId", "expectedVersion"],
-    dependentRequired:{rehearsal:["confirm"],confirm:["rehearsal"]} } },
+    dependentRequired:{rehearsal:["confirm"],confirm:["rehearsal"],dispatchInBackground:["rehearsal","confirm"]} } },
   { name: "fund_delivery_receipt_recheck", description: "核对本机基金交付的原签名演练回执。仅在证据吻合时恢复原交付状态，不运行模型或 Spark。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 } }, required: ["deliveryTaskId", "expectedVersion"] } },
   { name: "agent_delivery_list", description: "列出代码Agent的后台交付准备、不可变包与文件演练结果。", inputSchema: { type: "object", properties: { sourceAgentTaskId: { type: "string" } } } },
   {name:'agent_delivery_prepare',description:'准备已核验版本的交付文件；人工辅助版本须指定MANUAL、原运行和稳定requestId并明确confirm，沿用人工流程；不审批或发布。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},sourceKind:{enum:['AGENT','MANUAL']},sourceRunId:{type:'string',format:'uuid'},requestId:{type:'string',format:'uuid'},confirm:{const:true},
@@ -153,7 +163,8 @@ const tools = [
   { name: "delivery_verification_detail", description: "读取指定文件演练的步骤和验证证据。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
   { name: "delivery_verification_cancel", description: "取消未完成的文件演练并保留记录；调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { verificationId: { type: "string" } }, required: ["verificationId"] } },
   { name: "delivery_review_list", description: "列出按包摘要与文件演练绑定的工程师审阅记录。", inputSchema: { type: "object", properties: {} } },
-  { name: "delivery_review_create", description: "记录工程师已核对代码、断言、交付文件和本机范围；不审批、不发布。调用前必须完成实际审阅并取得明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, verificationId: { type: "string" }, reviewNote: { type: "string" }, attestations: { type: "object", properties: { code: { type: "boolean", const: true }, assertions: { type: "boolean", const: true }, deliveryFiles: { type: "boolean", const: true }, localScope: { type: "boolean", const: true } }, required: ["code", "assertions", "deliveryFiles", "localScope"], additionalProperties: false } }, required: ["packageId", "packageDigest", "verificationId", "reviewNote", "attestations"] } },
+  {name:"sync_review_evidence_read",description:"按原演练编号导出冻结持仓的只读审阅证据与摘要。",inputSchema:{type:"object",additionalProperties:false,properties:{verificationId:{type:"string",format:"uuid"}},required:["verificationId"]},annotations:{readOnlyHint:true}},
+  { name: "delivery_review_create", description: "记录工程师已完成的实际审阅。冻结持仓须传入原回执的 syncRehearsalDigest；调用前需要明确确认。", inputSchema: { type: "object", properties: { packageId: { type: "string" }, packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, verificationId: { type: "string" }, syncRehearsalDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}, reviewNote: { type: "string" }, attestations: { type: "object", properties: { code: { type: "boolean", const: true }, assertions: { type: "boolean", const: true }, deliveryFiles: { type: "boolean", const: true }, localScope: { type: "boolean", const: true } }, required: ["code", "assertions", "deliveryFiles", "localScope"], additionalProperties: false } }, required: ["packageId", "packageDigest", "verificationId", "reviewNote", "attestations"] } },
   { name: "release_approval_list", description: "列出绑定交付包摘要的发布审批记录。", inputSchema: { type: "object", properties: {} } },
   { name: "fund_agent_publication_preflight", description: "只读核对指定基金任务、开发运行、交付包及成功文件演练，返回工程师审阅和两批本机计划。",
     inputSchema:{type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,sourceRunId:publicationIdSchema,
@@ -176,12 +187,17 @@ const tools = [
   { name: "data_service_new_version", description: "创建新草稿，不测试、发布或改变已有线上端点；XAPI未传steps时保留原固定子版本。", inputSchema:{type:"object",additionalProperties:false,properties:{type:{type:"string",enum:["dapi","xapi"]},serviceId:{type:"string",format:"uuid"},input:{type:"object",additionalProperties:false,properties:{sourceReleaseRunId:{type:"string",format:"uuid"},fields:{type:"array",items:{type:"string"}},timeoutMs:{type:"integer",minimum:100,maximum:5000},rateLimitPerMinute:{type:"integer",minimum:1,maximum:600},steps:{type:"array",items:{type:"object"}}}}},required:["type","serviceId","input"]}},
   { name: "data_service_activate", description: "审阅后切换到已测试发布的目标版本，或回滚；必须确认当前线上版本和目标摘要，恢复原requestId。失败或重放不重复改变端点。", inputSchema:{type:"object",additionalProperties:false,properties:{type:{type:"string",enum:["dapi","xapi"]},serviceId:{type:"string",format:"uuid"},versionId:{type:"string",format:"uuid"},expectedPublishedVersionId:{type:"string",format:"uuid"},configHash:{type:"string",pattern:"^[a-f0-9]{64}$"},requestId:{type:"string",minLength:1,maxLength:100},confirm:{type:"boolean",const:true}},required:["type","serviceId","versionId","expectedPublishedVersionId","configHash","requestId","confirm"]}},
   {name:"data_service_sources",description:"只读已核验批次。旧agentTaskId范围保留；独立手工用manualDeliveryTaskId并同时提供packageDigest和releaseId，两种身份不能混用。",inputSchema:{type:"object",additionalProperties:false,properties:{agentTaskId:{type:"string",format:"uuid"},manualDeliveryTaskId:{type:"string",format:"uuid"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},releaseId:{type:"string",format:"uuid"}},allOf:[{not:{required:["agentTaskId","manualDeliveryTaskId"]}},{if:{required:["manualDeliveryTaskId"]},then:{required:["packageDigest","releaseId"]},else:{dependentRequired:{packageDigest:["agentTaskId","releaseId"],releaseId:["agentTaskId","packageDigest"]}}}]}},
-  {name:"data_service_task_evidence",description:"只读确切来源的历史授权调用。可用发布编号和callIdDigest定位原调用。独立手工使用manualDeliveryTaskId。",inputSchema:{type:"object",additionalProperties:false,properties:{agentTaskId:{type:"string",format:"uuid"},manualDeliveryTaskId:{type:"string",format:"uuid"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},releaseId:{type:"string",format:"uuid"},callIdDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}},required:["packageDigest"],dependentRequired:{callIdDigest:["releaseId"]},oneOf:[{required:["agentTaskId"],not:{required:["manualDeliveryTaskId"]}},{required:["manualDeliveryTaskId","releaseId"],not:{required:["agentTaskId"]}}]}},
+  {name:"data_service_task_evidence",description:"只读确切来源的历史授权调用。可用 batchId 限定 Agent 发布批次，callIdDigest 定位原调用。",inputSchema:{type:"object",additionalProperties:false,properties:{agentTaskId:{type:"string",format:"uuid"},manualDeliveryTaskId:{type:"string",format:"uuid"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},releaseId:{type:"string",format:"uuid"},batchId:{type:"string",format:"uuid"},callIdDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}},required:["packageDigest"],dependentRequired:{callIdDigest:["releaseId"],batchId:["releaseId","agentTaskId"]},oneOf:[{required:["agentTaskId"],not:{required:["manualDeliveryTaskId"]}},{required:["manualDeliveryTaskId","releaseId"],not:{required:["agentTaskId"]}}]}},
   { name: "data_service_openapi", description: "读取指定DAPI/XAPI的OpenAPI 3.1文档。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string" } }, required: ["type", "serviceId"] } },
   { name: "data_service_recovery", description: "使用当前平台身份读取私有服务启动标识、快照完整性和恢复对照；不执行计算、不发凭证，单份报告不代表冷启动验收。", inputSchema: { type: "object", additionalProperties: false, properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string", format: "uuid" } }, required: ["type", "serviceId"] } },
   { name: "data_service_calls", description: "读取数据服务调用日志，可按服务过滤。", inputSchema: { type: "object", properties: { serviceId: { type: "string" } } } },
   { name: "service_application_list", description: "列出调用应用与授权，不返回令牌或令牌哈希。", inputSchema: { type: "object", properties: {} } },
-  { name: "service_application_create", description: "创建本机调用应用并仅显示一次令牌。该操作创建持久访问能力，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { name: { type: "string" }, serviceIds: { type: "array", items: { type: "string" } } }, required: ["name", "serviceIds"] } },
+  { name: "service_application_create", description: "创建调用应用并仅显示一次令牌。可为客户资产服务限定单一客户并脱敏指定字段。该操作创建持久访问能力，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: {
+    name: { type: "string" }, serviceIds: { type: "array", items: { type: "string" } },
+    customerAccess: { type: "object", additionalProperties: false, properties: {
+      clientId: { type: "string" }, maskedFields: { type: "array", items: { type: "string", enum: ["client_id","holding_market_value","available_cash","total_assets","security_count"] } },
+    }, required: ["clientId","maskedFields"] },
+  }, required: ["name", "serviceIds"] } },
   { name: "service_application_revoke", description: "撤销本机调用应用。该操作会使令牌立即失效，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { applicationId: { type: "string" } }, required: ["applicationId"] } },
   { name: "data_service_invoke", description: "使用服务器环境中的SHUDUO_APP_TOKEN调用已授权服务；令牌不进入模型参数。", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["dapi", "xapi"] }, slug: { type: "string" }, clientId: { type: "string" }, page: { type: "integer", minimum: 1 }, pageSize: { type: "integer", minimum: 1, maximum: 100 } }, required: ["type", "slug"] } },
   { name: "source_list", description: "列出V2真实数据源、版本、连接测试和元数据摘要。", inputSchema: { type: "object", properties: {} } },
@@ -191,6 +207,8 @@ const tools = [
   { name: "source_metadata_collect", description: "基于已测试版本扫描字段类型、基数和结构变化。", inputSchema: { type: "object", properties: { sourceId: { type: "string" } }, required: ["sourceId"] } },
   { name: "source_revision_create", description: "为现有数据源创建新的合成CSV版本，不复用旧元数据。", inputSchema: { type: "object", properties: { sourceId: { type: "string" }, fileName: { type: "string" } }, required: ["sourceId", "fileName"] } },
   { name: "sync_task_list", description: "列出V2离线同步任务和全部运行证据。", inputSchema: { type: "object", properties: {} } },
+  { name: "sync_recovery_preview", description: "只读原失败的CSV同步任务和当前已采集字段，用于审阅恢复映射。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:{type:"string"}},required:["taskId"]}, annotations:{readOnlyHint:true} },
+  { name: "sync_recovery_save", description: "明确审阅后保存恢复草稿。保留原失败记录，执行需另行确认。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:{type:"string"},basisDigest:{type:"string"},confirm:{const:true},mapping:{type:"object",additionalProperties:{type:"string"}}},required:["taskId","basisDigest","confirm","mapping"]} },
   { name: "sync_task_create", description: "创建绑定源版本和元数据版本的FULL或INCREMENTAL_UPSERT草稿。", inputSchema: { type: "object", properties: { name: { type: "string" }, sourceId: { type: "string" }, targetTable: { type: "string" }, mode: { type: "string", enum: ["FULL", "INCREMENTAL_UPSERT"] }, mapping: { type: "object", additionalProperties: { type: "string" } }, keyFields: { type: "array", items: { type: "string" } }, watermarkField: { type: "string" } }, required: ["name", "sourceId", "targetTable", "mode", "mapping", "keyFields"] } },
   { name: "sync_task_run", description: "实际执行离线同步并返回读写、摘要和水位。", inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
   { name: "sync_target_rows", description: "读取本机合成落地区目标行，用于验收。", inputSchema: { type: "object", properties: { targetTable: { type: "string" } }, required: ["targetTable"] } },
@@ -213,6 +231,7 @@ const tools = [
   { name: "realtime_plan_apply", description: "把已验证实时方案应用为READY草稿，不自动启动。", inputSchema: { type: "object", properties: { planId: { type: "string" } }, required: ["planId"] } },
   { name: "asset_list", description: "搜索由实际版本绑定生成的数据资产目录。", inputSchema: { type: "object", properties: { query: { type: "string" }, kind: { type: "string" } } } },
   { name: "asset_detail", description: "读取资产字段、证据摘要、指标、标准和血缘。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
+  { name: "asset_quality_receipt", description: "按原冻结发布资产读取质量检测回执，读取不执行检测。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
   { name: "asset_lineage", description: "只读版本血缘、原批次保存的SQL值来源及筛选/关联/分组/去重字段引用；引用完整不代表语义影响完整，无字段引用不代表无影响，读取不解析或计算。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
   { name: "asset_impact", description: "读取指定资产的下游版本绑定影响范围。", inputSchema: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] } },
   { name: "asset_annotate", description: "为合成资产保存版本化业务名称、说明、域、负责人和标签。", inputSchema: { type: "object", properties: { assetId: { type: "string" }, businessName: { type: "string" }, description: { type: "string" }, domain: { type: "string" }, owner: { type: "string" }, classification: { type: "string", enum: ["PUBLIC_DEMO", "INTERNAL_DEMO", "RESTRICTED_DEMO"] }, tags: { type: "array", items: { type: "string" } } }, required: ["assetId", "businessName", "description", "domain", "owner"] } },
@@ -341,10 +360,20 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==='agent_assisted_continue')return createAssistedContinuation(client,args);
   if(name==='sql_run_comparison_candidates')return readRunComparisonCandidates(client,args);
   if(name==='sql_run_output_schema')return readSyncSqlOutputSchema(client,args);
+  if(name==='sql_synced_positions')return readSyncedPositions(client);
   if(name==='sql_run_compare')return readSqlRunComparison(client,args);
   if(name==='agent_repair_comparison_basis')return readRepairComparisonBasis(client,args);
   if(name==='agent_repair_comparison_create')return createComparisonRepairTask(client,args);
   if(name==='service_agent_context')return readServiceAgentContext(client,args);
+  if(name==='service_agent_consume'){
+    const {requestId,confirm,...body}=args;
+    if(confirm!==true)throw Error('须明确确认此批次的单次消费委托');
+    return client.request(agentConsumptionPath,{method:'POST',idempotencyKey:requestId,body:readAgentConsumption(body,requestId)});
+  }
+  if(name==='service_agent_consumption_request'){
+    if(Object.keys(args).length!==1)throw Error('只接受原委托请求编号');
+    return client.request(agentConsumptionReceiptPath(args.requestId));
+  }
   if(typeof name==='string'&&name.startsWith('service_agent_plan_'))return callServicePlan(client,name.slice('service_agent_plan_'.length),args);
   if (name === "v2_status") return client.request("/status");
   if (name === "budget_status") return client.request("/budget");
@@ -425,7 +454,9 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==="agent_background_status")return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background`);
   if(name==="agent_background_enable"){
     if(args.confirm!==true)throw new Error("必须先确认云后台任务与预算范围");
-    return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background`,{method:"POST",body:{expectedVersion:args.expectedVersion}});
+    if(args.prepareFiles!==undefined && args.prepareFiles!==true)throw new Error("准备交付文件参数须为 true");
+    return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background`,{method:"POST",body:{
+      expectedVersion:args.expectedVersion,...(args.prepareFiles?{prepareFiles:true}:{})}});
   }
   if(name==="agent_background_resume"){
     if(args.confirm!==true)throw new Error("必须先审阅原任务与剩余预算");
@@ -435,11 +466,15 @@ async function callTool(name, args = {}, client=defaultClient) {
     if(args.confirm!==true)throw new Error("必须先确认停止后台推进");
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background/cancel`,{method:"POST",body:{}});
   }
+  if(name==="agent_publication_request"){
+    if(!args||typeof args!=="object"||Array.isArray(args)||Object.keys(args).some(key=>!["taskId","requestId"].includes(key)))throw Error("核对原发布请求只接受任务和请求编号");
+    return client.request(publicationRequestReceiptPath(args.taskId,args.requestId));
+  }
   if(["agent_publication_detail","agent_publication_create","agent_publication_stop"].includes(name)){
     const creating=name==="agent_publication_create";
-    const allowed=new Set(["taskId",...Object.keys(publicationProperties),...(creating?["attestations","requestId"]:[])]);
+    const allowed=new Set(["taskId",...Object.keys(publicationProperties),...(creating?["attestations","requestId","reviewDigest","approvalOnly","approvalId","dispatchInBackground"]:[])]);
     if(!args||typeof args!=="object"||Array.isArray(args)||Object.keys(args).some(key=>!allowed.has(key)))throw Error("发布工具包含未知参数；执行者只能来自当前会话");
-    const {taskId,attestations,requestId,...rawSelector}=args,selector=publicationSelectorInput(rawSelector);
+    const {taskId,attestations,requestId,reviewDigest,approvalOnly,approvalId,dispatchInBackground,...rawSelector}=args,selector=publicationSelectorInput(rawSelector);
     const path=publicationReadPath(taskId);
     if(name==="agent_publication_detail")return client.request(publicationReadPath(taskId,selector));
     if(name==="agent_publication_stop"){
@@ -449,11 +484,15 @@ async function callTool(name, args = {}, client=defaultClient) {
     const required=["code","assertions","deliveryFiles","cloudScope"];
     if(!selector.packageDigest||!selector.verificationId||selector.releaseId||!attestations||typeof attestations!=="object"||Array.isArray(attestations)||Object.keys(attestations).length!==required.length||!required.every(key=>attestations[key]===true))throw Error("请逐项审阅确切包、成功演练和四项云端测试依据，不自动代批");
     if(requestId!==undefined&&(typeof requestId!=="string"||!/^[A-Za-z0-9_-]{1,100}$/.test(requestId)))throw Error("原发布requestId不合法");
-    return client.request(path,{method:"POST",body:{...selector,attestations:Object.fromEntries(required.map(key=>[key,true]))},...(requestId===undefined?{}:{idempotencyKey:requestId})});
+    if(reviewDigest!==undefined&&(typeof reviewDigest!=="string"||!/^[a-f0-9]{64}$/.test(reviewDigest)))throw Error("确切审阅摘要不合法");
+    const step=publicationApprovalStep({approvalOnly,approvalId,reviewDigest,requestId,selector,dispatchInBackground});
+    return client.request(path,{method:"POST",body:{...selector,attestations:Object.fromEntries(required.map(key=>[key,true])),
+      ...(reviewDigest===undefined?{}:{reviewDigest}),...step},...(requestId===undefined?{}:{idempotencyKey:requestId})});
   }
   if (name === "agent_delivery_advance") {
     if (args.rehearsal!==undefined && args.confirm!==true) throw Error("须确认原包和演练批次");
-    const body={expectedVersion:args.expectedVersion,...(args.rehearsal===undefined?{}:{rehearsal:args.rehearsal})};
+    const body={expectedVersion:args.expectedVersion,...(args.rehearsal===undefined?{}:{rehearsal:args.rehearsal}),
+      ...(args.dispatchInBackground===undefined?{}:{dispatchInBackground:args.dispatchInBackground})};
     readDeliveryAdvance(body);
     return client.request(`/agent/deliveries/${encodeURIComponent(args.deliveryTaskId)}/advance`,{method:"POST",body});
   }
@@ -531,6 +570,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     );
   if (name === "delivery_review_list")
     return client.request("/delivery/reviews");
+  if(name==="sync_review_evidence_read")return readSyncReviewEvidence(client,args);
   if (name === "delivery_review_create")
     return client.request(
       `/delivery/packages/${encodeURIComponent(args.packageId)}/review`,
@@ -539,6 +579,7 @@ async function callTool(name, args = {}, client=defaultClient) {
         body: {
           packageDigest: args.packageDigest,
           verificationId: args.verificationId,
+          ...(args.syncRehearsalDigest === undefined ? {} : {syncRehearsalDigest:args.syncRehearsalDigest}),
           reviewNote: args.reviewNote,
           attestations: args.attestations,
         },
@@ -672,6 +713,11 @@ async function callTool(name, args = {}, client=defaultClient) {
       { method: "POST", body: { fileName: args.fileName } },
     );
   if (name === "sync_task_list") return client.request("/sync/tasks");
+  if (name === "sync_recovery_preview" || name === "sync_recovery_save") {
+    const {taskId,...body} = args;
+    return client.request(`/sync/tasks/${encodeURIComponent(taskId)}/recovery`,
+      name === "sync_recovery_save" ? {method:"POST",body} : undefined);
+  }
   if (name === "sync_task_create")
     return client.request("/sync/tasks", { method: "POST", body: args });
   if (name === "sync_task_run")
@@ -745,6 +791,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     });
     return client.request(`/assets${query.size ? `?${query}` : ""}`);
   }
+  if (name === "asset_quality_receipt") return readFrozenAssetQuality(client, {assetId:args.assetId});
   if (["asset_detail", "asset_lineage", "asset_impact"].includes(name)) {
     const action = {
       asset_detail: undefined,

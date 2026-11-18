@@ -238,6 +238,9 @@ test("invited HTTP workflow enforces task owner and CSRF and refuses unconfigure
   assert.equal(executionView.development.runId,run.id);
   assert.equal(executionView.development.regressionCount,5);
   assert.equal(executionView.execution.spark.resultStatus,"SUCCEEDED");
+  const legacyDrivers=[{attempt:1,modelTrigger:"UNRECORDED",spark:{runId:run.id,submissionTriggers:["UNRECORDED"]}}];
+  assert.deepEqual(executionView.developmentDrivers,legacyDrivers);
+  assert.deepEqual((await call(`/agent/tasks/${agent.id}`,undefined,a)).body.developmentDrivers,legacyDrivers);
   const mcpExecution=JSON.parse(await handleV2Mcp({jsonrpc:"2.0",id:1,method:"tools/call",
     params:{name:"agent_execution_evidence",arguments:{requestId:agentKey}}},{client:checkpointClient}));
   assert.deepEqual(mcpExecution.result.structuredContent,executionView);

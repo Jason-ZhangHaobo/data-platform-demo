@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {LifecycleEvaluationPanel,type LifecycleReport} from "./LifecycleEvaluationPanel";
 import {LiveLifecycleEvaluationPanel} from "./LiveLifecycleEvaluationPanel";
 import {OpsPublicationPanel} from "./OpsPublicationPanel";
+import {FrozenAssetQualityPanel} from "./FrozenAssetQualityPanel";
+import type {FrozenQualitySource} from "../../src/v2/frozen-asset-quality-client.mjs";
 import {
   Activity,
   AlertTriangle,
@@ -69,6 +71,7 @@ type ActivityItem = {
   createdAt: string;
   durationMs?: number;
   errorCode?: string;
+  frozenQualitySource?: FrozenQualitySource;
 };
 type Overview = {
   scope: string;
@@ -142,6 +145,11 @@ export function OperationsWorkbench({api, canWrite, showLiveEvaluation}: {api:Ap
     [lifecycle, setLifecycle] = useState<LifecycleReport>();
   const [lifecycleError,setLifecycleError] = useState(""),[lifecycleLoading,setLifecycleLoading] = useState(true);
   const lifecycleRead = useRef(0);
+  const overviewApi=useRef<Api|undefined>(undefined);
+  const [qualityBatchId,setQualityBatchId]=useState("");
+  const qualitySource=overviewApi.current===api
+    ? overview?.recentActivity.find(item=>item.kind==="release_run"&&item.id===qualityBatchId)?.frozenQualitySource
+    : undefined;
   const [busy, setBusy] = useState(""),
     [notice, setNotice] = useState(""),
     [error, setError] = useState("");
@@ -172,6 +180,7 @@ export function OperationsWorkbench({api, canWrite, showLiveEvaluation}: {api:Ap
       ),
     ]);
     if(readId!==lifecycleRead.current)return;
+    overviewApi.current=api;
     setOverview(nextOverview);
     setDiagnoses(nextDiagnoses);
     setLifecycle(nextLifecycle.report);setLifecycleError(nextLifecycle.error);
@@ -187,7 +196,7 @@ export function OperationsWorkbench({api, canWrite, showLiveEvaluation}: {api:Ap
   useEffect(() => {
     reload().catch((cause) => setError((cause as Error).message));
     return ()=>{lifecycleRead.current++;};
-  }, []);
+  }, [api]);
   useEffect(() => {
     if (!selectedIncidentId) return;
     api<IncidentDetail>(`/operations/incidents/${selectedIncidentId}`)
@@ -306,7 +315,19 @@ export function OperationsWorkbench({api, canWrite, showLiveEvaluation}: {api:Ap
         <section className="ops-incident-detail-v2">{detail ? <><header><div><span className="eyebrow">{detail.domain} · {detail.severity}</span><h3>{detail.title}</h3><p>{detail.message}</p></div><span className={`status-pill ${detail.status.toLowerCase()}`}>{labels[detail.status]}</span></header><div className="ops-proof-v2"><div><span>源类型</span><code>{detail.sourceKind}</code></div><div><span>源运行</span><code>{detail.sourceId.slice(0, 8)}</code></div><div><span>资源</span><code>{detail.resourceId?.slice(0, 12)}</code></div><div><span>恢复模式</span><strong>{detail.resolutionMode ?? "待恢复"}</strong></div><div><span>业务行</span><strong>未保存</strong></div></div><div className="ops-timeline-v2"><article className="failed"><CircleDot size={16} /><div><span>失败证据</span><strong>{detail.sourceEvidence.status} · {detail.sourceEvidence.errorCode ?? detail.errorCode}</strong><code>{detail.sourceEvidence.id}</code></div></article>{detail.acknowledgements.map((event) => <article key={event.id}><Clock3 size={16} /><div><span>{event.type === "ACKNOWLEDGED" ? "人工确认" : "人工恢复"}</span><strong>{event.note}</strong><code>{event.actor} · {event.observedAt}</code></div></article>)}{detail.recoveryEvidence && <article className="recovered"><CheckCircle2 size={16} /><div><span>恢复证据</span><strong>{detail.recoveryEvidence.status} · {detail.resolutionMode}</strong><code>{detail.recoveryEvidence.id}</code></div></article>}</div>{detail.status === "OPEN" && <button className="button" onClick={acknowledge} disabled={!canWrite || !!busy}><FileCheck2 size={14} />确认事故</button>}{detail.status === "ACKNOWLEDGED" && <details className="ops-resolve-v2"><summary><Wrench size={14} />使用成功运行证据解除</summary><div><label>证据类型<select value={resolveKind} onChange={(event) => setResolveKind(event.target.value)}><option>offline_sync_run</option><option>stream_run</option><option>quality_run</option><option>release_run</option><option>data_service_test</option></select></label><label>证据ID<input value={resolveId} onChange={(event) => setResolveId(event.target.value)} /></label><label className="wide">说明<input value={resolveNote} onChange={(event) => setResolveNote(event.target.value)} /></label><button className="button primary" onClick={resolve} disabled={!canWrite || !resolveId || !!busy}>验证并解除</button></div></details>}</> : <div className="ingestion-empty"><Radar size={25} /><p>选择事故查看证据链。</p></div>}</section>
       </div>
 
-      <section className="ops-activity-v2"><header><div><Activity size={17} /><h3>跨模块运行活动</h3></div><span>最近 {overview?.recentActivity.length ?? 0}</span></header><div>{overview?.recentActivity.slice(0, 18).map((item) => <article key={`${item.kind}:${item.id}`}><span className={`status-pill ${item.status.toLowerCase()}`}>{labels[item.status] ?? item.status}</span><strong>{item.domain}</strong><code>{item.kind} · {item.id.slice(0, 8)}</code><small>{item.durationMs === undefined ? "—" : `${item.durationMs}ms`}</small></article>)}</div></section>
+      <section className="ops-activity-v2">
+        <header><div><Activity size={17} /><h3>跨模块运行活动</h3></div><span>最近 {overview?.recentActivity.length ?? 0}</span></header>
+        <div>{overview?.recentActivity.slice(0,18).map(item=><article key={`${item.kind}:${item.id}`}>
+          <span className={`status-pill ${item.status.toLowerCase()}`}>{labels[item.status]??item.status}</span>
+          <strong>{item.domain}</strong><code>{item.kind} · {item.id.slice(0,8)}</code>
+          <small>{item.durationMs===undefined?"—":`${item.durationMs}ms`}</small>
+          {overviewApi.current===api&&item.frozenQualitySource&&<button className="button ops-quality-link-v2" type="button"
+            aria-label={"查看批次 "+item.id.slice(0,8)+" 的质量回执"} aria-pressed={qualityBatchId===item.id}
+            onClick={()=>setQualityBatchId(current=>current===item.id?"":item.id)}>查看质量回执</button>}
+        </article>)}</div>
+        {qualitySource&&<FrozenAssetQualityPanel key={`${qualitySource.assetId}:${qualitySource.evidenceHash}`}
+          api={api} source={qualitySource} canWrite={false} initiallyOpen/>}
+      </section>
       <footer className="ops-boundary-v2"><Radar size={14} />当前聚合本机持久化运行与事故证据；不是公网、多实例、云监控或完整成本中心，也不自动执行Agent建议。</footer>
     </div>
   );

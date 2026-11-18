@@ -6,9 +6,10 @@ const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentRepo
 import { manualDeliveryPackages } from "./manual-run-recovery";
 import { deliverySourceSelection } from "./delivery-source";
 import { defaultLocalReleaseSchedule, localReleaseScheduleText, matchingDeliveryVerification } from "./delivery-presentation";
-import { checkedSyncSqlRehearsalSchema, checkedSyncSqlScheduledSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
+import { checkedSyncSqlRehearsalSchema, checkedSyncSqlScheduledSchema, readSyncReviewEvidence } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import type { SyncSqlRehearsalSchema } from "../../src/v2/sync-sql-output-schema-client.mjs";
 import { SyncOutputSchemaDetails } from "./SyncOutputSchemaDetails";
+import { LocalSyncBatchConsumption } from "./LocalSyncBatchConsumption";
 import {
   Activity,
   ArrowDownToLine,
@@ -77,6 +78,7 @@ type Verification = {
   testSqlValidation?: { passed: boolean };
   validation?: { passed: boolean };
   rehearsalOutputSchema?: unknown;
+  syncRehearsalDigest?: string;
   workflowTrace?: { id: string; kind: string; status: string }[];
 };
 type Approval = {
@@ -88,6 +90,7 @@ type Approval = {
   reviewer: string;
   reviewNote: string;
   consumedByReleaseId?: string;
+  syncRehearsalDigest?: string;
   expiresAt?: string;
   syncConsent?: { verificationId: string; snapshotHash: string; scheduleSpec: { triggerAfterSeconds: number; intervalSeconds: number; runCount: number } };
   fundConsent?: { scheduleSpec: { triggerAfterSeconds: number; intervalSeconds: number; runCount: number } };
@@ -97,6 +100,7 @@ type Review = {
   packageId: string;
   packageDigest: string;
   verificationId: string;
+  syncRehearsalDigest?: string;
   status: string;
   reviewedAt: string;
   reviewer: { id: string; displayName: string; role: string };
@@ -253,6 +257,7 @@ const labels: Record<string, string> = {
   SUCCEEDED: "本机演练通过",
   FAILED: "演练失败",
   VALIDATION_FAILED: "结果未通过",
+  UNCONFIRMED: "原演练待核对",
   CANCELLED: "已取消",
   INTERRUPTED: "已中断",
 };
@@ -334,8 +339,10 @@ export function DeliveryWorkbench({
     } catch { /* Keep the original receipt when its optional details cannot be confirmed. */ }
   }
   const [reviews, setReviews] = useState<Review[]>([]), [reviewDraft, setReviewDraft] = useState<ReviewDraft>();
-  const reviewTarget = selected && !selected.manifest.source.fundSignedExecution && check?.status === "SUCCEEDED"
-    ? `${selected.id}:${selected.digest}:${check.id}` : undefined;
+  const syncReviewDigest = syncInput && /^[a-f0-9]{64}$/.test(check?.syncRehearsalDigest ?? "") ? check?.syncRehearsalDigest : undefined;
+  const reviewTarget = selected && !selected.manifest.source.fundSignedExecution && check?.status === "SUCCEEDED" &&
+    (!syncInput || syncReviewDigest)
+    ? `${selected.id}:${selected.digest}:${check.id}${syncReviewDigest ? ":"+syncReviewDigest : ""}` : undefined;
   const [fundConsentTarget, setFundConsentTarget] = useState<string>();
   const fundConfirmed = Boolean(reviewTarget && fundConsentTarget === reviewTarget);
   const syncConfirmed = Boolean(reviewTarget && syncConsentTarget === reviewTarget && check?.occurrence?.businessDate);
@@ -579,6 +586,7 @@ export function DeliveryWorkbench({
       await api<Review>(`/delivery/packages/${selected.id}/review`, {
         packageDigest: selected.digest,
         verificationId: check.id,
+        ...(syncReviewDigest ? {syncRehearsalDigest:syncReviewDigest} : {}),
         reviewNote,
         attestations,
       });
@@ -673,20 +681,43 @@ export function DeliveryWorkbench({
     anchor.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
+  const downloadReviewEvidence = async () => {
+    if (!selected || !check || !syncInput || !syncReviewDigest || busy) return;
+    const request = ++ticket.current;
+    setBusy("review-evidence");
+    setError("");
+    try {
+      const evidence = await readSyncReviewEvidence({request:path=>api<unknown>(path)}, {
+        verificationId:check.id,packageId:selected.id,packageDigest:selected.digest,
+        syncRehearsalDigest:syncReviewDigest,snapshotHash:syncInput.snapshotHash,
+      });
+      if (request === ticket.current)
+        download(JSON.stringify(evidence,null,2)+"\n", "sync-review-evidence-"+check.id.slice(0,8)+".json");
+    } catch (error) {
+      if (request === ticket.current) {
+        setReviewDraft(undefined);
+        setSyncConsentTarget(undefined);
+        setError((error as Error).message);
+      }
+    } finally {
+      setBusy(current=>current==="review-evidence"?"":current);
+    }
+  };
   const content = selected
     ? file === "manifest.json"
       ? JSON.stringify(selected.manifest, null, 2)
       : (selected.files?.[file] ?? "")
     : "";
-  const selectedReview = selected && check
-    ? reviews.find(
+  const matchingReviews = selected && check
+    ? reviews.filter(
         (item) =>
           item.packageId === selected.id &&
           item.packageDigest === selected.digest &&
           item.verificationId === check.id &&
           item.status === "REVIEWED",
       )
-    : undefined;
+    : [];
+  const selectedReview = matchingReviews.find(item => !syncInput || syncReviewDigest && item.syncRehearsalDigest === syncReviewDigest);
   const selectedApproval = selected
     ? approvals.find(
         (item) =>
@@ -694,9 +725,12 @@ export function DeliveryWorkbench({
           item.packageDigest === selected.digest &&
           item.status === "APPROVED" && (!fund || Boolean(item.fundConsent)) &&
           (!syncInput || item.syncConsent?.snapshotHash === syncInput.snapshotHash &&
-            item.syncConsent.verificationId === check?.id && (item.consumedByReleaseId || Date.parse(item.expiresAt ?? "") > approvalClock)),
+            item.syncConsent.verificationId === check?.id && (item.consumedByReleaseId ||
+              check?.status === "SUCCEEDED" && Date.parse(item.expiresAt ?? "") > approvalClock &&
+              (item.syncRehearsalDigest === undefined || item.syncRehearsalDigest === syncReviewDigest))),
       )
     : undefined;
+  const staleSyncReview = Boolean(syncInput && syncReviewDigest && matchingReviews.length && !selectedReview && !selectedApproval);
   const selectedRelease = selected
     ? releases.find(
         (item) =>
@@ -1083,8 +1117,13 @@ export function DeliveryWorkbench({
                   <ShieldCheck size={22} />
                 </header>
                 <p>
-                  {syncInput ? "文件审阅绑定包摘要与成功演练。测试发布批准在 15 分钟内有效。" : <>先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。{localReleaseScheduleText(selectedRelease)}</>}
+                  {syncInput ? "文件审阅绑定交付包和演练内容摘要。测试发布批准在 15 分钟内有效。" : <>先形成绑定当前摘要与演练编号的审阅记录，再决定是否审批。{localReleaseScheduleText(selectedRelease)}</>}
                 </p>
+                {syncReviewDigest && <p>演练内容摘要 <code title={syncReviewDigest}>{syncReviewDigest.slice(0,16)}</code></p>}
+                {syncReviewDigest && <button className="button" type="button" disabled={!!busy} onClick={()=>void downloadReviewEvidence()}>
+                  <ArrowDownToLine size={15}/>{busy==="review-evidence"?"正在核对证据…":"导出审阅证据"}
+                </button>}
+                {staleSyncReview && <p role="status" className="delivery-error-text">原审阅与当前演练证据不符，请核对当前内容后重新审阅。</p>}
                 {signedFundTask && <p><a href={`/v2/?module=agent-center&task=${encodeURIComponent(signedFundTask)}#agent-delivery`}>到原 Agent 任务审阅签名交付</a></p>}
                 <fieldset className="delivery-review-checklist" disabled={!canWrite || !reviewTarget || !!selectedReview || !!busy}>
                   <legend>工程师审阅确认（不会发布）</legend>
@@ -1133,7 +1172,7 @@ export function DeliveryWorkbench({
                     className="button"
                     onClick={review}
                     disabled={
-                      !canWrite ||
+                      !canWrite || !reviewTarget ||
                       check?.status !== "SUCCEEDED" ||
                       !!selectedReview ||
                       !!busy ||
@@ -1270,6 +1309,9 @@ export function DeliveryWorkbench({
                             </small>
                           </p>
                           <ScheduledSchemaEvidence item={item} bundle={selected}/>
+                          {syncHandoff && syncInput && reportBatchIds.includes(item.id) &&
+                            <LocalSyncBatchConsumption key={`${selectedRelease.id}:${selected.digest}:${item.id}`}
+                              api={api} binding={syncHandoff} batchId={item.id} snapshotHash={syncInput.snapshotHash} sequence={item.sequence}/>}
                           </div>
                         ))}
                     </div>

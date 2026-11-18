@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { getContext, validationFamilyForContext } from './context.mjs';
 import { storedRunSqlColumnLineage, sqlLineageSchemaHash } from './sql-column-lineage.mjs';
+import { readSyncSqlInput, syncSqlContractId, syncSqlOutputSchemaDetails, syncSqlRowsMatch } from './sync-sql-input.mjs';
 const hash = v => createHash('sha256').update(typeof v === 'string' ? v : JSON.stringify(v)).digest('hex');
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const unavailable = (reason) => ({ state: 'UNAVAILABLE', reason, changes: [] });
@@ -19,8 +21,9 @@ function fingerprint(value, contextId) {
     }
 }
 function validation(run, contextId) {
-    const v = run.validation, family = validationFamilyForContext(contextId), unknown = { state: v ? 'UNCONFIRMED' : 'NOT_MEASURED', cases: [] };
-    if (!family || run.validationContractId !== family.id || v?.contractId !== family.id || typeof v.passed !== 'boolean' || !Array.isArray(v.regressions) || v.regressions.length !== family.contextIds.length ||
+    const v = run.validation, family = validationFamilyForContext(contextId), contractId = run.syncInput ? syncSqlContractId : family?.id;
+    const unknown = { state: v ? 'UNCONFIRMED' : 'NOT_MEASURED', cases: [] };
+    if (!family || run.validationContractId !== contractId || v?.contractId !== contractId || typeof v.passed !== 'boolean' || !Array.isArray(v.regressions) || v.regressions.length !== family.contextIds.length ||
         new Set(v.regressions.map(c => c?.contextId)).size !== family.contextIds.length || v.regressions.some(c => !c || !family.contextIds.includes(c.contextId) || typeof c.passed !== 'boolean'))
         return unknown;
     const cases = family.contextIds.map(id => { const c = v.regressions.find(c => c.contextId === id); return { contextId: id, name: getContext(id).name, passed: c.passed, input: fingerprint(c.inputEvidence, id), assertions: assertion(c.assertionEvidence) }; });
@@ -29,7 +32,7 @@ function validation(run, contextId) {
     const assertions = assertion(v.assertionEvidence), selected = cases.find(c => c.contextId === contextId);
     if (assertions.state === 'VERIFIED' && (selected?.assertions.state !== 'VERIFIED' || selected.assertions.fingerprint !== assertions.fingerprint || selected.assertions.verifierRevision !== assertions.verifierRevision))
         return unknown;
-    return { state: v.passed ? 'PASSED' : 'FAILED', contractId: family.id, cases, assertions };
+    return { state: v.passed ? 'PASSED' : 'FAILED', contractId, cases, assertions };
 }
 export function runComparisonSide({ run, revision }) {
     const bound = Boolean(revision && run.revisionId === revision.id && run.revisionHash === revision.hash && run.contextId === revision.contextId && typeof revision.sql === 'string' && hash(revision.sql) === revision.hash);
@@ -116,7 +119,20 @@ function inputComparison(before, after) {
     return { state: 'SAME' };
 }
 export function compareSqlRuns({ store, project, current, baseline }) {
-    const before = runComparisonSide({ run: baseline, revision: store.get('revision', baseline.revisionId, project) }), after = runComparisonSide({ run: current, revision: store.get('revision', current.revisionId, project) });
+    const baselineRevision = store.get('revision', baseline.revisionId, project), currentRevision = store.get('revision', current.revisionId, project);
+    let frozenInput;
+    if (current.syncInput || baseline.syncInput) {
+        const basis = current.syncInput;
+        const beforeSchema = syncSqlOutputSchemaDetails(baseline, baselineRevision), afterSchema = syncSqlOutputSchemaDetails(current, currentRevision);
+        if (!basis || baseline.id === current.id || !isDeepStrictEqual(basis, baseline.syncInput) || !beforeSchema || !afterSchema ||
+            baselineRevision.author !== currentRevision.author || current.projectId !== project || baseline.projectId !== project)
+            throw Object.assign(Error('冻结持仓对照只接受同一已保存输入上的两个确切运行'), { status: 409, code: 'FROZEN_RUN_COMPARISON_SCOPE' });
+        const context = readSyncSqlInput({ store, project, actorId: currentRevision.author, binding: basis });
+        const outcome = (run, output) => ({ output, selectedRows: !Array.isArray(run.rows) ? 'UNAVAILABLE' : syncSqlRowsMatch(run.rows, context) ? 'MATCHED' : 'MISMATCH' });
+        frozenInput = { snapshotHash: basis.snapshotHash, syncRunId: basis.runId, metadataVersionId: basis.metadataVersionId,
+            baseline: outcome(baseline, beforeSchema), current: outcome(current, afterSchema) };
+    }
+    const before = runComparisonSide({ run: baseline, revision: baselineRevision }), after = runComparisonSide({ run: current, revision: currentRevision });
     const compatible = before.binding === 'VERIFIED' && after.binding === 'VERIFIED' && before.contextId === after.contextId && before.lineage.schemaHash === after.lineage.schemaHash &&
         before.lineage.parser === after.lineage.parser && before.lineage.parserVersion === after.lineage.parserVersion;
     const inputs = inputComparison(before, after), engineSame = Boolean(before.engine === 'Apache Spark' && after.engine === 'Apache Spark' && typeof before.engineVersion === 'string' && before.engineVersion.length > 0 && before.engineVersion === after.engineVersion);
@@ -131,5 +147,6 @@ export function compareSqlRuns({ store, project, current, baseline }) {
     return { protocol: 'shuduo-sql-run-comparison/v1', current: publicSide(after), baseline: publicSide(before), code: { state: before.binding !== 'VERIFIED' || after.binding !== 'VERIFIED' ? 'UNCONFIRMED' : before.revisionHash === after.revisionHash ? 'SAME' : 'CHANGED' }, inputs, assertions, engineSame,
         valueSources: compatible ? values(before.lineage, after.lineage) : unavailable('口径、结构、原代码或解析器未核对一致，未计算值来源差异'),
         conditionReferences: compatible ? conditions(before.lineage.conditionReferences, after.lineage.conditionReferences) : unavailable('口径、结构、原代码或解析器未核对一致，未计算条件差异'), caseComparison,
+        ...(frozenInput ? { frozenInput } : {}),
         causalConclusion: 'NOT_ESTABLISHED', readOnly: true, notice: '只比较保存证据，不运行模型、解析器或Spark。表达式字面量已隐藏；引用相同不代表SQL等价，观察到的失败变化不证明某个条件是唯一原因。' };
 }

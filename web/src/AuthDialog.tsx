@@ -76,7 +76,7 @@ type Invitation = {
 export function AuthSessionControls({session, ready, onLogin, onLogout, onRecheck}:{
   session:AuthSession; ready:boolean; onLogin:()=>void; onLogout:()=>void; onRecheck:()=>void;
 }) {
-  if (!session.authenticated) return <button className="auth-session-button-v2" disabled={!ready} onClick={onLogin}>
+  if (!session.authenticated) return <button className="auth-session-button-v2" type="button" onClick={onLogin}>
     <LogIn size={14}/>受邀用户登录
   </button>;
   return <>

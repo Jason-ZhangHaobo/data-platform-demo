@@ -2,6 +2,8 @@ import {distributionMetadataById} from "../../src/v2/output-contract-metadata.mj
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 const ServiceContractGatesPanel=lazy(async()=>({default:(await import('./ServiceContractGatesPanel')).ServiceContractGatesPanel}));
 import { EvidenceDownload, requestTextDownload } from "./EvidenceDownload";
+import {agentConsumptionTarget} from "./agent-consumption-view";
+const AgentConsumptionPanel=lazy(()=>import('./AgentConsumptionPanel'));
 import { isFundContext } from "../../src/v2/fund-contexts.mjs";
 import { compositionChoices, fundContractId } from "./service-composition";
 import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
@@ -98,7 +100,12 @@ type Application = {
   scope: string;
   pilotId?: string;
   expiresAt?: string;
+  customerAccess?: {clientId:string;maskedFields:string[]};
 };
+const customerMaskFields = [
+  ["client_id","客户编号"], ["holding_market_value","持仓市值"], ["available_cash","可用现金"],
+  ["total_assets","口径合计"], ["security_count","证券数量"],
+] as const;
 type ServiceCall = {
   id: string;
   serviceId: string;
@@ -277,6 +284,7 @@ export function DataServicesWorkbench({
   const [testReceipt, setTestReceipt] = useState<TestReceipt>(),
     [openApi, setOpenApi] = useState<Record<string, unknown>>(),
     [issuedToken, setIssuedToken] = useState("");
+  const [customerDraft,setCustomerDraft]=useState<{serviceId:string;versionId:string;clientId:string;maskedFields:string[]}>();
   const [tokenVisible,setTokenVisible]=useState(false),[issuedAppId,setIssuedAppId]=useState("");
   const [recoveryReport,setRecoveryReport]=useState<RecoveryReport>();
   const [showVersionEditor,setShowVersionEditor]=useState(false),[versionProfile,setVersionProfile]=useState<keyof typeof fieldProfiles>("full"),[versionRate,setVersionRate]=useState("60"),[versionTimeout,setVersionTimeout]=useState("1500");
@@ -310,6 +318,8 @@ export function DataServicesWorkbench({
   const scopedDapis=services.filter(s=>s.serviceType==="DAPI"),scopedXapis=services.filter(s=>s.serviceType==="XAPI");
   const visibleApplications=bindingDeclared?applications.filter(a=>a.serviceIds.length>0&&a.serviceIds.every(id=>services.some(s=>s.id===id))):applications;
   const scopedApplications=consumptionScope?visibleApplications.filter(a=>scopePlan&&a.pilotId===consumptionScope.pilotId&&a.name===scopePlan.applicationName&&a.serviceIds.length>0&&a.serviceIds.every(id=>services.some(s=>s.id===id))):visibleApplications;
+  const agentTarget=dataReady?agentConsumptionTarget(consumptionScope,eligibleRuns.find(run=>run.id===scopePlan?.sourceReleaseRunId),services,scopedApplications):undefined;
+  const activeApplicationStatus=agentTarget?serviceApplicationStatus(agentTarget.application,scopeClock):undefined;
   const plannedDapi=scopePlan?.dapis[plannedDapiIndex];
   const nextPlannedDapi=scopePlan?.dapis.findIndex(d=>!dapis.some(s=>s.slug===d.slug))??-1;
   const dapiAlreadyExists=Boolean(consumptionScope&&plannedDapi&&dapis.some(s=>s.slug===plannedDapi.slug));
@@ -323,6 +333,15 @@ export function DataServicesWorkbench({
   const syncSource = eligibleRuns.find(run=>run.id===sourceRunId&&run.sourceEvidence?.protocol==="shuduo-sync-sql-consumption-source/v1")?.sourceEvidence;
   const isFundSource = eligibleRuns.some(run => run.id === sourceRunId && run.outputContractId === fundContractId);
   const isFundService = selected?.currentVersion?.outputContractId === fundContractId;
+  const grantVersion=selected?.publishedVersion;
+  const grantSources=grantVersion?.steps?.map(step=>dapis.find(dapi=>dapi.id===step.dapiId)?.versions.find(version=>version.id===step.dapiVersionId));
+  const customerAccessAvailable=Boolean(!consumptionScope&&grantVersion&&!grantVersion.outputContractId&&
+    (grantSources ? grantSources.length>0&&grantSources.every(version=>version?.sourceReleaseRunId&&
+      !version.outputContractId&&version.sourceReleaseRunId===grantSources[0]?.sourceReleaseRunId&&version.snapshotHash===grantSources[0]?.snapshotHash)
+      : grantVersion.sourceReleaseRunId));
+  const currentDraft=customerDraft?.serviceId===selected?.id ? customerDraft : undefined;
+  const customerAccess=customerAccessAvailable&&currentDraft?.versionId===grantVersion?.id?currentDraft:undefined;
+  const customerAccessInvalid=Boolean(currentDraft&&(!customerAccess||!/^[A-Z0-9][A-Z0-9-]{2,63}$/.test(customerAccess.clientId.trim())));
   const [fundQuery, setFundQuery] = useState<Record<string, string>>({});
   function fieldsFor(choice: keyof typeof fieldProfiles, id?: string) {
     if (id === fundContractId) {
@@ -689,12 +708,13 @@ export function DataServicesWorkbench({
     }
   };
   const createApplication = async () => {
-    if (!selected || !canWrite || appAlreadyExists || consumptionScope&&!plannedApplicationBody) return;
+    if (!selected || !canWrite || appAlreadyExists || consumptionScope&&!plannedApplicationBody || customerAccessInvalid) return;
     setBusy("application");
     setError("");
     setIssuedToken("");
     try {
-      const body=consumptionScope?consumptionApplicationInput(consumptionScope,services):{name:"证券财富分析演示系统",serviceIds:[selected.id]};
+      const body=consumptionScope?consumptionApplicationInput(consumptionScope,services):{name:"证券财富分析演示系统",serviceIds:[selected.id],
+        ...(customerAccess?{customerAccess:{clientId:customerAccess.clientId.trim(),maskedFields:customerAccess.maskedFields}}:{})};
       const issued = await api<{
         application: Application;
         token: string | null;
@@ -1108,6 +1128,28 @@ LIMIT :limit OFFSET :offset`}</pre>
                     }} />
                 </label>)}
               </div>}
+              {(customerAccessAvailable||currentDraft)&&canWrite&&<section className="service-definition" aria-label="应用数据范围">
+                <header><h4>应用数据范围</h4>{customerAccess&&<span>固定已发布版本</span>}</header>
+                <div className="service-customer-access">
+                {currentDraft&&!customerAccess ? <div className="service-feedback error" role="alert">已发布版本或来源已变化。请核对新版本后重选授权范围。
+                  <button type="button" className="button" disabled={!!busy} onClick={()=>setCustomerDraft(undefined)}>清除原授权草稿</button>
+                </div> : <div className="service-form-grid">
+                  <label>客户范围<select value={customerAccess?'single':'service'} disabled={!!busy} onChange={event=>{
+                  setCustomerDraft(event.currentTarget.value==='single'&&grantVersion
+                    ? {serviceId:selected.id,versionId:grantVersion.id,clientId:'',maskedFields:['client_id']} : undefined);
+                  }}><option value="service">整个服务范围</option><option value="single">仅指定客户</option></select></label>
+                  {customerAccess&&<label>授权客户编号<input value={customerAccess.clientId} placeholder="CLIENT-001" maxLength={64} disabled={!!busy}
+                    onChange={event=>setCustomerDraft({...customerAccess,clientId:event.currentTarget.value})}/></label>
+                  }
+                </div>}
+                {customerAccess&&<fieldset className="service-mask-fields" disabled={!!busy}><legend>全量遮盖的字段</legend>
+                    {customerMaskFields.map(([field,label])=><label key={field}><input type="checkbox"
+                      checked={customerAccess.maskedFields.includes(field)} onChange={event=>setCustomerDraft({...customerAccess,
+                        maskedFields:event.currentTarget.checked?[...customerAccess.maskedFields,field]:customerAccess.maskedFields.filter(item=>item!==field),
+                      })}/>{label}</label>)}
+                </fieldset>}
+                </div>
+              </section>}
               <div className="service-actions">
                 <button className="button" onClick={testService} disabled={!canWrite || !!busy}>
                   {busy === "test" ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}
@@ -1129,7 +1171,7 @@ LIMIT :limit OFFSET :offset`}</pre>
                 <button
                   className="button"
                   onClick={createApplication}
-                  disabled={!canWrite || selected.status !== "PUBLISHED" || !!busy || appAlreadyExists || Boolean(consumptionScope&&!plannedApplicationBody)}
+                  disabled={!canWrite || selected.status !== "PUBLISHED" || !!busy || appAlreadyExists || customerAccessInvalid || Boolean(consumptionScope&&!plannedApplicationBody)}
                 >
                   <KeyRound size={15} />
                   {consumptionScope?appAlreadyExists?"本次应用已发行，不再补发":"创建唯一测试凭证":"创建调用凭证"}
@@ -1276,7 +1318,15 @@ LIMIT :limit OFFSET :offset`}</pre>
               发布并授权后，外部调用证据显示在这里。
             </div>
             )}
-          {scopedApplications.filter(app=>consumptionScope||!selected||app.serviceIds.includes(selected.id)).map(app=><div key={app.id}><span>{app.name} · {applicationStatusText(serviceApplicationStatus(app,scopeClock))}{app.expiresAt&&<small>到期：{new Date(app.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}</small>}</span><button className="button" disabled={!canWrite||serviceApplicationStatus(app,scopeClock)!=="ACTIVE"||!!busy} onClick={async()=>{if(!canWrite||!scopedApplications.some(a=>a.id===app.id))return;setBusy("revoke");try{await api(`/data-services/applications/${app.id}/revoke`,{});for(const id of app.serviceIds)delete requestKeys.current["app:"+id];setIssuedToken("");await reload();setNotice("凭证已撤销，旧令牌不能继续调用");}catch(e){setError((e as Error).message);}finally{setBusy("");}}}>撤销凭证</button></div>)}
+          {scopedApplications.filter(app=>consumptionScope||!selected||app.serviceIds.includes(selected.id)).map(app=><div key={app.id}><span>{app.name} · {applicationStatusText(serviceApplicationStatus(app,scopeClock))}
+            {app.customerAccess&&<small>仅 {app.customerAccess.clientId} · {app.customerAccess.maskedFields.length
+              ? `已遮盖 ${app.customerAccess.maskedFields.map(field=>customerMaskFields.find(item=>item[0]===field)?.[1]??field).join('、')}` : '字段按接口版本返回'}</small>}
+            {app.expiresAt&&<small>到期：{new Date(app.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}</small>}</span><button className="button" disabled={!canWrite||serviceApplicationStatus(app,scopeClock)!=="ACTIVE"||!!busy} onClick={async()=>{if(!canWrite||!scopedApplications.some(a=>a.id===app.id))return;setBusy("revoke");try{await api(`/data-services/applications/${app.id}/revoke`,{});for(const id of app.serviceIds)delete requestKeys.current["app:"+id];setIssuedToken("");await reload();setNotice("凭证已撤销，旧令牌不能继续调用");}catch(e){setError((e as Error).message);}finally{setBusy("");}}}>撤销凭证</button></div>)}
+          {privateCloud&&agentTarget&&
+            <Suspense fallback={<p role="status">正在打开 Agent 消费核验…</p>}>
+              <AgentConsumptionPanel key={scopeKey} api={api} target={agentTarget} applicationStatus={activeApplicationStatus}
+                canAct={canWrite&&!busy&&activeApplicationStatus==='ACTIVE'}/>
+            </Suspense>}
         </article>
       </section></>}
       <footer className="service-boundary">

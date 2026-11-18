@@ -42,7 +42,7 @@ async function verifiedSidecar(file, content) {
   finally { await handle?.close(); }
 }
 
-export async function serveV2Static(res, root, path, acceptEncoding) {
+export async function serveV2Static(res, root, path, acceptEncoding, requestTiming) {
   const missing = message => Object.assign(new Error(message), { status: 404 });
   let relative;
   try { relative = decodeURIComponent(path).replace(/^\/v2\/?/, ""); }
@@ -65,12 +65,17 @@ export async function serveV2Static(res, root, path, acceptEncoding) {
     return res.end();
   }
   const body = compressed ?? content;
+  // Measure only the shared entry page, from the HTTP handler to response headers.
+  const indexTiming = requestTiming && (path === "/v2" || path === "/v2/")
+    ? `shuduo_index_${requestTiming.phase};dur=${(performance.now() - requestTiming.started).toFixed(1)}`
+    : undefined;
   res.writeHead(200, {
     "Content-Type": ({ ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".svg": "image/svg+xml", ".woff": "font/woff", ".woff2": "font/woff2" })[extname(file)] ?? "text/html",
     "X-Content-Type-Options": "nosniff",
     "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
     Vary: "Accept-Encoding", "Content-Length": String(body.length),
     ...(compressed ? { "Content-Encoding": "gzip" } : {}),
+    ...(indexTiming ? { "Server-Timing": indexTiming } : {}),
   });
   res.end(body);
 }

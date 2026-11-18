@@ -5,6 +5,7 @@ import { sqlRequirementBinding } from "./sql-requirements.mjs";
 import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
 import { uuid } from "./live-lifecycle-checkpoint.mjs";
 import { validStoredAgentDerivation } from "./agent-context-derivation.mjs";
+import { storedDevelopmentDrivers } from "./agent-execution-drivers.mjs";
 
 const failureStages=new Set(["FAILED","REQUIREMENT_CLARIFICATION_REQUIRED","REQUIREMENT_EVIDENCE_INVALID"]);
 const settledSparkFailures=new Set(["FAILED","VALIDATION_FAILED"]);
@@ -79,6 +80,9 @@ export function storedAgentExecutionEvidence(task, read) {
     return {...base, status:"UNCONFIRMED", reason:"EXECUTION_PROVENANCE_UNCONFIRMED"};
   const snapshot = {...base, status:"EXECUTION_RECORDED", taskCreatedAt:task.createdAt, contextId:task.contextId,
     requestSha256:sha256(task.message), seedSqlSha256:sha256(task.initialSql), execution,
+    developmentDrivers:storedDevelopmentDrivers(task,id=>read("run",id)),
+    ...(task.attempts?.length?{developmentAttemptRunIds:task.attempts.map(attempt=>
+      typeof attempt?.runId==='string'&&uuid.test(attempt.runId)?attempt.runId:null)}:{}),
     ...(task.derivedFrom?{derivedFrom:task.derivedFrom}:{})};
   const failure=settledDevelopmentFailure(task,read,execution);
   if (failure) return {...snapshot,settledFailure:failure};

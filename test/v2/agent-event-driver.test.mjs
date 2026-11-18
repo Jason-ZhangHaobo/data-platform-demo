@@ -8,6 +8,7 @@ import {MetadataStore} from "../../src/v2/store.mjs";
 import {createDurableSqlAgent} from "../../src/v2/durable-agent.mjs";
 import {modelFailure} from "../../src/v2/model-diagnostics.mjs";
 import {createAgentDispatcher} from "../../src/v2/agent-dispatcher.mjs";
+import {storedDevelopmentDrivers} from "../../src/v2/agent-execution-drivers.mjs";
 import {createAgentEventDriver,AGENT_WAKE_PREFIX,agentEventConfigFromEnvironment,parseAgentObjectEvent} from "../../src/v2/agent-event-driver.mjs";
 import {createAgentWakeOssTransport} from "../../src/v2/agent-wake-oss-transport.mjs";
 import {createQueuedSparkJob,createQueuedSparkResult,SPARK_QUEUE_PREFIXES} from "../../src/v2/remote-spark-queue.mjs";
@@ -20,6 +21,7 @@ const event=key=>({events:[{eventName:"ObjectCreated:PutObject",eventSource:"acs
 function fixture(t){
   const root=mkdtempSync(join(tmpdir(),"shuduo-events-")),path=join(root,"meta.sqlite");
   let store=new MetadataStore(path),clock=Date.now(),models=0,submitted=0,blocked=false,modelError,persist=async()=>{},engine,driver,scope=()=>{},reads=0;
+  let submissionAckLost=false;
   const objects=new Map(),events=[];
   const transport={read:async key=>{reads++;return objects.get(key);},create:async(key,body)=>{
     if(blocked)throw Object.assign(new Error("synthetic ACK unknown"),{code:"TEST_ACK_UNKNOWN"});
@@ -28,7 +30,10 @@ function fixture(t){
   }};
   const owner=store.create("auth_user",project,{status:"ACTIVE",memberships:[{projectId:project,role:"ENGINEER"}]});
   const runner={prepare:(input,id)=>{const q=createQueuedSparkJob(input,queueConfig,{now:clock,requestId:id});return{...q,serialized:JSON.stringify(q.job)};},
-    submit:async prepared=>{if(!objects.has(prepared.jobKey)){submitted++;objects.set(prepared.jobKey,prepared.serialized);}},
+    submit:async prepared=>{
+      if(!objects.has(prepared.jobKey)){submitted++;objects.set(prepared.jobKey,prepared.serialized);}
+      if(submissionAckLost)throw Error("synthetic Spark submission ACK lost");
+    },
     read:async prepared=>{const raw=objects.get(prepared.resultKey);return raw?JSON.parse(raw).result:undefined;},cancel:async()=>{}};
   const build=()=>{
     engine=createDurableSqlAgent({store,project,runner,persist:()=>persist(),getContext,contextIds,contractId:validationContractId,now:()=>clock,
@@ -41,6 +46,7 @@ function fixture(t){
   return{get store(){return store;},get engine(){return engine;},get driver(){return driver;},owner,objects,events,create,
     get models(){return models;},get submitted(){return submitted;},get reads(){return reads;},scope:fn=>scope=fn,now:()=>clock,later:ms=>clock+=ms,
     restart:()=>{store.close();store=new MetadataStore(path);build();},persist:fn=>persist=fn,blockPut:v=>blocked=v,modelFault:e=>modelError=e,
+    loseSubmissionAck:value=>{submissionAckLost=value;},
     worker:(taskId,status="SUCCEEDED")=>{
       const task=store.get("agent",taskId,project),run=store.get("run",task.runId,project),prepared=run.remoteSubmission.prepared;
       const result={status,engine:"Apache Spark",engineVersion:"3.5.9",mainSqlExecuted:true,rows:[],validation:{passed:status==="SUCCEEDED",regressions:contextIds.map(contextId=>({contextId,passed:status==="SUCCEEDED"}))}};
@@ -56,8 +62,32 @@ test("event chain progresses without browser or CLI driver, survives reopen, wai
   assert.equal(f.events.length,2,"no idle polling or self-trigger while waiting for worker");
   const callback=f.worker(task.id);f.restart();await f.driver.consume(callback);assert.equal(f.events.length,3);
   await f.driver.consume(f.events[2]);assert.equal(f.store.get("agent",task.id,project).status,"SUCCEEDED");
+  f.restart();
+  const saved=f.store.get("agent",task.id,project);
+  assert.deepEqual(storedDevelopmentDrivers(saved,id=>f.store.get("run",id,project)),[
+    {attempt:1,modelTrigger:"SIGNED_BACKGROUND_EVENT",spark:{runId:saved.runId,submissionTriggers:["SIGNED_BACKGROUND_EVENT"]}},
+  ]);
   assert.equal(f.driver.status(task.id).status,"COMPLETED");assert.equal(f.models,1);assert.equal(f.submitted,1);
   await f.driver.consume(f.events[0]);await f.driver.consume(callback);assert.equal(f.models,1);assert.equal(f.events.length,3);
+});
+test("an unknown Spark submission preserves both trigger sources on the same run after owner recovery",async t=>{
+  const f=fixture(t),task=await f.create();
+  await f.driver.enable(task.id,f.owner.id,{expectedVersion:task.version});
+  await f.driver.consume(f.events[0]);
+  f.loseSubmissionAck(true);
+  await f.driver.consume(f.events[1]);
+  assert.equal(f.driver.status(task.id).status,"PAUSED");
+  const before=f.engine.get(task.id);
+  assert.ok(before.runId);
+  f.restart();f.loseSubmissionAck(false);
+  await f.engine.advance(task.id,{expectedVersion:before.version,executionTrigger:"OWNER_ADVANCE"});
+  const original=f.store.get("agent",task.id,project);
+  assert.equal(original.runId,before.runId);
+  assert.equal(f.submitted,1,"resubmit is deduplicated under the original Spark request");
+  assert.deepEqual(storedDevelopmentDrivers(original,id=>f.store.get("run",id,project)),[
+    {attempt:1,modelTrigger:"SIGNED_BACKGROUND_EVENT",
+      spark:{runId:original.runId,submissionTriggers:["SIGNED_BACKGROUND_EVENT","OWNER_ADVANCE"]}},
+  ]);
 });
 test("reviewed original-task resume preserves reservations and counts; stale review and old wakes cannot run",async t=>{
   const f=fixture(t),task=await f.create();f.modelFault(new Error("SECRET_PROVIDER_DETAIL"));

@@ -135,6 +135,7 @@ export const validationContractId =
   "securities-assets-five-fixtures-2026-09-14";
 const stockCashContextIds = Object.keys(stockCashVariants);
 export const allContextIds = [...contextIds, ...stockCashContextIds];
+export const publicV2Contexts = () => allContextIds.map(publicContext);
 export const classicContextIds = [...allContextIds, ...distributionContextIds, ...fundContextIds];
 const validationFamilies = [
   {

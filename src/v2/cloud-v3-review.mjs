@@ -4,10 +4,13 @@ import { deliveryFiles, sha256 } from "./delivery.mjs";
 import { currentLiveLifecycleContract, verifiedCloudV3TaskSnapshotBinding } from "./live-lifecycle-evaluation.mjs";
 import { checkpointCaseScope, readCheckpoint, stop, uuid } from "./live-lifecycle-checkpoint.mjs";
 import { cloudV3CheckpointCase } from "./cloud-v3-case-selection.mjs";
+import { bindCloudV3DevelopmentDrivers } from "./cloud-v3-development-drivers.mjs";
 import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
 import { agentReviewEvidencePath } from "./publication-request.mjs";
 import { normalizeSessionBase } from "./session-credential.mjs";
 import { deliveryPreparationHashMatches, deliveryPreparationRequirement } from "./delivery-preparation-request.mjs";
+import { validBackgroundPreparationEvidence } from "./delivery-preparation-evidence.mjs";
+import {validBackgroundRehearsalEvidence} from './rehearsal-wake.mjs';
 
 const digest = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value === "string" && uuid.test(value);
@@ -65,6 +68,10 @@ async function inspectReview(definition,item,client,submittedAt) {
     if (task.status !== "SUCCEEDED" || attempt?.status !== "SUCCEEDED" ||
         attempt.revisionId !== code.revisionId || attempt.runId !== code.runId)
       return reject("ORIGINAL_DEVELOPMENT_MISMATCH");
+    if (item.developmentDriverEvidence !== undefined &&
+        !isDeepStrictEqual(item.developmentDriverEvidence,bindCloudV3DevelopmentDrivers(task.developmentDrivers,code,
+          task.attempts.map(attempt=>attempt?.runId??null))))
+      return reject("ORIGINAL_DEVELOPMENT_DRIVERS_MISMATCH");
     delivery = await client.request(`/agent/tasks/${task.id}/delivery-requests/${deliveryAction.key}`);
     const requirement = deliveryPreparationRequirement(code);
     if (delivery?.id !== deliveryAction.id || delivery.mode !== "DURABLE_AGENT_DELIVERY_V1" || !nativeEvidence(delivery) ||
@@ -74,6 +81,14 @@ async function inspectReview(definition,item,client,submittedAt) {
         (deliveryAction.packageDigest !== undefined && deliveryAction.packageDigest !== delivery.packageDigest) ||
         !isDeepStrictEqual(delivery.sourceRequirementBinding, requirement))
       return reject("ORIGINAL_DELIVERY_MISMATCH");
+    if (deliveryAction.preparationEvidence!==undefined &&
+        (!validBackgroundPreparationEvidence(delivery.preparationEvidence,code,delivery) ||
+         !isDeepStrictEqual(deliveryAction.preparationEvidence,delivery.preparationEvidence)))
+      return reject("ORIGINAL_DELIVERY_PREPARATION_MISMATCH");
+    if(item.rehearsal?.initiationEvidence!==undefined &&
+      (!validBackgroundRehearsalEvidence(delivery.rehearsalInitiationEvidence,code,delivery,delivery.rehearsal) ||
+       !isDeepStrictEqual(item.rehearsal.initiationEvidence,delivery.rehearsalInitiationEvidence)))
+      return reject('ORIGINAL_REHEARSAL_INITIATION_MISMATCH');
     if (["QUEUED","RUNNING"].includes(delivery.status)) return pending("CLOUD_REHEARSAL_PENDING");
     if (delivery.status !== "SUCCEEDED" || delivery.stage !== "AWAITING_ENGINEER_REVIEW" || delivery.actualExecution !== true ||
         !id(delivery.packageId) || !digest(delivery.packageDigest) || !id(delivery.verificationId) ||

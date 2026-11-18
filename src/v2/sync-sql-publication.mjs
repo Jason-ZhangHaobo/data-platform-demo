@@ -12,6 +12,37 @@ const exact = (value, keys) => value && typeof value === "object" && !Array.isAr
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const digest = value => sha256(JSON.stringify(value));
 
+export function syncSqlRehearsalDigest(verification) {
+  return sha256(JSON.stringify({ protocol:"shuduo-sync-rehearsal-review/v1", verification }, (_key, value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value));
+}
+
+export function assertSyncSqlReviewBinding(verification, expectedDigest) {
+  if (expectedDigest !== syncSqlRehearsalDigest(verification))
+    throw fail("SYNC_REHEARSAL_REVIEW_CHANGED", "演练证据未按当前摘要审阅，请重新核对后记录审阅");
+}
+
+export function storedSyncSqlReviewEvidence(plan, bundle, verification) {
+  const source = plan.source, input = source.syncInput;
+  if (!input || verification.packageId !== bundle.id || verification.projectId !== source.projectId)
+    throw fail("SYNC_REVIEW_SCOPE_INVALID", "审阅导出须绑定原冻结持仓交付包及本机演练");
+  assertSyncSqlRehearsal(plan, bundle, verification);
+  return {
+    protocol:"shuduo-sync-review-evidence/v1", scope:"LOCAL_FILE_REVIEW", readOnly:true,
+    packageId:bundle.id, packageDigest:plan.digest, verificationId:verification.id,
+    syncRehearsalDigest:syncSqlRehearsalDigest(verification),
+    source:{ agentTaskId:input.agentTaskId, developmentMode:input.developmentMode,
+      contextId:source.contextId, revisionId:source.revisionId, revisionHash:source.sqlHash, runId:source.runId,
+      syncRunId:input.runId, metadataVersionId:input.metadataVersionId, snapshotHash:input.snapshotHash, targetHash:input.targetHash },
+    rehearsal:{ businessDate:verification.occurrence.businessDate, scheduledFor:verification.scheduledFor,
+      engineVersion:verification.engineVersion, validationContractId:source.validationContractId,
+      selectedRowCount:verification.rows.length, regressionCount:verification.validation.regressions.length,
+      steps:verification.workflowTrace.map(step=>({id:step.id,kind:step.kind,status:step.status})) },
+    fileHashes:Object.fromEntries(Object.entries(bundle.manifest.files).map(([name,file])=>[name,file.sha256])),
+  };
+}
+
 export function assertSyncSqlConsent({ bundle, plan, verification, review, consent, actorId, enabled }) {
   const input = plan?.source?.syncInput;
   if (!input) {
@@ -33,6 +64,7 @@ export function assertSyncSqlConsent({ bundle, plan, verification, review, conse
       !exact(review.attestations, attestations) || !attestations.every(key => review.attestations[key] === true))
     throw invalid();
   assertSyncSqlRehearsal(plan, bundle, verification);
+  if (review.syncRehearsalDigest !== undefined) assertSyncSqlReviewBinding(verification, review.syncRehearsalDigest);
   const occurrence = resolveDeliverySchedule(plan, verification.scheduledFor);
   if (!occurrence.eligible || occurrence.businessDate !== consent.businessDate ||
       !same(occurrence, verification.occurrence)) throw invalid();
@@ -53,6 +85,7 @@ export function assertSyncSqlApproval({ bundle, plan, approval, verification, re
       approval.packageId !== bundle.id || approval.packageDigest !== bundle.digest || approval.reviewId !== review.id ||
       approval.rehearsalId !== verification.id || approval.sourceRevisionId !== plan.source.revisionId ||
       approval.sourceSqlHash !== plan.source.sqlHash || !same(spec, consent.scheduleSpec) ||
+      approval.syncRehearsalDigest !== review.syncRehearsalDigest ||
       approval.syncReviewDigest !== syncSqlReviewDigest(verification, review) ||
       !Number.isFinite(approvedAt) || expiresAt - approvedAt !== ttlMs) throw invalid();
 }

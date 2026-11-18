@@ -251,6 +251,43 @@ API是原子能力和治理契约；GUI、CLI、MCP是不同使用入口，不�
 
 通过时报告返回 `VERIFIED` 和 `LOCAL_SAVED_EVIDENCE`。复核器在内存重放 CSV 字段映射，检查冻结快照和原开发断言。它核对同包批准、双批监控、完整分页、固定接口版本、撤权历史及两份独立聚合报表，输出必要编号和摘要。缺失或错误的原件以非零退出码终止。两批记录属于同一发布，计分继续按正式 v3 固定案例独立记录。运行复核命令只读留存库，无需运行数舵服务、Spark 或模型。
 
+交接质量证据时，给同一命令加 `--verify-quality`，并将输出保存为 `frozen-holdings-quality.json`。每批从原平台库读取绑定原资产、批次、发布版本、同步快照和输出摘要的质量回执。复核器按同一版本规则用原批次输出独立重算通过与失败计数。有单独交接的质量回执 JSON 时，对每份追加 `--quality-receipt "$SYNC_DIR/batch-1-quality.json"`，最多两份。文件按其批次编号比对原库，顺序不限。未交接单独文件时仍可复核库内回执。
+
+| 退出码 | 质量复核结果 |
+| --- | --- |
+| `0` | 两批质量均通过，报告为 `VERIFIED` |
+| `1` | 任一已保存规则失败时，报告为 `FAILED`。证据缺项、错批或摘要不符等校验错误单独写入标准错误 |
+| `2` | 至少一批暂无已保存质量检测，且其余已保存规则通过。报告为 `PENDING`，每批状态仍可单独查看 |
+
+保存诊断输出后再根据退出码决定是否继续。此复核证明冻结批次及三条既定质量规则，对正式 v3 评测的计分沿用原合同。
+
+#### 单独交接授权消费与分页
+
+交接调用历史时，沿用原发布、原包和原任务编号。将同时点保存的元数据与业务快照副本放在 `SYNC_DIR`，文件名为 `metadata.sqlite` 和 `business.sqlite`，再将原 `positions.csv` 与 `delivery-package.json` 放在同一目录。若接口已换版，元数据需包含原应用、原调用以及换版后的版本状态。报表或质量材料可单独交接。
+
+```sh
+(
+  set -euC
+  umask 077
+  mkdir -p "$ACCEPTANCE_OUT"
+  node scripts/verify-saved-sync-sql-lifecycle.mjs --consumption-only \
+    --metadata "$SYNC_DIR/metadata.sqlite" --business-snapshots "$SYNC_DIR/business.sqlite" \
+    --source-csv "$SYNC_DIR/positions.csv" --package-file "$SYNC_DIR/delivery-package.json" \
+    --release-id "$SYNC_RELEASE_ID" --package-digest "$SYNC_PACKAGE_DIGEST" \
+    --agent-request-id "$SYNC_AGENT_REQUEST_ID" > "$ACCEPTANCE_OUT/frozen-holdings-consumption.json"
+)
+```
+
+逐批查看 `status`、`monitorEventId` 和 `versions`。版本行给出原应用、版本状态、总页数和已验证页码。接口换版后的原调用可在 `RETIRED` 版本下查看，当前版本的调用不能补旧版本的缺页。报表和质量材料未交接时，也可用这条命令核对原包、批准、双批监控和消费。
+
+| 退出码 | 消费交接结果 |
+| --- | --- |
+| `0` | 两批均有齐备的 DAPI 及完整组合 XAPI 分页证据，报告为 `VERIFIED` |
+| `1` | 原始档案或编号不符，标准错误返回校验码 |
+| `2` | 缺少整批分页证据，报告为 `PENDING`。例如总页数为 2、已验证页码为 `[2]` 时，应查找原应用的第 1 页 |
+
+命令复核已撤销应用的历史授权调用，报告省略业务行和应用令牌。完整链路及报表仍使用前面的完整命令核对。两种本机报告均独立于公网评测。
+
 ### 启动真实试点前
 
 | 接手检查 | 执行负责人 | 进入下一步的证据 |

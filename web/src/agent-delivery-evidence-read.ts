@@ -17,11 +17,26 @@ const count=(v:unknown)=>Number.isSafeInteger(v)&&Number(v)>=0;
 const uniqueIds=(rows:Record<string,unknown>[])=>new Set(rows.map(r=>r.id)).size===rows.length;
 const invalidPublication=()=>Error('发布与监控回执的记录结构或确切来源未确认；保留原记录，只读重查，不自动发布。');
 
-export function checkedExactPublicationReceipt(value:unknown, expected:{taskId:string;revisionId:string;revisionHash:string;runId:string;packageId:string;
- packageDigest:string;verificationId:string;reviewDigest:string}) {
+export type ExactPublicationSource={taskId:string;revisionId:string;revisionHash:string;runId:string;packageId:string;
+ packageDigest:string;verificationId:string;reviewDigest:string};
+
+export function checkedExactPublicationApproval(value:unknown, expected:ExactPublicationSource, window:{startsAt:string;expiresAt:string}) {
+ if(!record(value)||value.protocol!=="shuduo-cloud-publication-approval/v1"||value.status!=="APPROVED"||!id(value.approvalId)||!id(value.reviewId)||
+  value.taskId!==expected.taskId||value.sourceRevisionId!==expected.revisionId||value.sourceCodeHash!==expected.revisionHash||
+  value.sourceRunId!==expected.runId||value.packageId!==expected.packageId||value.packageDigest!==expected.packageDigest||
+  value.verificationId!==expected.verificationId||value.reviewDigest!==expected.reviewDigest||value.releaseId!==undefined||
+  typeof value.approvedAt!=="string"||typeof value.expiresAt!=="string"||Date.parse(value.expiresAt)!==Date.parse(window.expiresAt)||
+  !(Date.parse(window.startsAt)<=Date.parse(value.approvedAt)&&Date.parse(value.approvedAt)<Date.parse(window.expiresAt)))throw invalidPublication();
+ const background=value.background;
+ if(background!==undefined&&(!record(background)||!id(background.wakeId)||!(background.state==='QUEUED'||background.state==='DELIVERY_UNKNOWN')))throw invalidPublication();
+ return {approvalId:value.approvalId as string,expiresAt:value.expiresAt,
+  ...(background?{background:{wakeId:background.wakeId as string,state:background.state as 'QUEUED'|'DELIVERY_UNKNOWN'}}:{})};
+}
+
+export function checkedExactPublicationReceipt(value:unknown, expected:ExactPublicationSource, approvalId?:string) {
  if(!record(value)||value.protocol!=="shuduo-cloud-publication-receipt/v1"||!record(value.release)||!Array.isArray(value.runs))throw invalidPublication();
  const release=value.release,runs=value.runs;
- if(!id(release.id)||!id(release.reviewId)||!id(release.approvalId)||release.scope!=="PRIVATE_CLOUD_TEST"||
+ if(!id(release.id)||!id(release.reviewId)||!id(release.approvalId)||approvalId!==undefined&&release.approvalId!==approvalId||release.scope!=="PRIVATE_CLOUD_TEST"||
   release.taskId!==expected.taskId||release.sourceRevisionId!==expected.revisionId||release.sourceCodeHash!==expected.revisionHash||
   release.sourceRunId!==expected.runId||release.packageId!==expected.packageId||release.packageDigest!==expected.packageDigest||
   release.verificationId!==expected.verificationId||release.reviewDigest!==expected.reviewDigest||runs.length!==2||
@@ -60,7 +75,13 @@ export function checkedAgentPublication(value:unknown,{taskId,scope,selector,rel
 
 const fields=['client_id','holding_market_value','available_cash','total_assets','security_count'];
 const invalidConsumption=()=>Error('消费回执的结构、固定版本或原发布来源未确认；只读重查，不创建接口、凭证或调用。');
-export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBinding,batches:{id:string;status:string;schedulerTriggered?:boolean}[],expectedOutput?:{id:string;metadataHash:string},expectedFund?:{id:string;modelMode:string}):TaskConsumption{
+const pageCoverage=(value:unknown)=>record(value)&&id(value.applicationId)&&
+  Number.isSafeInteger(value.pageSize)&&Number(value.pageSize)>=1&&Number(value.pageSize)<=100&&
+  Number.isSafeInteger(value.totalPages)&&Number(value.totalPages)>=1&&Number(value.totalPages)<=1000&&
+  Array.isArray(value.verifiedPages)&&value.verifiedPages.every((page,index,pages)=>Number.isSafeInteger(page)&&page>=1&&
+    page<=Number(value.totalPages)&&(index===0||pages[index-1]<page))&&
+  value.status===(value.verifiedPages.length===value.totalPages?"COMPLETE":"INCOMPLETE");
+export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBinding,batches:{id:string;status:string;schedulerTriggered?:boolean}[],expectedOutput?:{id:string;metadataHash:string},expectedFund?:{id:string;modelMode:string},allowVersionHistory=false):TaskConsumption{
  if(expectedFund)return checkedFundConsumption(value,binding,batches,expectedFund);
  if(record(value)&&value.protocol==='shuduo-local-distribution-consumption/v1')return checkedDistributionConsumption(value,binding,batches,expectedOutput);
  if(expectedOutput)throw invalidConsumption();
@@ -74,10 +95,12 @@ export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBindi
   if(!record(entry)||!id(entry.serviceId)||!id(entry.versionId)||!hash(entry.configHash)||!['DAPI','XAPI'].includes(String(entry.serviceType))||typeof entry.name!=='string'||typeof entry.notice!=='string'||
    !['PENDING','VERIFIED','NEEDS_ATTENTION'].includes(String(entry.status))||!optional(entry.code,v=>typeof v==='string')||!optional(entry.fullAssetComposition,v=>typeof v==='boolean')||
    !Array.isArray(entry.sourceRunIds)||!entry.sourceRunIds.every(id)||new Set(entry.sourceRunIds).size!==entry.sourceRunIds.length||
-   !optional(entry.releaseId,v=>v===binding.releaseId)||!optional(entry.sourceKind,v=>v===binding.sourceKind)||!optional(entry.agentIndependentE2E,v=>v===false))throw invalidConsumption();
+   !optional(entry.releaseId,v=>v===binding.releaseId)||!optional(entry.sourceKind,v=>v===binding.sourceKind)||!optional(entry.agentIndependentE2E,v=>v===false)||
+   !optional(entry.paginationCoverage,pageCoverage))throw invalidConsumption();
   const call=entry.call;
   if(call!==undefined&&(!record(call)||!id(call.callId)||call.versionId!==entry.versionId||!hash(call.resultHash)||!count(call.rowCount)||typeof call.verified!=='boolean'||
-   !id(call.applicationId)||!['ACTIVE','REVOKED','EXPIRED'].includes(String(call.applicationStatus))||!date(call.finishedAt)||call.configHash!==entry.configHash))throw invalidConsumption();
+   !id(call.applicationId)||!['ACTIVE','REVOKED','EXPIRED'].includes(String(call.applicationStatus))||!date(call.finishedAt)||call.configHash!==entry.configHash||
+   !optional(call.coverage,coverage=>coverage==='SINGLE_CUSTOMER'&&call.rowCount===1)))throw invalidConsumption();
   if(entry.status==='VERIFIED'){
    const versions=entry.sourceVersions,source=entry.source,sourceRunIds=entry.sourceRunIds;
    if(!record(call)||call.verified!==true||Number(call.rowCount)<1||entry.releaseId!==binding.releaseId||entry.sourceKind!==binding.sourceKind||entry.agentIndependentE2E!==false||!entry.sourceRunIds.length||
@@ -92,7 +115,8 @@ export function checkedAgentConsumption(value:unknown,binding:ServiceSourceBindi
    if(entry.fullAssetComposition!==complete)throw invalidConsumption();
   }
  }
- if(new Set(services.map(s=>s.serviceId)).size!==services.length||value.status==='VERIFIED'&&(value.truncated||!services.some(s=>s.status==='VERIFIED'&&s.fullAssetComposition===true)))throw invalidConsumption();
+ const keys=services.map(s=>allowVersionHistory?`${s.serviceId}:${s.versionId}`:s.serviceId);
+ if(new Set(keys).size!==services.length||value.status==='VERIFIED'&&(value.truncated||!services.some(s=>s.status==='VERIFIED'&&s.fullAssetComposition===true&&s.call?.coverage===undefined)))throw invalidConsumption();
  return value as TaskConsumption;
 }
 
@@ -104,4 +128,25 @@ export function checkedBatchConsumption(value:unknown,binding:ServiceSourceBindi
    undefined,fund?{id:"securities-fund-lookthrough-v1",modelMode:"LIVE_MODEL"}:undefined);
  if(proof.services.some(service=>service.sourceRunIds.some(id=>id!==batchId)))throw invalidConsumption();
  return proof;
+}
+
+export function checkedLocalSyncBatchConsumption(value:unknown,binding:ServiceSourceBinding,batchId:string,snapshotHash:string,sequence:number) {
+ const monitor=record(value)?value.monitoring:undefined;
+ if(!record(value)||binding.scope!=="LOCAL_TEST_ONLY"||binding.sourceKind!=="AGENT"||
+   value.sourceReleaseRunId!==batchId||value.snapshotHash!==snapshotHash||!record(monitor)||
+   !id(monitor.eventId)||!date(monitor.observedAt)||monitor.sequence!==sequence||
+   typeof monitor.businessDate!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(monitor.businessDate))throw invalidConsumption();
+ const proof=checkedAgentConsumption(value,binding,[{id:batchId,status:"SUCCEEDED",schedulerTriggered:true}],undefined,undefined,true);
+ if(proof.services.some(service=>service.sourceRunIds.some(runId=>runId!==batchId)||
+   !optional(service.versionStatus,status=>status==="PUBLISHED"||status==="RETIRED")))throw invalidConsumption();
+ const active=proof.services.filter(service=>service.versionStatus!=="RETIRED").map(service=>service.serviceId);
+ if(new Set(active).size!==active.length)throw invalidConsumption();
+ const verified=proof.services.filter(service=>service.status==="VERIFIED"&&service.sourceRunIds[0]===batchId&&
+   service.paginationCoverage?.status==="COMPLETE");
+ const passed=!proof.truncated&&verified.some(service=>service.serviceType==="DAPI")&&
+   verified.some(service=>service.serviceType==="XAPI"&&service.fullAssetComposition===true);
+ const batches=value.verifiedBatchIds;
+ if((proof.status==="VERIFIED")!==passed||!Array.isArray(batches)||
+   batches.length>1||batches.some(runId=>runId!==batchId)||passed&&batches.length!==1)throw invalidConsumption();
+ return {proof,monitor};
 }

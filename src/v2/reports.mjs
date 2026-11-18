@@ -119,7 +119,7 @@ export class ReportDataStore {
 }
 
 const publishedAssetId = value => typeof value === "string" && value.trim().startsWith("dataset:");
-const hasPublishedBinding = item => Boolean(item && (
+export const hasPublishedBinding = item => Boolean(item && (
   publishedAssetId(item.assetId) || item.publishedSource !== undefined || item.sourceActorId !== undefined || item.sourceEvidence !== undefined || item.outputContractId !== undefined
 ));
 const publishedEvidenceDenied = () => fail(403, "受邀报表不能读取本机发布快照，请使用已授权的数据接口", "REPORT_PUBLISHED_EVIDENCE_LOCAL_ONLY");

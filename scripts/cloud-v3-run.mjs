@@ -9,6 +9,14 @@ import { validStoredWorkerBatchResult } from "../src/v2/worker-result-evidence.m
 import { validationFamilyForContext } from "../src/v2/context.mjs";
 import { sqlRequirementProtocol } from "../src/v2/sql-requirement-contract.mjs";
 import { cloudV3BaseCases, cloudV3CheckpointCase, cloudV3PredecessorApprovals, cloudV3UsageKeys, validCloudV3UsageFloor } from "../src/v2/cloud-v3-case-selection.mjs";
+import { validStoredCloudV3DevelopmentDrivers } from "../src/v2/cloud-v3-development-drivers.mjs";
+import { validStoredPublicationSchedule } from "../src/v2/cloud-release-evidence.mjs";
+import { validBackgroundPreparationEvidence } from "../src/v2/delivery-preparation-evidence.mjs";
+import { validPublicationInitiation } from "../src/v2/publication-initiation-evidence.mjs";
+import {validBatchConsumptionAttribution} from '../src/v2/service-consumption-attribution.mjs';
+import {cloudV3PhaseAttribution} from '../src/v2/cloud-v3-phase-attribution.mjs';
+import {validBackgroundRehearsalEvidence} from '../src/v2/rehearsal-wake.mjs';
+import {storedAgentConsumptionProofs} from '../src/v2/cloud-v3-agent-consumption.mjs';
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -113,8 +121,18 @@ function hasReviewedCloudEvidence(state,item,checkedAt) {
       Date.parse(approvalTiming.approvedAt)<=Date.parse(row.observedAt) && Date.parse(row.observedAt)<=Date.parse(checkedAt));
 }
 
+function storedConsumptionAttribution(item) {
+  const batches=item.actions?.publication?.batchIds;
+  for(const [batchId,proof] of Object.entries(item.consumption??{})) {
+    if (proof?.attribution===undefined) continue;
+    if (!Array.isArray(batches) || !batches.includes(batchId) || proof.batchId!==batchId || !validBatchConsumptionAttribution(proof.attribution,proof))
+      stop("原授权消费的批次、调用或签发证据不一致");
+  }
+  return Array.isArray(batches)?batches.flatMap(batchId=>item.consumption?.[batchId]?.attribution??[]):[];
+}
+
 export function cloudV3CompletionReceipt(original,first,checkedAt) {
-  const {state,text}=original, action=first.actions?.publication;
+  const {state,text}=original, action=first.actions?.publication, delivery=first.actions?.delivery;
   const batches=action?.batchIds;
   const provenance=liveEvidenceProvenance(first);
   if (provenance.synthetic || provenance.nonNative || provenance.unconfirmed || first.developmentObservation?.provenance==="TEST_HARNESS" ||
@@ -122,6 +140,14 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
       action?.status!=="CONFIRMED" || ![first.taskId,first.code?.revisionId,first.code?.runId,action.id,action.verificationId].every(id) ||
       !digest(first.code?.revisionHash) || !digest(action.packageDigest) ||
       !Array.isArray(batches) || batches.length!==2 || new Set(batches).size!==2 || !batches.every(id) ||
+      (delivery?.preparationEvidence!==undefined &&
+        (delivery.status!=="CONFIRMED" || !validBackgroundPreparationEvidence(delivery.preparationEvidence,first.code,delivery) ||
+         delivery.packageId!==action.packageId || delivery.packageDigest!==action.packageDigest)) ||
+      (first.rehearsal?.initiationEvidence!==undefined && (!validBackgroundRehearsalEvidence(first.rehearsal.initiationEvidence,first.code,delivery,first.rehearsal) ||
+        first.rehearsal.id!==action.verificationId)) ||
+      (action.scheduledBatches!==undefined && !validStoredPublicationSchedule(action.scheduledBatches,action)) ||
+      (action.initiationEvidence!==undefined && (first.code?.taskId!==first.taskId ||
+        !validPublicationInitiation(action.initiationEvidence,first.code,action))) ||
       !date(checkedAt))
     stop("完成回执缺少原双批证据");
   const proofs=batches.map(batchId=>first.consumption?.[batchId]);
@@ -131,13 +157,20 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
       new Set(proofs.flatMap(proof=>[proof.dapiCallIdDigest,proof.xapiCallIdDigest])).size!==4)
     stop("完成回执缺少原双批证据");
   const scope=cloudV3CompletionScope(state,proofs);
+  const attribution=storedConsumptionAttribution(first);
+  const agent=storedAgentConsumptionProofs(first);
+  if(!agent)stop('原签名消费与独立客户端的调用或批次重叠');
   if (scope==="INVITED_CLOUD_MATCHED" && !hasReviewedCloudEvidence(state,first,checkedAt))
     stop("正式云端完成回执缺少原需求、用量、演练、审阅时间或双批监控证据");
   const body={protocol:completionProtocol,scope,checkedAt,
     checkpointDigest:sha256(text),evaluationRunId:state.evaluationRunId,caseSetDigest:state.caseSetDigest,
     caseId:first.caseId,requestDigest:first.requestDigest,taskId:first.taskId,revisionId:first.code?.revisionId,
     developmentRunId:first.code?.runId,packageDigest:action.packageDigest,verificationId:action.verificationId,
-    releaseId:action.id,batchIds:batches,consumptionDigest:sha256(JSON.stringify(proofs))};
+    releaseId:action.id,batchIds:batches,consumptionDigest:sha256(JSON.stringify(proofs)),
+    ...(delivery?.preparationEvidence ? {deliveryPreparationEvidence:delivery.preparationEvidence} : {}),
+    ...(first.rehearsal?.initiationEvidence ? {rehearsalInitiationEvidence:first.rehearsal.initiationEvidence} : {}),
+    ...(action.initiationEvidence ? {publicationInitiationEvidence:action.initiationEvidence} : {}),
+    ...(attribution.length?{consumptionAttribution:attribution}:{}),...(agent.length?{agentConsumption:agent}:{})};
   return {...body,completionDigest:sha256(JSON.stringify(body))};
 }
 
@@ -162,8 +195,10 @@ function caseEvidenceIdentities(item) {
   return [item.actions.agent.key,item.taskId,item.code?.revisionId,item.code?.runId,item.actions.delivery?.id,
     item.rehearsal?.id,publication?.id,publication?.reviewId,publication?.approvalId,
     ...(Array.isArray(publication?.batchIds)?publication.batchIds:[]),
+    ...(Array.isArray(publication?.scheduledBatches)?publication.scheduledBatches.map(batch=>batch.workerResultDigest):[]),
     ...(Array.isArray(publication?.monitoring)?publication.monitoring.map(event=>event?.eventId):[]),
-    ...Object.values(item.consumption??{}).flatMap(proof=>[proof?.dapiCallIdDigest,proof?.xapiCallIdDigest])]
+    ...Object.values(item.consumption??{}).flatMap(proof=>[proof?.dapiCallIdDigest,proof?.xapiCallIdDigest,
+      proof?.agent?.wakeId,proof?.agent?.requestId,proof?.agent?.dapi?.callIdDigest,proof?.agent?.xapi?.callIdDigest])]
     .filter(value=>id(value)||digest(value));
 }
 
@@ -206,6 +241,28 @@ export function readCloudV3Cases(path,{completionPath,nextPath,nextCompletionPat
     }
   };
   const record=(checkpoint,item,completed)=>{
+    if (item.developmentDriverEvidence !== undefined &&
+        (!id(item.taskId) || item.actions.agent.status !== "CONFIRMED" || item.actions.agent.id !== item.taskId ||
+         item.code?.taskId !== item.taskId || !validStoredCloudV3DevelopmentDrivers(item.developmentDriverEvidence,item.code)))
+      stop("原任务、版本或批次的执行触发证据不一致");
+    const delivery=item.actions.delivery;
+    if (delivery?.preparationEvidence!==undefined &&
+        (delivery.status!=="CONFIRMED" || item.code?.taskId!==item.taskId ||
+         !validBackgroundPreparationEvidence(delivery.preparationEvidence,item.code,delivery)))
+      stop("原交付的后台准备证据不一致");
+    const publication=item.actions.publication;
+    if(item.rehearsal?.initiationEvidence!==undefined && !validBackgroundRehearsalEvidence(item.rehearsal.initiationEvidence,item.code,delivery,item.rehearsal))
+      stop('原文件演练的签名委托与原批次不一致');
+    if (publication?.scheduledBatches!==undefined &&
+        (publication.status!=="CONFIRMED" || !id(publication.id) || !digest(publication.packageDigest) ||
+          !validStoredPublicationSchedule(publication.scheduledBatches,publication)))
+      stop("原发布批次的调度证据不一致");
+    if (publication?.initiationEvidence!==undefined &&
+        (publication.status!=="CONFIRMED" || item.code?.taskId!==item.taskId ||
+          !validPublicationInitiation(publication.initiationEvidence,item.code,publication)))
+      stop("原发布请求的发起证据与批准不一致");
+    storedConsumptionAttribution(item);
+    if(!storedAgentConsumptionProofs(item))stop('原签名消费与独立客户端的调用或批次重叠');
     const approval=checkpoint.state.submission?.windowApprovalDigest;
     if (approval!==undefined) {
       if (!digest(approval) || approvals.includes(approval)) stop("同一评测不能复用开发窗口审批");
@@ -327,8 +384,27 @@ function cloudV3CaseProgress(fullPlan,entries) {
         : localFailure(existing) ? "LOCAL_FAILURE_SETTLED_ONLY" : existing.completion ? "LOCAL_MATCHED_ONLY"
         : proof.synthetic || observation?.provenance==="TEST_HARNESS" ? "TEST_HARNESS" : proof.nonNative ? "HUMAN_ASSISTED_OR_NON_NATIVE"
         : proof.unconfirmed ? "PROVENANCE_UNCONFIRMED" : "ORIGINAL_CHECKPOINT";
+      const publication=existing.item.actions.publication;
+      const attribution=storedConsumptionAttribution(existing.item);
+      const agent=storedAgentConsumptionProofs(existing.item);
+      const phaseAttribution=cloudV3PhaseAttribution(existing.item,{approvalTimingVerified:validCloudV3ApprovalTiming(publication?.approvalTiming),
+        verifiedCompletionScope:existing.completion?.scope});
+      const evidenceScope=existing.completion?.scope;
+      const directAutonomousOutcome=directAutonomousOutcomeFor({status,evidenceScope,phaseAttribution});
       return {...item,status,creationStatus:existing.item.actions.agent.status,phase:existing.item.phase,
         ...(existing.completion ? {evidenceScope:existing.completion.scope} : {checkpointStage:stage}),
+        ...(existing.item.developmentDriverEvidence ? {developmentDriverEvidence:existing.item.developmentDriverEvidence} : {}),
+        ...(existing.item.actions.delivery?.preparationEvidence ?
+          {deliveryPreparationEvidence:existing.item.actions.delivery.preparationEvidence} : {}),
+        ...(existing.item.rehearsal?.initiationEvidence ? {rehearsalInitiationEvidence:existing.item.rehearsal.initiationEvidence} : {}),
+        ...(publication?.scheduledBatches ? {publicationScheduleEvidence:{
+          releaseId:publication.id,packageDigest:publication.packageDigest,batches:publication.scheduledBatches,
+        }} : {}),
+        ...(publication?.initiationEvidence ? {publicationInitiationEvidence:publication.initiationEvidence} : {}),
+        ...(attribution.length?{consumptionAttribution:attribution}:{}),
+        ...(agent?.length?{agentConsumption:agent}:{}),
+        ...(phaseAttribution?{phaseAttribution}:{}),
+        ...(directAutonomousOutcome?{directAutonomousOutcome}:{}),
         ...(status==="CLOUD_CHAIN_VERIFIED" ? {approvalWaitMs:Date.parse(existing.item.actions.publication.approvalTiming.approvedAt)-
           Date.parse(existing.item.actions.publication.approvalTiming.readyAt)} : {})};
     }
@@ -337,12 +413,22 @@ function cloudV3CaseProgress(fullPlan,entries) {
       return {...item,status:parentVerified ? "SOURCE_VERIFIED"
         : cloudFailure(parent) ? "SOURCE_FAILED" : localFailure(parent) ? "LOCAL_SOURCE_FAILED"
         : parent?.completion?.scope==="LOCAL_MATCHED_ONLY" ? "LOCAL_SOURCE_MATCHED" : "WAITING_FOR_SOURCE",
-        ...(parentVerified ? {source:{evaluationRunId:state.evaluationRunId,requestDigest:parent.item.requestDigest,
+        ...(parentVerified ? {source:{evaluationRunId:parent.completion.evaluationRunId,requestDigest:parent.item.requestDigest,
           taskId:parent.item.taskId,revisionId:parent.item.code.revisionId,revisionHash:parent.item.code.revisionHash,
           developmentRunId:parent.item.code.runId,completionDigest:parent.completion.completionDigest}} : {})};
     }
     return {...item,status:"NOT_STARTED"};
   });
+}
+
+function directAutonomousOutcomeFor(item) {
+  if(item.status==='CLOUD_FAILURE_SETTLED'&&item.evidenceScope==='INVITED_CLOUD_SETTLED_FAILURE')return 'SETTLED_FAILURE';
+  if(item.status!=='CLOUD_CHAIN_VERIFIED'||item.evidenceScope!=='INVITED_CLOUD_MATCHED')return;
+  const phase=item.phaseAttribution;
+  if(phase?.executionEvidence!=='STORED'||phase.intervention!=='NO_RESCUE_RECORDED')return 'UNCONFIRMED';
+  if(phase.ownerAdvanceRecorded===true)return 'OWNER_ADVANCE';
+  return phase.directAutonomousEligible===true&&phase.approval?.status==='RECORDED'&&
+    Array.isArray(phase.unconfirmedAutonomousStages)&&phase.unconfirmedAutonomousStages.length===0?'VERIFIED':'UNCONFIRMED';
 }
 
 export function summarizeCloudV3Progress(contract,cases) {
@@ -357,6 +443,13 @@ export function summarizeCloudV3Progress(contract,cases) {
   const settled=reviewedCloudSuccesses+settledCloudFailures;
   const measured=settled===denominator;
   const pendingCloudCases=denominator-settled-cloudSourceBlocked;
+  const phaseEvidence=cases.flatMap(item=>item.phaseAttribution??[]);
+  const directOutcomes=cases.map(directAutonomousOutcomeFor);
+  const directAutonomousSuccesses=directOutcomes.filter(value=>value==='VERIFIED').length;
+  const ownerAdvancedCloudCases=directOutcomes.filter(value=>value==='OWNER_ADVANCE').length;
+  const unconfirmedAutonomousCloudCases=directOutcomes.filter(value=>value==='UNCONFIRMED').length;
+  const directSettled=directAutonomousSuccesses+ownerAdvancedCloudCases+directOutcomes.filter(value=>value==='SETTLED_FAILURE').length;
+  const directMeasured=directSettled===denominator;
   return {denominator,targetRate,requiredSuccesses,
     reviewedCloudSuccesses,settledCloudFailures,cloudSourceBlocked,
     localOnlySuccesses:count("LOCAL_MATCHED_ONLY"),localOnlyFailures:count("LOCAL_FAILURE_SETTLED_ONLY"),
@@ -372,5 +465,14 @@ export function summarizeCloudV3Progress(contract,cases) {
     cloudCoverage:settled/denominator,reviewedCloudCompletionRate:measured ? reviewedCloudSuccesses/denominator : null,
     reviewedCloudTargetStatus:measured ? (reviewedCloudSuccesses>=requiredSuccesses ? "MET" : "NOT_MET")
       : cloudSourceBlocked ? "INCOMPLETE_BLOCKED_SOURCE" : "INCOMPLETE",
-    directAutonomousCompletionRate:null,fullGoalTargetMet:false};
+    recordedPhaseAttributionCases:phaseEvidence.length,
+    engineerRescueObserved:phaseEvidence.filter(item=>item.intervention==='ENGINEER_RESCUE').length,
+    businessClarificationObserved:phaseEvidence.filter(item=>item.businessClarificationRecorded).length,
+    ownerAdvanceObserved:phaseEvidence.filter(item=>item.ownerAdvanceRecorded).length,
+    directAutonomousSuccesses,ownerAdvancedCloudCases,unconfirmedAutonomousCloudCases,
+    directAutonomousSettledCases:directSettled,directAutonomousCoverage:directSettled/denominator,
+    additionalDirectAutonomousSuccessesRequired:Math.max(0,requiredSuccesses-directAutonomousSuccesses),
+    directAutonomousCompletionRate:directMeasured?directAutonomousSuccesses/denominator:null,
+    directAutonomousTargetStatus:directMeasured?(directAutonomousSuccesses>=requiredSuccesses?'MET':'NOT_MET'):
+      cloudSourceBlocked?'INCOMPLETE_BLOCKED_SOURCE':'INCOMPLETE',fullGoalTargetMet:false};
 }

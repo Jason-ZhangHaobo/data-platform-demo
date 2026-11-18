@@ -45,8 +45,9 @@ export function parseAgentObjectEvent(event,config) {
 }
 
 // No process timer, idle polling, publication or user-controlled command. Each
-// event can claim only its opted-in task and one durable development boundary.
-export function createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist,now=Date.now,assertExecutionScope=()=>{},taskKind='agent',assertCancelScope,settleRehearsal}) {
+// event can claim only its opted-in task. File preparation uses the same
+// signed wake and grant without adding a Spark job or publication action.
+export function createAgentEventDriver({store,project,dispatcher,engine,transport,config,queueConfig,persist,now=Date.now,assertExecutionScope=()=>{},taskKind='agent',assertCancelScope,settleRehearsal,preparePackage}) {
   const servicePlanning=taskKind==='service_agent_plan',eventProtocol=servicePlanning?serviceAgentEventProtocol:agentEventProtocol,
     wakeProtocol=servicePlanning?'shuduo-service-agent-wake/v1':'shuduo-agent-wake/v1',
     owns=item=>Boolean(item&&(servicePlanning?item.taskKind===taskKind:item.taskKind===undefined||item.taskKind==='agent')),
@@ -66,8 +67,11 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
     return owner?.status==="ACTIVE" && owner.memberships?.some(m=>m.projectId===project && (servicePlanning?["ADMIN","ENGINEER","PRODUCT_MANAGER"]:["ADMIN","ENGINEER"]).includes(m.role));
   };
   const grantFor=id=>store.list("agent_background",project).find(g=>owns(g)&&g.taskId===id && g.status==="ACTIVE");
+  const preparationPending=(g,task)=>!servicePlanning && g.prepareFiles===true &&
+    !g.preparedDelivery && task.status==="SUCCEEDED";
   const view=(g,delivery)=>({protocol:eventProtocol,taskId:g.taskId,status:g.status,expiresAt:g.expiresAt,maxEvents:g.maxEvents,
     consumedEvents:g.consumedEvents,delivery:delivery ?? g.delivery,state:g.state,code:g.code,
+    ...(g.prepareFiles?{prepareFiles:true}:{}),...(g.preparedDelivery?{preparedDelivery:g.preparedDelivery}:{}),
     cloudDriverVerified:false,publicationAutomatic:false});
   const patch=(g,value)=>store.update("agent_background",g.id,project,value,{expectedVersion:g.version});
   const stop=async(g,status,code)=>{g=patch(g,{status,state:status,code});await persist();return view(g);};
@@ -85,7 +89,7 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
     if(g.expiresAt<=now())return stop(g,"EXPIRED","AGENT_BACKGROUND_DEADLINE");
     if(!ownerAllowed(task))return stop(g,"PAUSED","AGENT_OWNER_PERMISSION_REVOKED");
     if(contextDigest(task)!==g.contextDigest)return stop(g,"PAUSED","AGENT_BACKGROUND_CONTEXT_CHANGED");
-    if(terminalFor(task))return stop(g,"COMPLETED",undefined);
+    if(terminalFor(task) && !preparationPending(g,task))return stop(g,"COMPLETED",undefined);
     if(task.stage==='CLARIFICATION_SOURCE_CHANGED')return stop(g,'PAUSED','CLARIFICATION_SOURCE_CHANGED');
     if(task.stage==="MODEL_NOT_SENT"&&!reviewed(task,g))return stop(g,"PAUSED","MODEL_NOT_SENT");
     if(task.stage==="MODEL_OUTCOME_UNKNOWN"&&!reviewed(task,g))return stop(g,"NEEDS_CONFIRMATION","MODEL_OUTCOME_UNKNOWN");
@@ -93,9 +97,11 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
   };
   async function schedule(g,task) {
     const gated=await live(g,task);if(gated)return gated;
-    if(!readyFor(task)&&!reviewed(task,g) && (servicePlanning||task.stage!=="WAITING_FOR_RUN" && task.stage!=="CANCELLING"))return view(g,"WAITING_FOR_CHECKPOINT");
+    if(!readyFor(task)&&!reviewed(task,g) && !preparationPending(g,task) &&
+        (servicePlanning||task.stage!=="WAITING_FOR_RUN" && task.stage!=="CANCELLING"))return view(g,"WAITING_FOR_CHECKPOINT");
     if(g.consumedEvents>=g.maxEvents)return stop(g,"PAUSED","AGENT_BACKGROUND_EVENT_LIMIT");
-    const dedup=store.deduplicate(`${project}:agent-wake:${g.id}:${task.version}`,task.stage,()=>store.create("agent_wake",project,{...(servicePlanning?{taskKind}:{}),grantId:g.id,taskId:task.id,taskVersion:task.version,status:"PREPARED"}));
+    const generation=preparationPending(g,task) ? `:${g.expiresAt}` : "";
+    const dedup=store.deduplicate(`${project}:agent-wake:${g.id}:${task.version}${generation}`,task.stage,()=>store.create("agent_wake",project,{...(servicePlanning?{taskKind}:{}),grantId:g.id,taskId:task.id,taskVersion:task.version,status:"PREPARED"}));
     let wake=store.get("agent_wake",dedup.id,project);
     if(!wake.body){
       const body={protocol:wakeProtocol,...(servicePlanning?{taskKind}:{}),wakeId:wake.id,grantId:g.id,taskId:task.id,taskVersion:task.version,projectId:project,expiresAt:g.expiresAt};
@@ -116,17 +122,21 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
       return view(g,"UNCONFIRMED");
     }
   }
-  async function enable(taskId,actorId,{expectedVersion,maxEvents=20,durationMs=15*60000,developmentBoundary}={}) {
+  async function enable(taskId,actorId,{expectedVersion,maxEvents=20,durationMs=15*60000,developmentBoundary,prepareFiles=false}={}) {
     const task=getTask(taskId);
     if(task.submittedBy!==actorId || !ownerAllowed(task))throw fail(403,"AGENT_BACKGROUND_OWNER_REQUIRED");
     if(expectedVersion!==task.version)throw fail(409,"STALE_AGENT_VERSION");
     assertExecutionScope(task,developmentBoundary);
+    if(typeof prepareFiles!=="boolean")throw fail(422,"AGENT_BACKGROUND_PREPARATION_INVALID");
+    if(prepareFiles && (servicePlanning || !preparePackage))throw fail(503,"AGENT_BACKGROUND_PREPARATION_UNAVAILABLE");
     if(!Number.isSafeInteger(maxEvents)||maxEvents<1||maxEvents>20||!Number.isSafeInteger(durationMs)||durationMs<60000||durationMs>30*60000)
       throw fail(422,"AGENT_BACKGROUND_LIMIT_INVALID");
     let g=store.list("agent_background",project).find(x=>owns(x)&&x.taskId===taskId);
     if(g && g.status!=="ACTIVE")throw fail(409,"AGENT_BACKGROUND_REVIEW_REQUIRED");
+    if(g && prepareFiles && !g.prepareFiles)throw fail(409,"AGENT_BACKGROUND_PREPARATION_NOT_GRANTED");
     if(g)assertExecutionScope(task,g.developmentBoundary);
     if(!g)g=store.create("agent_background",project,{...(servicePlanning?{taskKind}:{}),taskId,actorId,status:"ACTIVE",state:"QUEUED",contextDigest:contextDigest(task),
+      ...(prepareFiles?{prepareFiles:true}:{}),
       expiresAt:now()+durationMs,maxEvents,consumedEvents:0,scope:servicePlanning?'DATA_SERVICE_DESIGN':"SQL_DEVELOPMENT",publicationAutomatic:false,...(developmentBoundary?{developmentBoundary}:{})});
     await persist();return schedule(g,task);
   }
@@ -148,8 +158,14 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
     if(!g || !["NEEDS_CONFIRMATION","EXPIRED","PAUSED","CANCELLED"].includes(g.status)&&!expiredOrRebound&&!reviewedServiceRedrive)throw fail(409,"AGENT_BACKGROUND_REVIEW_REQUIRED");
     if(g.contextDigest!==contextDigest(task))throw fail(409,"AGENT_BACKGROUND_CONTEXT_CHANGED");
     if(g.consumedEvents>=g.maxEvents)throw fail(409,"AGENT_BACKGROUND_EVENT_LIMIT");
-    if(!engine?.prepareResume)throw fail(503,"AGENT_BACKGROUND_RESUME_UNAVAILABLE");
-    await engine.prepareResume(taskId,{expectedVersion,confirmModelRetry});
+    if(preparationPending(g,task)){
+      if(!preparePackage)throw fail(503,"AGENT_BACKGROUND_PREPARATION_UNAVAILABLE");
+      if(expectedVersion!==task.version)throw fail(409,"STALE_AGENT_VERSION");
+      if(confirmModelRetry!==false)throw fail(422,"AGENT_BACKGROUND_PREPARATION_INVALID");
+    }else{
+      if(!engine?.prepareResume)throw fail(503,"AGENT_BACKGROUND_RESUME_UNAVAILABLE");
+      await engine.prepareResume(taskId,{expectedVersion,confirmModelRetry});
+    }
     // No limit/count reset. The review renews only a bounded execution window.
     g=patch(g,{status:"ACTIVE",state:"QUEUED",code:undefined,expiresAt:now()+durationMs,developmentBoundary,
       review:{actorId,taskVersion:servicePlanning?getTask(taskId).version:expectedVersion,...(servicePlanning?{reviewedTaskVersion:expectedVersion}:{}),reviewedAt:new Date(now()).toISOString(),confirmModelRetry}});
@@ -174,7 +190,7 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
     if(b.expiresAt!==g.expiresAt)return{protocol:eventProtocol,state:"IGNORED_SUPERSEDED"};
     if(wake.status==="DONE"){
       const current=getTask(g.taskId);
-      if(readyFor(current)){
+      if(readyFor(current)||preparationPending(g,current)){
         const next=await schedule(g,current);
         if(next.delivery==="UNCONFIRMED")throw fail(503,"AGENT_WAKE_DELIVERY_UNCONFIRMED");
         return next;
@@ -186,18 +202,27 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
       if(g.consumedEvents>=g.maxEvents)return stop(g,"PAUSED","AGENT_BACKGROUND_EVENT_LIMIT");
       if(task.version!==wake.taskVersion){
         store.update("agent_wake",wake.id,project,{status:"DONE",outcome:"STALE"},{expectedVersion:wake.version});await persist();
-        return readyFor(task)?schedule(g,task):view(g,"STALE_EVENT");
+        return readyFor(task)||preparationPending(g,task)?schedule(g,task):view(g,"STALE_EVENT");
       }
       g=patch(g,{consumedEvents:g.consumedEvents+1,state:"RUNNING"});
       store.update("agent_wake",wake.id,project,{status:"CLAIMED"},{expectedVersion:wake.version});await persist();
     }
-    const result=await dispatcher.tick({requestId:wake.id,taskId:g.taskId});
+    const result=preparationPending(g,task) ? {state:"PACKAGE_PREPARATION"}
+      : await dispatcher.tick({requestId:wake.id,taskId:g.taskId,signedBackgroundEvent:true});
     if(["BUSY","IN_PROGRESS","LEASE_EXPIRED"].includes(result.state))throw fail(503,"AGENT_EVENT_LEASE_BUSY");
     g=store.get("agent_background",g.id,project);
     if(!owns(g)||g.status!=='ACTIVE')return{protocol:eventProtocol,state:'INACTIVE'};
     const fresh=getTask(g.taskId);
     if(result.state==="STEP_FAILED")return stop(g,"PAUSED",result.code);
-    const ended=await live(g,fresh);
+    let ended=await live(g,fresh);
+    if(!ended && preparationPending(g,fresh)){
+      if(!preparePackage)return stop(g,"PAUSED","AGENT_BACKGROUND_PREPARATION_UNAVAILABLE");
+      // Replayed claims use the original grant id, including after a lost
+      // artifact acknowledgement. This callback only persists the package.
+      const preparedDelivery=await preparePackage(fresh,g.id);
+      g=patch(g,{preparedDelivery});
+      ended=await live(g,fresh);
+    }
     const receipt=store.get("agent_wake",wake.id,project);
     store.update("agent_wake",receipt.id,project,{status:"DONE",outcome:result.state},{expectedVersion:receipt.version});await persist();
     if(ended)return ended;
@@ -222,7 +247,7 @@ export function createAgentEventDriver({store,project,dispatcher,engine,transpor
     if(typeof raw!=="string" || Buffer.byteLength(raw)>2*1024*1024)throw fail(422,"AGENT_RESULT_OBJECT_INVALID");
     let envelope;try{envelope=JSON.parse(raw);}catch{throw fail(422,"AGENT_RESULT_OBJECT_INVALID");}
     verifyQueuedSparkResult(envelope,run.id,queueConfig);
-    if(task.stage!=="WAITING_FOR_RUN")return view(g,"STALE_RESULT");
+    if(task.stage!=="WAITING_FOR_RUN"&&!preparationPending(g,task))return view(g,"STALE_RESULT");
     return schedule(g,task);
   }
   async function consume(event) {

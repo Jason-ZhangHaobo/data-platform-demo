@@ -1,13 +1,26 @@
-import {useEffect, useState} from "react";
+import {lazy, Suspense, useEffect, useState} from "react";
 import {batchServiceHistoryHref, batchServiceHistoryTarget, publicationBatchReportHref, publicationMonitorHref, readOpsPublication} from "./ops-publication";
 import {checkedBatchConsumption} from "./agent-delivery-evidence-read";
 import {serviceEvidencePath,serviceHandoffLocation} from "./service-source-binding";
 import {applicationStatusText} from "./service-consumption-scope";
+import {agentConsumptionReceiptSelection} from "./agent-consumption-view";
 import "./agent-development.css";
+
+const AgentConsumptionPanel=lazy(()=>import('./AgentConsumptionPanel'));
 
 type Reader = <T>(path:string)=>Promise<T>;
 
-export default function BatchServiceHistory({api,workspaceAvailable}:{api:Reader;workspaceAvailable:boolean}) {
+type Props={api:Reader;workspaceAvailable:boolean};
+export default function BatchServiceHistory(props:Props){
+  const selection=agentConsumptionReceiptSelection(location.href);
+  if(selection===undefined)return <ReleaseBatchHistory {...props}/>;
+  if(selection===null)return <p role="alert">原消费回执地址不完整，请从对应批次的接口工作区重新打开。</p>;
+  return <Suspense fallback={<p role="status">正在读取原委托…</p>}>
+    <AgentConsumptionPanel api={props.api} readOnlySelection={selection}/>
+  </Suspense>;
+}
+
+function ReleaseBatchHistory({api,workspaceAvailable}:Props) {
   const href=window.location.href;
   const target=batchServiceHistoryTarget(href);
   const [refresh,setRefresh]=useState(0);
@@ -41,11 +54,13 @@ export default function BatchServiceHistory({api,workspaceAvailable}:{api:Reader
       <dl className="delivery-review-source"><dt>发布编号</dt><dd>{target.publication.releaseId}</dd><dt>调度批次</dt><dd>{target.batchId}</dd></dl>
       {!current ? <p role="status">正在核对原发布、批次与授权调用…</p> : current.error ? <p role="alert">{current.error}</p> : <>
         <p role="status">已核对所选发布与批次 · 只读历史</p>
+        {current.value?.status==="PENDING" && services?.some(service=>service.call?.coverage==="SINGLE_CUSTOMER")&&
+          <p>单客户授权调用已核验，批次消费验收待核对。</p>}
         {current.value?.truncated&&<p>记录超过读取上限，以下仅显示已返回的记录。</p>}
         {services?.length ? <ul className="agent-dev-attempts">{services.map(service=><li key={service.serviceId}>
           <strong>{service.serviceType} · {service.name}</strong>
           <code>版本 {service.versionId}</code>
-          {service.status==="VERIFIED" && service.call?.verified ? <span>调用 {service.call.callId} · {service.call.rowCount} 行 · {applicationStatusText(service.call.applicationStatus,true)}</span> : <span>{service.notice}</span>}
+          {service.status==="VERIFIED" && service.call?.verified ? <span>{service.call.coverage==="SINGLE_CUSTOMER" && "单客户授权 · "}调用 {service.call.callId} · {service.call.rowCount} 行 · {applicationStatusText(service.call.applicationStatus,true)}</span> : <span>{service.notice}</span>}
         </li>)}</ul> : <p>此批次暂无已保存的接口记录。</p>}
       </>}
       <div className="agent-delivery-actions">

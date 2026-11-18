@@ -5,6 +5,8 @@
 .agent-dev-output-schema th,.agent-dev-output-schema td{padding:6px;vertical-align:top;overflow-wrap:anywhere}
 .agent-dev-output-schema th{background:#f4ede2;color:#654d37}
 .agent-dev-output-schema small{display:block;margin-top:3px;font-size:10px;line-height:1.4}
+.agent-dev-source-schema{margin-top:10px;border-top:1px solid #eadcc8;padding-top:7px}
+.agent-dev-source-schema summary{cursor:pointer;color:#654d37;font-weight:600;font-size:12px}
 .delivery-rehearsal-history{display:grid;gap:5px;margin:10px 0;font-size:11px}
 .delivery-rehearsal-history select{max-width:100%;min-width:0}
 .delivery-execution .agent-dev-output-schema thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
