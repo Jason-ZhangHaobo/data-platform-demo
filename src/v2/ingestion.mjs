@@ -1,4 +1,5 @@
 import {ingestionWatermark} from './ingestion-watermark.mjs';
+import { buildSyncSnapshot, checkedSyncSnapshot, syncSnapshotLimits } from './sync-run-snapshot.mjs';
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import {
@@ -200,6 +201,7 @@ export class LandingStore {
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS landing_rows(target_table TEXT NOT NULL,row_key TEXT NOT NULL,payload TEXT NOT NULL,source_hash TEXT NOT NULL,synced_at TEXT NOT NULL,PRIMARY KEY(target_table,row_key)); CREATE INDEX IF NOT EXISTS landing_target ON landing_rows(target_table,row_key); CREATE TABLE IF NOT EXISTS landing_commits(target_table TEXT PRIMARY KEY,run_id TEXT NOT NULL,target_hash TEXT NOT NULL);",
     );
+    this.db.exec('CREATE TABLE IF NOT EXISTS landing_run_snapshots(run_id TEXT PRIMARY KEY,target_table TEXT NOT NULL,payload TEXT NOT NULL,snapshot_hash TEXT NOT NULL,byte_count INTEGER NOT NULL)');
     this.mutationListener = undefined;
   }
 
@@ -207,7 +209,7 @@ export class LandingStore {
     this.mutationListener = listener;
   }
 
-  sync({ targetTable, mode, rows, mapping, keyFields, sourceHash, syncedAt, runId }) {
+  sync({ targetTable, mode, rows, mapping, keyFields, sourceHash, syncedAt, runId, snapshotBinding }) {
     const target = identifier(targetTable, "目标表"),
       normalizedMapping = normalizeMapping(mapping),
       keys = normalizeKeys(keyFields, normalizedMapping),
@@ -232,9 +234,11 @@ export class LandingStore {
       updated = 0,
       unchanged = 0,
       deleted = 0,
-      finalRows, targetHash;
+      finalRows, targetHash, snapshotReceipt;
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (runId && this.db.prepare('SELECT 1 FROM landing_run_snapshots WHERE run_id=?').get(runId))
+        throw fail(409,'原同步运行已留存快照，不允许重复落地覆盖','SYNC_SNAPSHOT_EXISTS');
       if (mode === "FULL") {
         deleted = this.db
           .prepare("SELECT COUNT(*) AS count FROM landing_rows WHERE target_table=?")
@@ -263,6 +267,18 @@ export class LandingStore {
         "INSERT INTO landing_commits VALUES(?,?,?) ON CONFLICT(target_table) DO UPDATE SET run_id=excluded.run_id,target_hash=excluded.target_hash",
       ).run(target, runId, targetHash);
       else this.db.prepare("DELETE FROM landing_commits WHERE target_table=?").run(target);
+      if (runId && snapshotBinding) {
+        snapshotReceipt = {snapshotStatus:'NOT_RETAINED_LIMIT'};
+        if (finalRows.length <= syncSnapshotLimits.rows) {
+          const snapshot = buildSyncSnapshot({runId,targetTable:target,binding:snapshotBinding,targetHash,rows:finalRows,createdAt:syncedAt});
+          const used = this.db.prepare('SELECT COALESCE(SUM(LENGTH(CAST(payload AS BLOB))),0) AS bytes FROM landing_run_snapshots').get().bytes;
+          if (snapshot.bytes <= syncSnapshotLimits.bytes && used + snapshot.bytes <= syncSnapshotLimits.totalBytes) {
+            // Plain INSERT: a reused run identifier must roll back, never overwrite evidence.
+            this.db.prepare('INSERT INTO landing_run_snapshots VALUES(?,?,?,?,?)').run(runId,target,snapshot.payload,snapshot.snapshotHash,snapshot.bytes);
+            snapshotReceipt = {snapshotStatus:'RETAINED',landingSnapshotHash:snapshot.snapshotHash};
+          }
+        }
+      }
       this.db.exec("COMMIT");
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
@@ -278,7 +294,14 @@ export class LandingStore {
       deleted,
       finalCount: finalRows.length,
       targetHash,
+      ...snapshotReceipt,
     };
+  }
+
+  readRunSnapshot(expected) {
+    const record = this.db.prepare('SELECT * FROM landing_run_snapshots WHERE run_id=?').get(expected.runId);
+    if (!record) throw fail(409,'原批次快照缺失；未使用当前表替代','SYNC_SNAPSHOT_MISSING');
+    return checkedSyncSnapshot(record,expected);
   }
 
   inspectTarget(targetTable, { includeRows = false } = {}) {
@@ -821,6 +844,7 @@ export class IngestionManager {
       const watermark=ingestionWatermark(parsed.rows,task.watermarkField?Object.entries(task.mapping).find(([,target])=>target===task.watermarkField)?.[0]:undefined,metadata.columns);
       const output = this.landingStore.sync({
         runId: pending.id,
+        snapshotBinding: this.#snapshotBinding(task,input.fileHash),
         targetTable: task.targetTable,
         mode: task.mode,
         rows: parsed.rows,
@@ -952,6 +976,7 @@ export class IngestionManager {
         watermark=ingestionWatermark(rows,task.watermarkField?Object.entries(task.mapping).find(([,target])=>target===task.watermarkField)?.[0]:undefined,metadata.columns),
         output = this.landingStore.sync({
           runId: pending.id,
+          snapshotBinding: this.#snapshotBinding(task,sourceHash),
           targetTable: task.targetTable,
           mode: task.mode,
           rows,
@@ -1008,6 +1033,37 @@ export class IngestionManager {
 
   previewTarget(targetTable) {
     return this.landingStore.readTable(targetTable);
+  }
+
+  #snapshotBinding(task,sourceHash) {
+    return {projectId:this.project,taskId:task.id,sourceId:task.sourceId,sourceRevisionId:task.sourceRevisionId,
+      metadataVersionId:task.metadataVersionId,configHash:task.configHash,sourceHash};
+  }
+
+  previewRunSnapshot(taskId,runId,{page=1,pageSize=50}={}) {
+    const task=this.#task(taskId),run=this.store.get('offline_sync_run',runId,this.project);
+    if (!run || run.taskId!==task.id) throw fail(404,'同步运行不存在','SYNC_RUN_NOT_FOUND');
+    if (!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100)
+      throw fail(422,'页码须为正整数，每页1—100行','INVALID_SNAPSHOT_PAGE');
+    if (run.status!=='SUCCEEDED'||run.actualExecution!==true) throw fail(409,'只有实际成功的批次可核对落地快照','SYNC_RUN_NOT_SUCCEEDED');
+    if (run.configHash!==task.configHash||run.sourceRevisionId!==task.sourceRevisionId||run.metadataVersionId!==task.metadataVersionId||run.targetTable!==task.targetTable)
+      throw fail(409,'运行与原任务版本不一致','SYNC_SNAPSHOT_MISMATCH');
+    const summary={taskId:task.id,runId:run.id,targetTable:run.targetTable,rowCount:run.finalCount,targetHash:run.targetHash};
+    if (run.snapshotStatus!=='RETAINED') return {...summary,status:'NOT_RETAINED',reason:run.snapshotStatus==='NOT_RETAINED_LIMIT'?'RETENTION_LIMIT':'LEGACY_RUN',page,pageSize};
+    const value=this.landingStore.readRunSnapshot({runId,targetTable:task.targetTable,binding:this.#snapshotBinding(task,run.sourceHash),
+      targetHash:run.targetHash,rowCount:run.finalCount,snapshotHash:run.landingSnapshotHash});
+    const totalPages=Math.max(1,Math.ceil(value.rows.length/pageSize));
+    if (page>totalPages) throw fail(422,'页码超过原批次范围','INVALID_SNAPSHOT_PAGE');
+    let currentTarget;
+    try {
+      const current=this.landingStore.inspectTarget(task.targetTable);
+      currentTarget={status:'VERIFIED',runId:current.runId,rowCount:current.rowCount,targetHash:current.targetHash,
+        matchesOriginalRun:current.runId===run.id&&current.targetHash===run.targetHash};
+    } catch { currentTarget={status:'UNCONFIRMED'}; }
+    return {...summary,status:'VERIFIED',integrityVerified:true,snapshotHash:run.landingSnapshotHash,createdAt:value.createdAt,
+      currentTarget,
+      columns:[...new Set(value.rows.flatMap(row=>Object.keys(row)))].filter(key=>key!=='rowKey'),
+      page,pageSize,totalPages,rows:value.rows.slice((page-1)*pageSize,page*pageSize)};
   }
 
   #createRevision(source, name) {

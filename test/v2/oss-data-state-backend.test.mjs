@@ -161,6 +161,7 @@ test("OSS restores every historical v1 root and preserves committed state on col
     ["original", originalTables],
     ["distribution", distributionTables],
     ["committed sync", committedSyncTables],
+    ["archived sync", [...committedSyncTables.slice(0,2),'landingRunSnapshots',...committedSyncTables.slice(2)]],
   ]) {
     const remote = fakeOss(), first = snapshot(tables), latest = emptyDataState(PROJECT);
     first.tables.reportSnapshots.push({ id: "synthetic-test-report", asset_id: "synthetic-test-asset",

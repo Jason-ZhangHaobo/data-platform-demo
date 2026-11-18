@@ -25,6 +25,10 @@ const genesisTables = [
   "serviceSnapshots", "customerAssets", "reportSnapshots",
 ];
 const compatibleGenesisTables = [
+  [
+    "landingRows", "landingCommits", "landingRunSnapshots", "streamEvents", "streamState", "streamCheckpoints",
+    "serviceSnapshots", "serviceDistributions", "customerAssets", "reportSnapshots",
+  ],
   genesisTables,
   [
     "landingRows", "streamEvents", "streamState", "streamCheckpoints",
