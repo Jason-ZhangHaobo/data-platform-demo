@@ -1778,6 +1778,7 @@ function App() {
                 canWrite={Boolean(canWrite)}
                 serverMysqlConfigured={status?.ingestion?.serverMysql?.configured === true}
                 serverMysqlSyncEnabled={status?.ingestion?.serverMysql?.supportsOfflineSync === true}
+                localChangelog={localWorkbench}
                 onModuleChange={setNav}
               />
             ) : nav === "schedules" ? (

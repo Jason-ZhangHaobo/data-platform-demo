@@ -1,0 +1,2 @@
+position_id,client_id,security_code,asset_class,industry,market_value,trade_date,op,seq
+POS-002,,,,,,,DELETE,9007199254740993

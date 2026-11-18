@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## CSV显式变更与恢复（2026-11-19，本机）
+
+POST `/sync/tasks`新增mode=INCREMENTAL_CHANGELOG、changeConfig={epochId,operationField,sequenceField}，映射不得含控制列，当前仅本机CSV。新模式未知参数拒绝，创建按规范对象摘要幂等；POST run仅原配置空body，稳定请求UUID用于原提交回读/恢复。run.changeState含代号/状态摘要及接受、删除事件、重复/旧事件计数，deleted仍是物理行数。业务状态追加可选控制表并保持旧v1形状与版本链兼容，见[协议和多端用法](csv-changelog.md)。
+
 ## 当前质量证据与时效（2026-11-19）
 
 既有质量详情/list/overview新增sourceFreshness，health可为STALE（当前数据待检测）；总览增加stale/unconfirmed计数。新实际run保存inputRowsHash/evaluatedAt，时效非空通过含validUntil。读取比较当前输入，不创建run或改写告警/历史；CLI/MCP共用原接口。Agent currentInputStatus与按lastRunId读取的latestRun随聚合上下文发送，见[状态定义](quality-current-evidence.md)。

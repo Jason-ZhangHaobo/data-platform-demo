@@ -1,3 +1,4 @@
+import {changeHash} from './csv-changelog.mjs';
 import {createQualityArchiveSource,qualityArchiveSelection} from './quality-source.mjs';
 import {frozenSchedulePreview} from './frozen-schedule-preview.mjs';
 import {runBudgetedPlanning} from './budgeted-planning.mjs';
@@ -1343,6 +1344,7 @@ export function createV2Server(options = {}) {
   const serverMysqlAdapter =
     options.serverMysqlAdapter ?? createServerMysqlSourceAdapter(env);
   const ingestion = new IngestionManager({
+    allowChangelog:local&&!options.ingress,
     store,
     landingStore,
     project: PROJECT,
@@ -2581,11 +2583,15 @@ export function createV2Server(options = {}) {
         }
       }
       if (path === "/api/v2/sync/tasks" && method === "POST") {
-        const body = await readBody(req),
+        const body = await readBody(req);
+        if(!body||typeof body!=='object'||Array.isArray(body))throw fail(422,'同步任务配置须为对象');
+        if(body.mode==='INCREMENTAL_CHANGELOG'&&(!local||options.ingress||!isLoopbackRequest(req)))throw fail(403,'CSV变更任务仅在本机回环开放');
+        if(body.mode==='INCREMENTAL_CHANGELOG'&&Object.keys(body).some(k=>!['name','sourceId','sourceRevisionId','metadataVersionId','targetTable','mode','mapping','keyFields','watermarkField','changeConfig'].includes(k)))throw fail(422,'变更任务含未支持的参数，不会忽略覆盖或删除控项');
+        const
           key = text(req.headers["idempotency-key"], 1, 100),
           dedup = store.deduplicate(
             `${PROJECT}:offline-sync-task:${key}`,
-            hash(JSON.stringify(body)),
+            body.mode==='INCREMENTAL_CHANGELOG'?changeHash(body):hash(JSON.stringify(body)),
             () => ingestion.createTask(body),
           );
         return json(
@@ -2627,7 +2633,9 @@ export function createV2Server(options = {}) {
           }
         }
         if (method === "POST" && action === "run") {
-          await readBody(req);
+          if(task.mode==='INCREMENTAL_CHANGELOG'&&(!local||options.ingress||!isLoopbackRequest(req)))throw fail(403,'CSV变更执行仅在本机回环开放');
+          const runBody=await readBody(req);
+          if(task.mode==='INCREMENTAL_CHANGELOG'&&(!runBody||typeof runBody!=='object'||Array.isArray(runBody)||Object.keys(runBody).length))throw fail(422,'变更执行只使用原任务配置，不接受覆盖或重置参数');
           const requestKey = text(req.headers["idempotency-key"], 1, 100),
             requestSignature = hash(
               JSON.stringify({

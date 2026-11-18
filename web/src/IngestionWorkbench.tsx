@@ -1,3 +1,4 @@
+import {csvChangeMode,csvChangeConfig,csvChangeRequestId} from '../../src/v2/csv-changelog-client.mjs';
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -83,6 +84,8 @@ type SyncRun = {
   durationMs: number;
   error?: string;
   errorCode?: string;
+  requestKey?:string;configHash?:string;taskId?:string;
+  deleted?:number;changeState?:{epochId:string;changeStateHash:string;appliedEvents:number;deleteEvents:number;duplicateEvents:number;staleEvents:number};
   actualExecution: boolean;
 };
 type SyncTask = {
@@ -98,6 +101,7 @@ type SyncTask = {
   mapping?: Record<string,string>;
   watermarkField?: string;
   configHash: string;
+  changeConfig?:{epochId:string;operationField:string;sequenceField:string};
   recovery?: { previousTaskId:string; failedRunId:string; basisDigest:string };
   runs: SyncRun[];
 };
@@ -137,6 +141,7 @@ const statusLabels: Record<string, string> = {
   RUNNING: "运行中",
   SUCCEEDED: "成功",
   FAILED: "失败",
+  UNCONFIRMED:"原结果待核对",
   QUEUED: "排队中",
   APPLIED: "草稿已创建",
 };
@@ -147,6 +152,7 @@ export function IngestionWorkbench({
   canWrite: originalCanWrite,
   serverMysqlConfigured,
   serverMysqlSyncEnabled,
+  localChangelog=false,
   onModuleChange,
 }: {
   api: Api;
@@ -154,6 +160,7 @@ export function IngestionWorkbench({
   canWrite: boolean;
   serverMysqlConfigured: boolean;
   serverMysqlSyncEnabled: boolean;
+  localChangelog?:boolean;
   onModuleChange: (module: "sources" | "sync") => void;
 }) {
   const [syncView, setSyncView] = useState<"offline" | "realtime">("offline");
@@ -167,7 +174,7 @@ export function IngestionWorkbench({
     [plans, setPlans] = useState<AgentPlan[]>([]),
     [targetRows, setTargetRows] = useState<Record<string, unknown>[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState(""),
-    [selectedTaskId, setSelectedTaskId] = useState(""),
+    [selectedTaskId, setSelectedTaskId] = useState(()=>{const id=new URL(location.href).searchParams.get("sync_task");return id&&/^[a-f0-9-]{36}$/.test(id)?id:"";}),
     [busy, setBusy] = useState(""),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
@@ -181,6 +188,9 @@ export function IngestionWorkbench({
     [taskSourceId, setTaskSourceId] = useState(""),
     [targetTable, setTargetTable] = useState("raw_positions_review");
   const [mappingDrafts,setMappingDrafts]=useState<Record<string,SyncMappingDraft>>({});
+  const [changeEpoch,setChangeEpoch]=useState<string>(()=>crypto.randomUUID()),[operationField,setOperationField]=useState('op'),[sequenceField,setSequenceField]=useState('seq');
+  const runRequests=useRef(new Map<string,string>());
+  useEffect(()=>{const u=new URL(location.href),task=u.searchParams.get('sync_task'),request=u.searchParams.get('sync_run_request');if(task&&request){try{if(u.searchParams.getAll('sync_task').length!==1||u.searchParams.getAll('sync_run_request').length!==1)throw Error('原执行链接含重复编号');runRequests.current.set(task,csvChangeRequestId(request));}catch(cause){setError((cause as Error).message);}}},[]);
   const taskCreateRequest=useRef<{signature:string;key:string}|undefined>(undefined);
   const [agentMessage, setAgentMessage] = useState(
       "基于证券持仓增量CSV，生成写入raw_positions的增量合并任务，position_id为主键，trade_date为水位",
@@ -204,8 +214,11 @@ export function IngestionWorkbench({
 
   const lastRun = selectedTask?.runs[0];
   const mappingDraft=mappingDrafts[taskSourceId]??(metadataForTask?newSyncMappingDraft(taskSourceId,metadataForTask):undefined);
-  const mappingProblem=syncMappingProblem(mappingDraft,taskSourceId,metadataForTask);
-  const recoverableFailure = selectedTaskSource?.sourceType === "LOCAL_CSV" && lastRun?.status === "FAILED" &&
+  let changeProblem:string|undefined;
+  if(taskMode===csvChangeMode){try{const cfg=csvChangeConfig({epochId:changeEpoch,operationField,sequenceField});if(!localChangelog||sourceForTask?.sourceType!=='LOCAL_CSV')throw Error('此模式仅支持本机CSV');const fields=new Set(metadataForTask?.columns.map(c=>c.name));if(!fields.has(cfg.operationField)||!fields.has(cfg.sequenceField))throw Error('请在当前源选择操作与序号字段');if(mappingDraft?.mapping[cfg.operationField]?.trim()||mappingDraft?.mapping[cfg.sequenceField]?.trim())throw Error('操作与序号字段仅作控制，目标映射须留空');}catch(cause){changeProblem=(cause as Error).message;}}
+  const mappingProblem=syncMappingProblem(mappingDraft,taskSourceId,metadataForTask)||changeProblem;
+  useEffect(()=>{if(taskMode!==csvChangeMode||!mappingDraft)return;const d=mappingDraft;if(d.mapping[operationField]?.trim()||d.mapping[sequenceField]?.trim()||d.watermarkSource)setMappingDrafts(previous=>({...previous,[taskSourceId]:{...d,mapping:{...d.mapping,...(Object.hasOwn(d.mapping,operationField)?{[operationField]:''}:{}),...(Object.hasOwn(d.mapping,sequenceField)?{[sequenceField]:''}:{})},watermarkSource:undefined}}));},[taskMode,taskSourceId,metadataForTask?.id,operationField,sequenceField,mappingDraft]);
+  const recoverableFailure = selectedTask?.mode!==csvChangeMode&&selectedTaskSource?.sourceType === "LOCAL_CSV" && lastRun?.status === "FAILED" &&
     (lastRun.errorCode ? ["SOURCE_REVISION_STALE","METADATA_STALE"].includes(lastRun.errorCode)
       : ["数据源版本已变化，请新建同步任务版本","元数据版本已变化，请重新配置同步任务"].includes(lastRun.error ?? ""));
   const reader = useRef<ReturnType<typeof createIngestionReader<Source, SyncTask, AgentPlan, Record<string, unknown>>> | undefined>(undefined);
@@ -220,7 +233,7 @@ export function IngestionWorkbench({
       setSelectedSourceId(previous => result.sources.some(source => source.id === previous) ? previous : result.sources[0]?.id ?? "");
       const available = result.sources.filter(source => source.supportsOfflineSync);
       setTaskSourceId(previous => available.some(source => source.id === previous) ? previous : available.find(source=>source.currentMetadataId)?.id ?? available[0]?.id ?? "");
-      setSelectedTaskId(previous => result.tasks.some(task => task.id === previous) ? previous : result.tasks[0]?.id ?? "");
+      setSelectedTaskId(previous => result.tasks.some(task => task.id === previous)||Boolean(previous&&new URL(location.href).searchParams.get('sync_task')===previous) ? previous : result.tasks[0]?.id ?? "");
       setAgentPlan(previous => previous ?? result.plans[0]);
     },
     onPreview(result) { setPreviewRead(result); if (result.state === "READY") setTargetRows(result.rows); },
@@ -308,6 +321,7 @@ export function IngestionWorkbench({
           sourceId: taskSourceId,
           targetTable,
           mode: taskMode,
+          ...(taskMode===csvChangeMode?{changeConfig:csvChangeConfig({epochId:changeEpoch,operationField,sequenceField})}:{}),
           ...syncTaskMappingFields(mappingDraft,taskSourceId,metadataForTask),
         };
         const signature=JSON.stringify(body);
@@ -317,13 +331,15 @@ export function IngestionWorkbench({
       },
       "同步任务已绑定当前源与元数据版本",
     );
-  const runTask = () =>
-    selectedTask &&
-    action(
-      "run-task",
-      () => api(`/sync/tasks/${selectedTask.id}/run`, {}),
-      "同步已实际执行，读写计数与目标摘要已保存",
-    );
+  const runTask = () => selectedTask && action('run-task',async()=>{
+    let key=runRequests.current.get(selectedTask.id);if(!key){const unknown=selectedTask.runs.find(r=>['RUNNING','UNCONFIRMED'].includes(r.status)&&r.requestKey);key=unknown?.requestKey??crypto.randomUUID();}
+    runRequests.current.set(selectedTask.id,key);const url=new URL(location.href);url.searchParams.set('sync_task',selectedTask.id);url.searchParams.set('sync_run_request',key);history.replaceState(null,'',url);
+    const original=await api<SyncTask>(`/sync/tasks/${selectedTask.id}`),known=original.runs.find(r=>r.requestKey===key);
+    const run=known&&['SUCCEEDED','FAILED'].includes(known.status)?known:await api<SyncRun>(`/sync/tasks/${selectedTask.id}/run`,{},{idempotencyKey:key});
+    if(run.taskId!==selectedTask.id||run.configHash!==selectedTask.configHash)throw Error('原执行回执与所选任务不一致，请保留请求编号');
+    if(!['SUCCEEDED','FAILED'].includes(run.status))throw Error('原执行仍待核对，不提交新请求');runRequests.current.delete(selectedTask.id);
+    if(run.status==='FAILED')throw Error('原执行失败已确认；请按原记录修正并创建新源版本，不重放同一失败请求');
+  },'已核对原运行；读写、删除与重放计数保留，未改用其他请求');
   const planWithAgent = () =>
     action(
       "agent",
@@ -516,11 +532,12 @@ export function IngestionWorkbench({
             </aside>
             <section className="sync-detail">
               {selectedTask ? <>
-                <header className="sync-detail-head"><div><span className="eyebrow">{selectedTask.mode} · VERSION BOUND</span><h3>{selectedTask.name}</h3><p>{selectedTaskSource?.name} → {selectedTask.targetTable}</p></div><button className="button primary" onClick={runTask} disabled={!canWrite || !!busy || recoverableFailure}>{busy === "run-task" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际执行</button></header>
-                <div className="sync-proof"><div><span>源版本</span><code>{selectedTask.sourceRevisionId.slice(0, 8)}</code></div><div><span>元数据版本</span><code>{selectedTask.metadataVersionId.slice(0, 8)}</code></div><div><span>主键</span><strong>{selectedTask.keyFields.join(", ")}</strong></div><div><span>水位</span><strong>{selectedTask.watermarkField ?? "无"}</strong></div></div>
+                <header className="sync-detail-head"><div><span className="eyebrow">{selectedTask.mode} · VERSION BOUND</span><h3>{selectedTask.name}</h3><p>{selectedTaskSource?.name} → {selectedTask.targetTable}</p></div><button className="button primary" onClick={runTask} disabled={!canWrite || !!busy || recoverableFailure}>{busy === "run-task" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{runRequests.current.has(selectedTask.id)?"核对原执行":"实际执行"}</button></header>
+                <div className="sync-proof"><div><span>源版本</span><code>{selectedTask.sourceRevisionId.slice(0, 8)}</code></div><div><span>元数据版本</span><code>{selectedTask.metadataVersionId.slice(0, 8)}</code></div><div><span>主键</span><strong>{selectedTask.keyFields.join(", ")}</strong></div><div><span>{selectedTask.changeConfig?"精确序号字段":"水位"}</span><strong>{selectedTask.changeConfig?.sequenceField??selectedTask.watermarkField??"无"}</strong></div></div>
+                {selectedTask.changeConfig&&<section className="sync-change-info"><strong>CSV显式变更 · 非数据库CDC</strong><p>变更代号 {selectedTask.changeConfig.epochId.slice(0,8)} · {selectedTask.changeConfig.operationField} / {selectedTask.changeConfig.sequenceField}</p><button className="button" disabled={!canWrite||!!busy} onClick={()=>{setTaskMode(csvChangeMode);setChangeEpoch(selectedTask.changeConfig!.epochId);setOperationField(selectedTask.changeConfig!.operationField);setSequenceField(selectedTask.changeConfig!.sequenceField);setTargetTable(selectedTask.targetTable);setTaskName('下一批 · '+selectedTask.name.slice(0,65));setNotice('已复用变更代号与目标；请选择下一份已采集CSV，核对映射后创建新任务。');document.querySelector('.sync-create-panel')?.scrollIntoView({behavior:'smooth'});}}>复用此配置创建下一批</button></section>}
                 <div className="sync-runs">
                   <header><h4>运行证据</h4><span>{selectedTask.runs.length}次</span></header>
-                  {selectedTask.runs.map((run) => <article key={run.id}><span className={"status-pill " + run.status.toLowerCase()}>{statusLabels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><span>读取 {run.readCount ?? "—"}</span><span>新增 {run.inserted ?? "—"}</span><span>更新 {run.updated ?? "—"}</span><span>最终 {run.finalCount ?? "—"}</span></div><small>{run.error ?? `${run.durationMs}ms · ${run.targetHash?.slice(0, 12)}`}</small></article>)}
+                  {selectedTask.runs.map((run) => <article key={run.id}><span className={"status-pill " + run.status.toLowerCase()}>{statusLabels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><span>读取 {run.readCount ?? "—"}</span><span>新增 {run.inserted ?? "—"}</span><span>更新 {run.updated ?? "—"}</span><span>删除 {run.deleted??"—"}</span><span>最终 {run.finalCount ?? "—"}</span>{run.changeState&&<><span>接受事件 {run.changeState.appliedEvents}</span><span>删除事件 {run.changeState.deleteEvents}</span><span>重复跳过 {run.changeState.duplicateEvents}</span><span>旧事件跳过 {run.changeState.staleEvents}</span></>}</div><small>{run.error ?? `${run.durationMs}ms · ${run.targetHash?.slice(0, 12)}`}</small></article>)}
                 </div>
                 <SyncRunSnapshotPanel key={selectedTask.id} api={api} taskId={selectedTask.id} runs={selectedTask.runs}/>
                 {selectedTask.recovery && <div className="sync-recovery-origin">
@@ -542,8 +559,9 @@ export function IngestionWorkbench({
           </div>
           <section className="sync-create-panel">
             <header><div><span className="eyebrow">MANUAL CONFIGURATION</span><h3>手动创建同步任务</h3></div><ArrowRight size={20} /></header>
-            <div><label>任务名称<input value={taskName} onChange={(event) => setTaskName(event.target.value)} /></label><label>可同步数据源<select value={taskSourceId} onChange={(event) => setTaskSourceId(event.target.value)}>{sources.filter((source) => source.supportsOfflineSync).map((source) => <option value={source.id} key={source.id}>{source.name} · V{source.currentRevision.revisionNumber}{source.currentMetadataId?"":" · 待采集元数据"}</option>)}</select></label><label>同步模式<select value={taskMode} onChange={(event) => setTaskMode(event.target.value)}><option value="FULL">FULL全量</option><option value="INCREMENTAL_UPSERT">{sourceForTask?.sourceType === "SERVER_MYSQL" ? "快照差异UPSERT（非CDC）" : "增量UPSERT"}</option></select></label><label>目标表<input value={targetTable} onChange={(event) => setTargetTable(event.target.value)} /></label></div>
-            <SyncTaskMappingEditor draft={mappingDraft} sourceId={taskSourceId} metadata={metadataForTask} disabled={!canWrite||Boolean(busy)} onChange={draft=>setMappingDrafts(previous=>({...previous,[draft.sourceId]:draft}))}/>
+            <div><label>任务名称<input value={taskName} onChange={(event) => setTaskName(event.target.value)} /></label><label>可同步数据源<select value={taskSourceId} onChange={(event) => setTaskSourceId(event.target.value)}>{sources.filter((source) => source.supportsOfflineSync).map((source) => <option value={source.id} key={source.id}>{source.name} · V{source.currentRevision.revisionNumber}{source.currentMetadataId?"":" · 待采集元数据"}</option>)}</select></label><label>同步模式<select value={taskMode} onChange={(event) => setTaskMode(event.target.value)}><option value="FULL">FULL全量</option><option value="INCREMENTAL_UPSERT">{sourceForTask?.sourceType === "SERVER_MYSQL" ? "快照差异UPSERT（非CDC）" : "增量UPSERT"}</option>{localChangelog&&<option value="INCREMENTAL_CHANGELOG">CSV显式变更</option>}</select></label><label>目标表<input value={targetTable} onChange={(event) => setTargetTable(event.target.value)} /></label></div>
+            {taskMode===csvChangeMode&&<section className="sync-change-config" aria-label="CSV变更控制配置"><h4>操作与精确序号</h4><p>仅本机CSV；首次必须是空的新目标和全UPSERT种子批，后续沿用同一变更代号。操作只接受UPSERT/DELETE，序号为规范非负整数文本。删除保留墓碑，旧事件不能复活仓位；冲突整批回滚。</p><div><label>操作源字段<select aria-label="变更操作字段" value={operationField} onChange={e=>setOperationField(e.target.value)}>{!metadataForTask?.columns.some(c=>c.name===operationField)&&<option value={operationField}>{operationField}（当前源缺少）</option>}{metadataForTask?.columns.map(c=><option key={c.name}>{c.name}</option>)}</select></label><label>精确序号源字段<select aria-label="变更序号字段" value={sequenceField} onChange={e=>setSequenceField(e.target.value)}>{!metadataForTask?.columns.some(c=>c.name===sequenceField)&&<option value={sequenceField}>{sequenceField}（当前源缺少）</option>}{metadataForTask?.columns.map(c=><option key={c.name}>{c.name}</option>)}</select></label></div><details><summary>变更代号 {changeEpoch.slice(0,8)}（同目标必须一致）</summary><input aria-label="变更代号" value={changeEpoch} onChange={e=>setChangeEpoch(e.target.value)}/><button className="button" onClick={()=>setChangeEpoch(crypto.randomUUID())}>为新目标生成新代号</button></details></section>}
+            <SyncTaskMappingEditor hideWatermark={taskMode===csvChangeMode} controlFields={taskMode===csvChangeMode?[operationField,sequenceField]:[]} draft={mappingDraft} sourceId={taskSourceId} metadata={metadataForTask} disabled={!canWrite||Boolean(busy)} onChange={draft=>setMappingDrafts(previous=>({...previous,[draft.sourceId]:draft}))}/>
             <footer><span>{mappingDraft?Object.values(mappingDraft.mapping).filter(value=>value.trim()).length:0}个映射字段 · {mappingDraft?.keySources.length??0}个主键 · 创建后尚未执行</span><button className="button" onClick={createTask} disabled={!canWrite || !metadataForTask || !!busy || Boolean(mappingProblem)}>创建版本化任务</button></footer>
           </section>
           </>}

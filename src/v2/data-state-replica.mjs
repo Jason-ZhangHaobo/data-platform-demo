@@ -1,3 +1,4 @@
+import {validateChangeSnapshot} from './csv-changelog.mjs';
 import { createHash } from "node:crypto";
 
 const FORMAT = "shuduo-data-state/v1";
@@ -25,6 +26,8 @@ const specs = {
     columns:['run_id','target_table','payload','snapshot_hash','byte_count'],
     key:['run_id'], order:'run_id', optional:true,
   },
+  landingChangeTargets:{store:'landingStore',table:'landing_change_targets',columns:['target_table','epoch_id','spec_hash','state_hash','last_run_id','receipt'],key:['target_table'],order:'target_table',optional:true},
+  landingChangeKeys:{store:'landingStore',table:'landing_change_keys',columns:['target_table','row_key','last_sequence','event_hash','tombstone'],key:['target_table','row_key'],order:'target_table,row_key',optional:true},
   streamEvents: {
     store: "streamStateStore",
     table: "stream_events",
@@ -207,6 +210,7 @@ export function validateDataState(payload, project) {
       throw fail("云端报表快照包含损坏的 JSON 数据");
     }
   }
+  try{validateChangeSnapshot(payload.tables);}catch{throw fail('云端变更控制、回执与落地状态不一致');}
   return payload;
 }
 
@@ -230,11 +234,15 @@ const deleteOrder = [
   "landingRows",
   "landingCommits",
   "landingRunSnapshots",
+  "landingChangeKeys",
+  "landingChangeTargets",
   "reportSnapshots",
 ];
 
 export function replaceDataStores(stores, payload, project) {
   validateDataState(payload, project);
+  const incoming=new Map((payload.tables.landingChangeTargets??[]).map(t=>[t.target_table,t]));
+  for(const old of stores.landingStore.db.prepare('SELECT target_table,epoch_id FROM landing_change_targets').all())if(incoming.get(old.target_table)?.epoch_id!==old.epoch_id)throw fail('恢复缺少原变更目标代号与墓碑状态');
   const grouped = new Map();
   for (const name of deleteOrder) {
     const spec = specs[name],
@@ -257,6 +265,7 @@ export function replaceDataStores(stores, payload, project) {
         for (const row of payload.tables[name]??[])
           insert.run(...spec.columns.map((column) => row[column]));
       }
+      if(storeName==='landingStore')stores.landingStore.assertChangeIntegrity();
       db.exec("COMMIT");
     } catch (error) {
       if (db.isTransaction) db.exec("ROLLBACK");
