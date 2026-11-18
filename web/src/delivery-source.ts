@@ -1,5 +1,6 @@
 import { isFundContext } from "../../src/v2/fund-contexts.mjs";
 import { validationFamilyForContextId } from "./validation-family.ts";
+import {deliverySourceExecutionIssue} from '../../src/v2/delivery-source-evidence.mjs';
 
 type DeliverySourceRun = {
   id: string;
@@ -8,6 +9,7 @@ type DeliverySourceRun = {
   validationContractId?: string;
   syncInput?: { snapshotHash: string };
   validation?: { contractId?: string };
+  testDouble?:boolean;mainSqlExecuted?:boolean;engine?:string;engineVersion?:string;isolation?:string;
 };
 type SourceOptions = {
   contractId?: string;
@@ -37,10 +39,14 @@ export function deliverySourceSelection<T extends DeliverySourceRun>(runs: T[], 
     : currentSource
       ? eligible.find(run => run.id === currentSource)?.id ?? ""
       : eligible[0]?.id ?? "";
+  const selectedRun=runs.find(run=>run.id===source);
+  const executionIssue=selectedRun?deliverySourceExecutionIssue(selectedRun):undefined;
   const issue = locked && !source
     ? "指定来源不存在或未通过其业务口径验证；已锁定该来源，不会改选其他运行。"
     : currentSource && !source
       ? "原选择已不符合业务口径验证，请明确重新选择来源。"
-      : "";
-  return { eligible, source, locked, issue };
+      : executionIssue?.message ?? "";
+  // Keep historical source/package reads available; mutation eligibility is
+  // separate from selecting an existing source for inspection.
+  return { eligible, source, locked, issue, canCreate:Boolean(source)&&!issue };
 }

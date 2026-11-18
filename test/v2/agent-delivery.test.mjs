@@ -23,6 +23,7 @@ async function setup(options = {}) {
       status: "SUCCEEDED",
       engine: "Apache Spark",
       engineVersion: "3.5.9",
+      mainSqlExecuted: true,
       rows: [{ client_id: "CLIENT-BUSINESS-ROW-SECRET" }],
       validation: {
         passed: true,

@@ -37,6 +37,7 @@ type Run = {
   syncInput?: { snapshotHash: string };
   validation?: { contractId?: string };
   createdAt: string;
+  testDouble?:boolean;mainSqlExecuted?:boolean;engine?:string;engineVersion?:string;isolation?:string;
 };
 type Bundle = {
   id: string;
@@ -293,7 +294,7 @@ export function DeliveryWorkbench({
   runs,
   contractId,
   sourceRunId,
-  canWrite,
+  canWrite: requestedCanWrite,
   onBack,
   onOpenServices,
   lockSource = false,
@@ -310,6 +311,7 @@ export function DeliveryWorkbench({
   const [currentSource, setSource] = useState(""),
     [name, setName] = useState("客户资产 T+1");
   const { eligible, source, locked: sourceLocked, issue: sourceIssue } = deliverySourceSelection(runs, { contractId, sourceRunId, lockSource, currentSource });
+  const canWrite=requestedCanWrite&&!sourceIssue;
   const [loadedPackages, setPackages] = useState<Bundle[]>([]),
     [loadedPackage, setSelected] = useState<Bundle>();
   const snapshotHash = sourceLocked ? eligible[0]?.syncInput?.snapshotHash : undefined;
@@ -532,7 +534,7 @@ export function DeliveryWorkbench({
     return () => clearInterval(timer);
   }, [monitor?.counts.scheduled, monitor?.counts.running]);
   const create = async () => {
-    if (!source || !eligible.some(run => run.id === source)) {
+    if (!canWrite || sourceIssue || !source || !eligible.some(run => run.id === source)) {
       setError(sourceIssue || "请先选择已通过其业务口径验证的运行。");
       return;
     }
@@ -822,11 +824,15 @@ export function DeliveryWorkbench({
           {error}
         </div>
       )}
+      {sourceIssue && <div className="delivery-error delivery-source-block" role="status">
+        <AlertCircle size={17} /><div><strong>来源执行证据未通过</strong><p>{sourceIssue}</p></div>
+        <button className="button" onClick={onBack}>查看源代码</button>
+      </div>}
       <details className="delivery-create-container" open={!selected}>
-        <summary>生成新交付包</summary>
+        <summary>{sourceIssue?"交付来源（当前仅供查看）":"生成新交付包"}</summary>
         <div className="delivery-create">
           <div>
-            <label htmlFor="delivery-source">已通过当前验证的 SQL 运行（Python包由Data Agent生成）</label>
+            <label htmlFor="delivery-source">{sourceIssue?"原 SQL 运行（仅供查看）":"已通过当前验证的 SQL 运行（Python包由Data Agent生成）"}</label>
             <select
               id="delivery-source"
               value={source}
@@ -842,7 +848,6 @@ export function DeliveryWorkbench({
                 </option>
               ))}
             </select>
-            {sourceIssue && <p role="status">{sourceIssue}</p>}
           </div>
           <div>
             <label htmlFor="delivery-name">交付名称</label>
@@ -1226,7 +1231,7 @@ export function DeliveryWorkbench({
                       ? (releaseLabels[selectedRelease.status] ?? "已有发布记录")
                       : "发布到本机调度器"}
                   </button>
-                  {(fund || syncInput) && selectedRelease?.status === "ACTIVE_LOCAL" && <button className="button" disabled={!canWrite || !!busy} onClick={stopScopedRelease}>
+                  {(fund || syncInput) && selectedRelease?.status === "ACTIVE_LOCAL" && <button className="button" disabled={!requestedCanWrite || !!busy} onClick={stopScopedRelease}>
                     <Square size={15} />停止后续批次
                   </button>}
                 </div>
@@ -1323,7 +1328,7 @@ export function DeliveryWorkbench({
                       <button
                         className="button rollback"
                         onClick={() => rollback(selectedRelease, rollbackTarget)}
-                        disabled={!canWrite || !!busy}
+                        disabled={!requestedCanWrite || !!busy}
                       >
                         <RotateCcw size={15} />
                         回滚到 {rollbackTarget.id.slice(0, 8)}

@@ -37,6 +37,7 @@ const source = (name = "客户资产 T+1") => {
       status: "SUCCEEDED",
       engine: "Apache Spark",
       engineVersion: "3.5.7",
+      mainSqlExecuted: true,
       validation: {
         passed: true,
         contractId: validationContractId,
