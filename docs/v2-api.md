@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## 原包输入证明导出（2026-11-19，本机）
+
+新增 GET `/delivery/packages/:id/input-evidence?packageDigest=<SHA256>`，沿用原包所有权并要求回环，只接受唯一完整摘要。协议shuduo-sync-input-evidence/v1，最多3MiB、五类白名单记录和原快照，不包含原CSV/文件路径或全库；只读且不准备制品。CLI/MCP与GUI共用回执，离线 `--input-only --input-evidence` 与两库模式互斥。见[完整说明](input-evidence-export.md)。
+
 ## 完整持仓目标快照输入（2026-11-19，本机）
 
 新增 GET `/development/synced-positions/materialized` 及 `/:taskId/:runId`，只读候选与确切快照，沿用回环及工程师权限，额外查询拒绝。新 selection.kind=SYNC_MATERIALIZED_HOLDINGS_V1，目标/模式/批次/两个摘要固定，显式变更另需代号和状态摘要；零行可选。POST `/agent/tasks` 共用该选择并重新核对冻结，CLI/MCP 同契约。旧选择及交付摘要不变；完整说明见[输入契约](materialized-agent-input.md)。

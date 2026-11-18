@@ -67,6 +67,7 @@ export const V2_OPERATIONS = Object.freeze([
   "delivery_package_list",
   "delivery_package_detail",
   "delivery_package_create",
+  "delivery_input_evidence",
   "delivery_schedule_preview",
   "trading_calendar_list",
   "trading_calendar_detail",

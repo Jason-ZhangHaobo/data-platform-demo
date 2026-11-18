@@ -32,6 +32,7 @@ import type {PublicationSelector} from "./publication-selection";
 import {validServiceSourceBinding,serviceSourceKey,serviceSourceScope,serviceEvidencePath,returnedPublicationMatches,localAgentPublicationPath} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
 import type {PublishedReportSource} from "./published-report-read";
+const InputEvidencePanel = lazy(async () => ({default:(await import("./InputEvidencePanel")).InputEvidencePanel}));
 const FrozenSchedulePanel = lazy(async () => ({default:(await import("./FrozenSchedulePanel")).FrozenSchedulePanel}));
 const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
 const AgentBatchArchivePanel = lazy(async () => ({default:(await import("./AgentBatchArchivePanel")).AgentBatchArchivePanel}));
@@ -471,6 +472,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           clarification:frozen.clarification,humanClarified:frozen.humanClarified,directAutonomousEligible:frozen.directAutonomousEligible,clarificationOriginTaskId:frozen.clarificationOriginTaskId,
           attempts:[{attempt:frozen.attempt,revisionId:frozen.revisionId,model:frozen.model}]}}/>;})()}
         {workflow.package && <Suspense fallback={<p role="status">正在读取原包调度说明…</p>}><FrozenSchedulePanel key={workflow.package.digest} api={api} packageId={workflow.package.id} packageDigest={workflow.package.digest} current={current}/></Suspense>}
+        {workflow.package && Boolean((workflow.package.manifest as {source?:{syncInput?:unknown}})?.source?.syncInput) && <Suspense fallback={<p role="status">正在加载原包输入证明…</p>}><InputEvidencePanel key={workflow.package.digest} api={api} packageId={workflow.package.id} packageDigest={workflow.package.digest} current={current}/></Suspense>}
         {workflow.package && <DeliveryFilePreview key={workflow.package.digest} bundle={workflow.package} current={current} onDownload={download} />}
         {workflow.verification && <><p className={fileVerified ? "passed" : ""}>文件演练：{fileVerified ? (fund?"主 SQL、测试 SQL 与登记基金断言通过":"主SQL、测试SQL与五场景回归全部通过") : workflow.verification.status} · {workflow.verification.engine} {workflow.verification.engineVersion}</p>
           <dl className="delivery-review-source" aria-label="交付演练来源"><dt>文件演练编号</dt><dd>{workflow.verification.id}</dd><dt>源代码版本</dt><dd>{delivery?.sourceRevisionId ?? "未确认"}</dd><dt>源运行批次</dt><dd>{delivery?.sourceRunId ?? "未确认"}</dd></dl>
