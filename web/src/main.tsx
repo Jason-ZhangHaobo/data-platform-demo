@@ -1785,6 +1785,7 @@ function App() {
                 api={api}
                 runs={runs}
                 sourceRunId={deliverySourceId || undefined}
+                calendarEnabled={localWorkbench}
                 canWrite={Boolean(canWrite)}
                 onBack={() => setNav("development")}
               />

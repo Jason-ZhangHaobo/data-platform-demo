@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## 交易日历与交付版本（2026-11-19，本机）
+
+新增GET `/calendars`、`/calendars/:id`、`/calendars/:id/resolve?date=YYYY-MM-DD&calendarDigest=SHA256`，仅本机开发回环。POST `/delivery/packages`可带精确两字段`calendarSelection:{calendarId,calendarDigest}`；同幂等编号不能换市场版本。预检不写、不计算，CLI／MCP共用同一契约。`calendar.json` v2仍受原包校验及登记版本核对，旧v1保持。见[完整边界](securities-trading-calendar.md)。
+
 ## 质量规则编辑、基准版本与回读（2026-11-19）
 
 POST `/quality/rules/:id/versions`和`/run`可携带expectedVersionId；格式错422 QUALITY_VERSION_BASIS_INVALID，当前已变化409 QUALITY_RULE_VERSION_CHANGED，不新增版本或执行检测。旧调用可省略。版本写返回versionWrite.versionId/replayed，创建版本存basedOnVersionId，另有后续版本时仍识别原保存版本。

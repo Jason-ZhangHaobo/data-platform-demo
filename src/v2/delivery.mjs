@@ -1,4 +1,5 @@
 import {outputContractForContext,verifyOutputRows} from './output-contracts.mjs';
+import {registeredDeliveryCalendar,validateRegisteredDeliveryCalendar} from './trading-calendar.mjs';
 import {distributionDeliveryBinding,createDistributionTestSql,validateDistributionDelivery} from './distribution-delivery.mjs';
 import { isFundContext, fundRehearsalAt } from "./fund-contexts.mjs";
 import { createFundTestSql, fundAgentAttributionKind, fundAgentDeliveryAttribution, fundDeliveryBinding, fundDevelopmentBinding, fundValidationMatches, validateFundDelivery, verifiedFundRun } from "./fund-delivery.mjs";
@@ -106,6 +107,7 @@ export function createDeliveryPackage({
   developmentReference,
   manualAuthor = false,
   syncContext,
+  calendarSelection,
 }) {
   const syncInput = agent?.syncInput || revision?.syncInput || run?.syncInput
     ? syncSqlDeliverySource({ agent, run, revision }) : undefined;
@@ -183,14 +185,15 @@ export function createDeliveryPackage({
   if (!context) throw fail("输入上下文不存在");
   const requirements=frozenSqlRequirements({agent: syncInput?.developmentMode === "MANUAL" ? undefined : agent,run,revision});
   if(distribution&&revision.source==='LIVE_MODEL'&&!requirements)throw fail("分布Agent交付缺少当前版本的冻结需求依据");
-  const calendar = {
+  if(calendarSelection!==undefined&&run.isolation==='FUNCTION_PROCESS')throw fail('公告日历选择当前仅在本机新交付中支持');
+  const calendar = calendarSelection===undefined ? {
     schema: "shuduo-calendar/v1",
     kind: "SYNTHETIC_DEMO",
     timezone: "Asia/Shanghai",
     range: { start: "2026-09-10", end: "2026-09-14" },
     tradingDays: ["2026-09-10", "2026-09-11", "2026-09-14"],
     notice: "仅验证样例 T+1 关系，不是交易所官方日历；范围外拒绝推断。",
-  };
+  } : registeredDeliveryCalendar(calendarSelection);
   const nodes = [
     { id: "execute", kind: "spark_sql", file: "main.sql", dependsOn: [] },
     {
@@ -573,6 +576,7 @@ const isDate = (value) =>
   !Number.isNaN(Date.parse(value + "T00:00:00Z")) &&
   new Date(value + "T00:00:00Z").toISOString().slice(0, 10) === value;
 export function validateCalendar(calendar) {
+  if(calendar?.schema==='shuduo-calendar/v2'){validateRegisteredDeliveryCalendar(calendar);return;}
   if (
     !keysExactly(calendar, [
       "schema",
@@ -601,6 +605,7 @@ export function validateCalendar(calendar) {
     throw fail("样例交易日历无效");
 }
 export function resolveDeliverySchedule(plan, scheduledFor) {
+  if(plan.calendar?.schema==='shuduo-calendar/v2')validateRegisteredDeliveryCalendar(plan.calendar);
   if (
     typeof scheduledFor !== "string" ||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$/.test(scheduledFor)
@@ -611,7 +616,7 @@ export function resolveDeliverySchedule(plan, scheduledFor) {
   if (!isDate(day) || time !== plan.schedule.at)
     throw fail("演练时间必须落在配置的09:00调度时刻");
   if (day < plan.calendar.range.start || day > plan.calendar.range.end)
-    throw fail("超出样例日历范围，不能推断真实交易日");
+    throw fail(plan.calendar.schema==='shuduo-calendar/v2'?"超出登记日历覆盖范围，不能推断交易日":"超出样例日历范围，不能推断真实交易日");
   const index = plan.calendar.tradingDays.indexOf(day);
   if (index === -1)
     return { eligible: false, reason: "NON_TRADING_DAY", scheduledFor };

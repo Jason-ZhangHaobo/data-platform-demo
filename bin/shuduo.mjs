@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {readTradingCalendars,readTradingCalendarVersion,readTradingDay} from '../src/v2/trading-calendar-client.mjs';
 import {readQualityVersionRequest,qualityVersionRequestPath} from '../src/v2/quality-version-request.mjs';
 import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
 import {readSyncSqlArchives,readArchivedSyncedPositions} from '../src/v2/sync-sql-output-schema-client.mjs';
@@ -148,7 +149,10 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo release-runs list
   shuduo delivery packages
   shuduo delivery show --id PACKAGE_ID
-  shuduo delivery create --source-run-id RUN_ID --name "客户资产 T+1"
+  shuduo calendars list
+  shuduo calendars show --id CALENDAR_ID
+  shuduo calendars resolve --id CALENDAR_ID --date YYYY-MM-DD [--digest SHA256]
+  shuduo delivery create --source-run-id RUN_ID --name "客户资产 T+1" [--calendar-id ID --calendar-digest SHA256]
   shuduo delivery verify --id PACKAGE_ID --scheduled-for 2026-09-11T09:00:00+08:00
   shuduo delivery verifications
   shuduo delivery verification --id VERIFICATION_ID
@@ -910,14 +914,20 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         `/delivery/packages/${encodeURIComponent(required(parsed.options, "id"))}`,
       );
-    else if (resource === "delivery" && action === "create")
+    else if(resource==='calendars'&&action==='list')result=await readTradingCalendars(client);
+    else if(resource==='calendars'&&action==='show')result=await readTradingCalendarVersion(client,required(parsed.options,'id'));
+    else if(resource==='calendars'&&action==='resolve')result=await readTradingDay(client,{calendarId:required(parsed.options,'id'),date:required(parsed.options,'date'),calendarDigest:parsed.options.digest});
+    else if (resource === "delivery" && action === "create") {
+      if((parsed.options.calendar_id!==undefined)!==(parsed.options.calendar_digest!==undefined))throw Error("--calendar-id与--calendar-digest须同时提供");
       result = await client.request("/delivery/packages", {
         method: "POST",
         body: {
           sourceRunId: required(parsed.options, "source_run_id"),
           name: required(parsed.options, "name"),
+          ...(parsed.options.calendar_id===undefined?{}:{calendarSelection:{calendarId:parsed.options.calendar_id,calendarDigest:parsed.options.calendar_digest}}),
         },
       });
+    }
     else if (resource === "delivery" && action === "verify")
       result = await client.request(
         `/delivery/packages/${encodeURIComponent(required(parsed.options, "id"))}/verify`,

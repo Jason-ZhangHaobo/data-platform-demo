@@ -1,0 +1,7 @@
+const id=value=>typeof value==='string'&&/^[a-z0-9-]{1,80}$/.test(value);
+const sha=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+export function calendarPath(calendarId){if(!id(calendarId))throw Error('请使用已登记的日历编号');return '/calendars/'+calendarId;}
+export function calendarResolutionPath({calendarId,date,calendarDigest}){if(typeof date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(date)||calendarDigest!==undefined&&!sha(calendarDigest))throw Error('请使用有效日期和日历摘要');return calendarPath(calendarId)+'/resolve?date='+encodeURIComponent(date)+(calendarDigest===undefined?'':'&calendarDigest='+calendarDigest);}
+export async function readTradingCalendars(client){const result=await client.request('/calendars');if(!Array.isArray(result)||!result.every(item=>id(item?.id)&&sha(item.digest)&&item.timezone==='Asia/Shanghai'))throw Error('日历目录读取未确认');return result;}
+export async function readTradingCalendarVersion(client,calendarId){const result=await client.request(calendarPath(calendarId));if(result?.id!==calendarId||!sha(result.digest)||!Array.isArray(result.tradingDays))throw Error('日历版本读取未确认');return result;}
+export async function readTradingDay(client,input){const result=await client.request(calendarResolutionPath(input));if(result?.protocol!=='shuduo-calendar-resolution/v1'||result.readOnly!==true||result.calendarId!==input.calendarId||result.date!==input.date||input.calendarDigest!==undefined&&result.calendarDigest!==input.calendarDigest)throw Error('交易日预检与所选版本不一致');return result;}

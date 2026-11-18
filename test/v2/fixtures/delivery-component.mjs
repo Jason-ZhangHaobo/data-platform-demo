@@ -6,6 +6,7 @@ import ts from 'typescript';
 async function componentUrl(name) {
   const file = new URL(`../../../web/src/${name}.tsx`, import.meta.url);
   let source = ts.transpileModule(readFileSync(file, 'utf8'), {compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+  source = source.replace(/(\bfrom\s*)'([^']+)'/g, (_match, prefix, specifier) => prefix + JSON.stringify(specifier));
   for (const dependency of ['react', 'react/jsx-runtime', 'lucide-react']) source = source.replaceAll(`from "${dependency}"`, `from ${JSON.stringify(import.meta.resolve(dependency))}`);
   source = source.replaceAll('from "../../src/v2/fund-contexts.mjs"', `from ${JSON.stringify(new URL('../../../src/v2/fund-contexts.mjs', import.meta.url).href)}`);
   source = source.replaceAll('from "./delivery-presentation"', `from ${JSON.stringify(new URL('../../../web/src/delivery-presentation.ts', import.meta.url).href)}`);
@@ -14,8 +15,9 @@ async function componentUrl(name) {
   source = source.replaceAll('from "../../src/v2/sync-sql-output-schema-client.mjs"', `from ${JSON.stringify(new URL('../../../src/v2/sync-sql-output-schema-client.mjs', import.meta.url).href)}`);
   for (const dependency of ['agent-delivery-evidence-read','service-source-binding','service-consumption-scope'])
     source = source.replaceAll(`from "./${dependency}"`, `from ${JSON.stringify(new URL(`../../../web/src/${dependency}.ts`,import.meta.url).href)}`);
+  source = source.replaceAll('from "../../src/v2/trading-calendar-client.mjs"', `from ${JSON.stringify(new URL('../../../src/v2/trading-calendar-client.mjs', import.meta.url).href)}`);
   source = source.replace('import "./sync-output-schema.css";', '');
-  if (name === 'DeliveryWorkbench') for (const child of ['SyncOutputSchemaDetails','LocalSyncBatchConsumption'])
+  if (name === 'DeliveryWorkbench') for (const child of ['SyncOutputSchemaDetails','LocalSyncBatchConsumption','TradingCalendarPanel'])
     source = source.replace(`from "./${child}"`, `from ${JSON.stringify(await componentUrl(child))}`);
   return `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 }
