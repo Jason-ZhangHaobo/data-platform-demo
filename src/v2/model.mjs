@@ -810,6 +810,7 @@ export async function generateQualityPlan(
       code: rule.code,
       assetId: rule.assetId,
       health: rule.health,
+      currentInputStatus: rule.currentInputStatus,
       currentVersion: rule.currentVersion,
       latestRun: rule.latestRun,
     })),
@@ -854,7 +855,7 @@ export async function generateQualityPlan(
           {
             role: "system",
             content:
-              "你是证券数据质量助手。只基于给定字段元数据和聚合质量结果生成一条规则草稿。不得读取或复述业务行、虚构资产/字段、执行规则、解除告警或改变规则。规则代码使用未出现的小写英文标识。不要输出推理过程。",
+              "你是证券数据质量助手。只基于给定字段元数据和聚合质量结果生成一条规则草稿。不得读取或复述业务行、虚构资产/字段、执行规则、解除告警或改变规则。health为STALE或UNCONFIRMED、或currentInputStatus非MATCHED时，latestRun仅是原检测历史，不能声称当前数据已通过；历史复检不作为当前检测。规则代码使用未出现的小写英文标识。不要输出推理过程。",
           },
           { role: "user", content: prompt },
         ],

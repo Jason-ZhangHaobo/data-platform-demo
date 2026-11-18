@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## 当前质量证据与时效（2026-11-19）
+
+既有质量详情/list/overview新增sourceFreshness，health可为STALE（当前数据待检测）；总览增加stale/unconfirmed计数。新实际run保存inputRowsHash/evaluatedAt，时效非空通过含validUntil。读取比较当前输入，不创建run或改写告警/历史；CLI/MCP共用原接口。Agent currentInputStatus与按lastRunId读取的latestRun随聚合上下文发送，见[状态定义](quality-current-evidence.md)。
+
 ## 质量检测的确切归档来源（2026-11-19，本机）
 
 POST `/quality/rules/:id/run`可带sourceSelection（kind、taskId、runId、metadataVersionId、snapshotHash五项）及必需expectedVersionId，请求键须UUID；原当前表无来源响应保持。GET `/quality/rules/:id/archive-inputs`列候选，GET `/quality/rules/:id/run-requests/:UUID`回读确切运行及原规则版本。历史结果不更新当前健康或恢复，未知顶层来源字段422；版本/摘要/损坏拒绝不回退。CLI／MCP共用[完整契约](quality-archive-input.md)。
