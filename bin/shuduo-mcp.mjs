@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {prepareAgentCalendar,agentDeliveryWorkflowPath,agentCalendarRequestWorkflowPath} from '../src/v2/agent-calendar-client.mjs';
 import {readPackageInputCheck} from '../src/v2/package-input-check-client.mjs';
+import {readNativeSyncReview} from '../src/v2/native-sync-review-client.mjs';
 import {readInputEvidence} from '../src/v2/input-evidence-client.mjs';
 import {csvChangeConfig,csvChangeRequestId} from '../src/v2/csv-changelog-client.mjs';
 import {qualityRunBody,qualityArchiveInputsPath,qualityRunRequestPath} from '../src/v2/quality-input-client.mjs';
@@ -172,6 +173,7 @@ const tools = [
   { name: "release_runs_list", description: "列出真实调度发布批次及验证证据。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_list", description: "列出交付包摘要、源代码版本和发布状态，不返回文件正文。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_detail", description: "读取指定不可变交付包、文件与可信摘要。", inputSchema: { type: "object", properties: { packageId: { type: "string" } }, required: ["packageId"] } },
+  {name:'agent_sync_review_preflight',description:'只读核对本机原生冻结持仓的确切交付、八文件、成功演练、本人审阅和两批测试范围；不创建批准、不运行计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:publicationIdSchema,deliveryId:publicationIdSchema,packageId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema},required:['taskId','deliveryId','packageId','packageDigest','verificationId']},annotations:{readOnlyHint:true}},
   {name:'delivery_input_check',description:'只读核验确切原包的登记CSV字节、冻结输入和原目标，不计算SQL/模型、不读取当前源替代，不审阅或发布。',inputSchema:{type:'object',additionalProperties:false,properties:{packageId:{type:'string'},packageDigest:{type:'string'}},required:['packageId','packageDigest']},annotations:{readOnlyHint:true}},
   {name:'delivery_input_evidence',description:'只读导出确切原包的最小输入证明，含所选持仓和必要来源记录；不含原CSV或全库，不计算、不审批、不发布。',inputSchema:{type:'object',additionalProperties:false,properties:{packageId:{type:'string'},packageDigest:{type:'string'}},required:['packageId','packageDigest']},annotations:{readOnlyHint:true}},
   {name:'delivery_schedule_preview',description:'只读核对确切冻结包的调度日、T+1业务日、原日历覆盖与依赖，不计算、不审批、不发布。',inputSchema:{type:'object',properties:{packageId:{type:'string'},packageDigest:{type:'string'},scheduledFor:{type:'string'}},required:['packageId','packageDigest']},annotations:{readOnlyHint:true}},
@@ -580,6 +582,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(
       `/delivery/packages/${encodeURIComponent(args.packageId)}`,
     );
+  if(name==='agent_sync_review_preflight')return readNativeSyncReview(client,args);
   if(name==='delivery_input_check')return readPackageInputCheck(client,args);
   if(name==='delivery_input_evidence')return readInputEvidence(client,args);
   if(name==='delivery_schedule_preview')return readFrozenSchedule(client,args);

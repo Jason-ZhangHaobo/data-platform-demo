@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {prepareAgentCalendar,agentDeliveryWorkflowPath,agentCalendarRequestWorkflowPath} from '../src/v2/agent-calendar-client.mjs';
 import {readPackageInputCheck} from '../src/v2/package-input-check-client.mjs';
+import {readNativeSyncReview} from '../src/v2/native-sync-review-client.mjs';
 import {readInputEvidence} from '../src/v2/input-evidence-client.mjs';
 import {csvChangeConfig,csvChangeRequestId} from '../src/v2/csv-changelog-client.mjs';
 import {qualityRunBody,qualityArchiveInputsPath,qualityRunRequestPath} from '../src/v2/quality-input-client.mjs';
@@ -130,6 +131,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services task-evidence [--task-id AGENT_TASK_ID | --manual-delivery-task-id MANUAL_DELIVERY_ID] --package-digest SHA256 [--release-id RELEASE_ID [--batch-id BATCH_ID] [--call-id-digest SHA256]]
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-calendar --id TASK_ID --source-file SOURCE_JSON --calendar-id ID --calendar-digest SHA256 --request-id UUID --confirm
+  shuduo agent sync-review-preflight --id TASK_ID --delivery-id UUID --package-id UUID --package-digest SHA256 --verification-id UUID
   shuduo agent workflow --id TASK_ID --delivery-id DELIVERY_ID
   shuduo agent workflow --id TASK_ID --preparation-request-id UUID
   shuduo agent prepare-delivery --id AGENT_TASK_ID
@@ -942,6 +944,11 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         `/delivery/packages/${encodeURIComponent(required(parsed.options, "id"))}`,
       );
+    else if(resource==='agent'&&action==='sync-review-preflight'){
+      const allowed=new Set(['id','delivery_id','package_id','package_digest','verification_id','base_url','help']),seen=new Set();
+      if(parsed.positionals.length!==2)throw Error('审阅预检不接受额外参数');for(const token of argv.filter(v=>v.startsWith('--'))){const k=token.slice(2).replaceAll('-','_');if(!allowed.has(k)||seen.has(k))throw Error('审阅预检含未知或重复参数');seen.add(k);}
+      result=await readNativeSyncReview(client,{taskId:required(parsed.options,'id'),deliveryId:required(parsed.options,'delivery_id'),packageId:required(parsed.options,'package_id'),packageDigest:required(parsed.options,'package_digest'),verificationId:required(parsed.options,'verification_id')});
+    }
     else if(resource==='delivery'&&action==='input-check')result=await readPackageInputCheck(client,{packageId:required(parsed.options,'id'),packageDigest:required(parsed.options,'package_digest')});
     else if(resource==='delivery'&&action==='input-evidence')result=await readInputEvidence(client,{packageId:required(parsed.options,'id'),packageDigest:required(parsed.options,'package_digest')});
     else if(resource==='delivery'&&action==='schedule-preview')result=await readFrozenSchedule(client,{packageId:required(parsed.options,'id'),packageDigest:required(parsed.options,'package_digest'),scheduledFor:parsed.options.scheduled_for});
