@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {prepareAgentCalendar,agentDeliveryWorkflowPath,agentCalendarRequestWorkflowPath} from '../src/v2/agent-calendar-client.mjs';
 import {readPackageInputCheck} from '../src/v2/package-input-check-client.mjs';
 import {readInputEvidence} from '../src/v2/input-evidence-client.mjs';
 import {csvChangeConfig,csvChangeRequestId} from '../src/v2/csv-changelog-client.mjs';
@@ -140,7 +141,7 @@ const tools = [
   { name: "agent_review_evidence", description: "读取指定云端交付的已保存待审阅证据。", inputSchema: { type: "object", additionalProperties:false,
     properties: {taskId:{type:"string",format:"uuid"},deliveryId:{type:"string",format:"uuid"},requestSha256:{type:"string",pattern:"^[a-f0-9]{64}$"}},
     required:["taskId","deliveryId","requestSha256"] } },
-  {name:'agent_development_workflow',description:'读取指定任务的核验与文件。人工辅助来源须指定sourceKind=MANUAL及sourceRunId，读取不计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},sourceKind:{enum:['AGENT','MANUAL']},sourceRunId:{type:'string',format:'uuid'}},required:['taskId'],allOf:[{if:{properties:{sourceKind:{const:'MANUAL'}},required:['sourceKind']},then:{required:['sourceRunId']}}]}},
+  {name:'agent_development_workflow',description:'读取指定任务的核验与文件。人工辅助来源须指定sourceKind=MANUAL及sourceRunId，读取不计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},sourceKind:{enum:['AGENT','MANUAL']},sourceRunId:{type:'string',format:'uuid'},deliveryTaskId:{type:'string',format:'uuid'},preparationRequestId:{type:'string',format:'uuid'}},required:['taskId'],allOf:[{if:{properties:{sourceKind:{const:'MANUAL'}},required:['sourceKind']},then:{required:['sourceRunId']}}]}},
   { name: "agent_request_lookup",description:"按当前创建者与原幂等请求编号找回Agent任务；只读，不重发需求或调用模型。",inputSchema:{type:"object",additionalProperties:false,properties:{requestId:{type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"}},required:["requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},
   { name: "agent_execution_evidence",description:"按原创建请求编号读取已保存的模型用量、Spark阶段及通过核验的版本。",inputSchema:{type:"object",additionalProperties:false,properties:{requestId:publicationIdSchema},required:["requestId"]},annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false}},
   { name: "agent_publication_detail", description: "按来源、包摘要及演练读取云端测试发布，不创建计算。MANUAL必须提供sourceRunId、packageDigest、verificationId；已知releaseId时一并绑定，不选择其他历史包。执行者来自会话。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties},required:["taskId"],allOf:[manualPublicationCondition(false)]} },
@@ -153,6 +154,7 @@ const tools = [
     dependentRequired:{rehearsal:["confirm"],confirm:["rehearsal"],dispatchInBackground:["rehearsal","confirm"]} } },
   { name: "fund_delivery_receipt_recheck", description: "核对本机基金交付的原签名演练回执。仅在证据吻合时恢复原交付状态，不运行模型或 Spark。", inputSchema: { type: "object", additionalProperties: false, properties: { deliveryTaskId: { type: "string", format: "uuid" }, expectedVersion: { type: "integer", minimum: 1 } }, required: ["deliveryTaskId", "expectedVersion"] } },
   { name: "agent_delivery_list", description: "列出代码Agent的后台交付准备、不可变包与文件演练结果。", inputSchema: { type: "object", properties: { sourceAgentTaskId: { type: "string" } } } },
+  {name:'agent_delivery_calendar_prepare',description:'确认后为本机原生SQL的确切来源与日历准备或回读交付；同源同日历不重复演练，不复用其他日历包或批准。未知结果查原requestId。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:publicationIdSchema,source:{type:'object',additionalProperties:false,properties:{revisionId:publicationIdSchema,revisionHash:publicationProperties.packageDigest,runId:publicationIdSchema,requirementBinding:{type:'object',additionalProperties:false,properties:{protocol:{const:'shuduo-sql-requirements/v1'},taskId:publicationIdSchema,basisDigest:publicationProperties.packageDigest,reportDigest:publicationProperties.packageDigest},required:['protocol','taskId','basisDigest','reportDigest']}},required:['revisionId','revisionHash','runId']},calendarSelection:{type:'object',additionalProperties:false,properties:{calendarId:{type:'string'},calendarDigest:publicationProperties.packageDigest},required:['calendarId','calendarDigest']},requestId:publicationIdSchema,confirm:{const:true}},required:['taskId','source','calendarSelection','requestId','confirm']}},
   {name:'agent_delivery_prepare',description:'准备已核验版本的交付文件；人工辅助版本须指定MANUAL、原运行和稳定requestId并明确confirm，沿用人工流程；不审批或发布。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},sourceKind:{enum:['AGENT','MANUAL']},sourceRunId:{type:'string',format:'uuid'},requestId:{type:'string',format:'uuid'},confirm:{const:true},
     expectedSource:{type:'object',additionalProperties:false,properties:{revisionId:publicationIdSchema,revisionHash:publicationProperties.packageDigest,runId:publicationIdSchema,
       requirementBinding:{type:'object',additionalProperties:false,properties:{protocol:{const:'shuduo-sql-requirements/v1'},taskId:publicationIdSchema,
@@ -470,9 +472,13 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(agentReviewEvidencePath(args));
   if (name === "agent_execution_evidence")
     return client.request(agentExecutionEvidencePath(args.requestId));
+  if(name==='agent_delivery_prepare'&&['calendarSelection','calendarId','calendarDigest'].some(k=>Object.hasOwn(args,k)))throw Error('日历选择请使用agent_delivery_calendar_prepare，不会按默认日历提交');
   if(['agent_development_workflow','agent_delivery_prepare'].includes(name)&&!(name==='agent_delivery_prepare'&&args.expectedSource!==undefined)&&args.sourceKind!=='MANUAL'&&['sourceRunId','requestId','confirm'].some(k=>Object.hasOwn(args,k)))throw Error('人工辅助参数必须显式选择MANUAL来源');
-  if (name === "agent_development_workflow")
+  if(name==='agent_delivery_calendar_prepare')return prepareAgentCalendar(client,args);
+  if (name === "agent_development_workflow") {
+    if(args.deliveryTaskId!==undefined||args.preparationRequestId!==undefined){if(args.sourceKind==='MANUAL'||args.sourceRunId!==undefined||args.deliveryTaskId!==undefined&&args.preparationRequestId!==undefined)throw Error('指定交付不能混用人工来源');return client.request(args.preparationRequestId!==undefined?agentCalendarRequestWorkflowPath(args.taskId,args.preparationRequestId):agentDeliveryWorkflowPath(args.taskId,args.deliveryTaskId));}
     return args.sourceKind==='MANUAL'?readManualDeliveryWorkflow(client,args):client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/workflow`);
+  }
   if(name==='agent_context_derive')return createContextDerivedTask(client,args);
   if(name==="agent_request_lookup"){
     if(!/^[A-Za-z0-9_-]{1,100}$/.test(args.requestId??""))throw Error("原请求编号格式不合法");
