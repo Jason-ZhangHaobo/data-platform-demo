@@ -1,5 +1,7 @@
 import {readAgentCalendarPreparation,localAgentCalendarSource,assertAgentCalendarSource,agentCalendarMatches,agentCalendarScheduledFor} from './agent-calendar-preparation.mjs';
 import {checkRegisteredPackageInput} from './package-input-check.mjs';
+import {nativeSyncReviewPreflight} from './native-sync-review.mjs';
+import {nativeSyncReviewPath} from './native-sync-review-client.mjs';
 import {buildInputEvidence} from './input-evidence.mjs';
 import {changeHash} from './csv-changelog.mjs';
 import {createQualityArchiveSource,qualityArchiveSelection} from './quality-source.mjs';
@@ -6382,6 +6384,20 @@ export function createV2Server(options = {}) {
             durationMs: verification.durationMs, error: verification.error, finishedAt: verification.finishedAt} : undefined,
           publication: {available: Boolean(privatePublicationConfig && cloudPublication), scope: "PRIVATE_CLOUD_TEST", sourceKind: "MANUAL", sourceRunId: source.run.id,
             agentIndependentE2E: false, reason: privatePublicationConfig && cloudPublication ? "审阅此人工版本的确切包与成功演练后，可创建两个受控云端测试批次；人工来源保留，原开发、参考和费用记录不变。" : bundle?"当前人工辅助交付记录已保留；云端调度驱动尚未配置，发布需在确切包的有效权限范围内进行。":"先生成并演练当前版本的交付文件；云端调度驱动尚未配置，不代表已经发布。"}});
+      }
+      const syncReviewPath=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/sync-review-preflight$/);
+      if(method==='GET'&&syncReviewPath){
+        requireSyncSqlLocal(req);
+        const input={taskId:syncReviewPath[1],...Object.fromEntries(url.searchParams)};
+        try{nativeSyncReviewPath(input);}catch{throw fail(422,'审阅预检须指定原任务、交付、包摘要和演练编号');}
+        if(url.searchParams.size!==4)throw fail(422,'审阅预检参数不可重复或省略');
+        const agent=get('agent',input.taskId);requireDurableAgentOwner(agent,req);
+        const bundle=get('delivery_package',input.packageId),verification=get('delivery_verification',input.verificationId);
+        requireDeliveryEvidence('delivery_package',bundle);requireDeliveryEvidence('delivery_verification',verification);
+        if(bundle.digest!==input.packageDigest)throw fail(409,'审阅预检原包摘要已变化');
+        validateAnyDeliveryPackage(bundle);
+        return json(res,200,nativeSyncReviewPreflight({store,project:PROJECT,actor:workspaceReadActor(req),agent,
+          delivery:store.get('agent_delivery_task',input.deliveryId,PROJECT),bundle,verification,schedulerEnabled:releaseSchedulerMode==='LOCAL_TIMER'}));
       }
       if (method === "GET" && /^\/api\/v2\/agent\/tasks\/[a-f0-9-]+\/review-evidence$/.test(path)) {
         const selection = parseAgentReviewEvidencePath(req.url);

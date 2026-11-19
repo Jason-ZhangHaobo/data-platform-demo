@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## 原生持仓审阅预检
+
+`GET /agent/tasks/:taskId/sync-review-preflight`严格指定唯一`deliveryId/packageId/packageDigest/verificationId`，原作者/本机/原生来源/代码/冻结输入/成功演练一致才返回。GUI、`agent sync-review-preflight`与MCP`agent_sync_review_preflight`共享校验；不创建批准或计算，未同意范围与本人文件审阅分开。见[契约及恢复](native-sync-review.md)。
+
 ## 本机Agent登记日历交付（2026-11-19）
 
 原workflow对符合范围的本人来源新增calendarPreparation；POST原prepare-delivery新增本机限定calendarSelection+expectedSource及稳定请求UUID，云端原正文不扩展。任务/幂等/包回读绑定日历，GET workflow可用唯一deliveryId或requestId回读本机原记录；NOT_FOUND不带无关包。GUI/CLI/MCP同契约，见[原请求与命令](agent-calendar-delivery.md)。
