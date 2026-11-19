@@ -61,6 +61,7 @@ export const V2_OPERATIONS = Object.freeze([
   "agent_journey",
   "agent_delivery_list",
   "agent_delivery_prepare",
+  "agent_delivery_calendar_prepare",
   "agent_delivery_detail",
   "agent_delivery_cancel",
   "release_runs_list",

@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## 本机Agent登记日历交付（2026-11-19）
+
+原workflow对符合范围的本人来源新增calendarPreparation；POST原prepare-delivery新增本机限定calendarSelection+expectedSource及稳定请求UUID，云端原正文不扩展。任务/幂等/包回读绑定日历，GET workflow可用唯一deliveryId或requestId回读本机原记录；NOT_FOUND不带无关包。GUI/CLI/MCP同契约，见[原请求与命令](agent-calendar-delivery.md)。
+
 ## 原包直接输入核验（2026-11-19，本机）
 
 新增 GET `/delivery/packages/:id/input-check?packageDigest=<SHA256>`，共享原包所有权/回环边界与唯一完整摘要。后端只读取包绑定的登记CSV，版本/元数据/字节失配或文件不可读拒绝，错误不含文件路径；协议shuduo-package-input-check/v1，范围LOCAL_SAVED_INPUT_ONLY。GUI/API/CLI/MCP同结果，不调用模型/Spark、不写业务或批准。见[用法](package-input-check.md)。

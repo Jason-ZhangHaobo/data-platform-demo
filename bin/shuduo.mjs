@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {prepareAgentCalendar,agentDeliveryWorkflowPath,agentCalendarRequestWorkflowPath} from '../src/v2/agent-calendar-client.mjs';
 import {readPackageInputCheck} from '../src/v2/package-input-check-client.mjs';
 import {readInputEvidence} from '../src/v2/input-evidence-client.mjs';
 import {csvChangeConfig,csvChangeRequestId} from '../src/v2/csv-changelog-client.mjs';
@@ -128,6 +129,9 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
     从原成功版本创建独立任务，可能执行模型与Spark；原批准不继承。未知结果先用 agent request 查询，不换请求编号重试。
   shuduo services task-evidence [--task-id AGENT_TASK_ID | --manual-delivery-task-id MANUAL_DELIVERY_ID] --package-digest SHA256 [--release-id RELEASE_ID [--batch-id BATCH_ID] [--call-id-digest SHA256]]
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
+  shuduo agent prepare-calendar --id TASK_ID --source-file SOURCE_JSON --calendar-id ID --calendar-digest SHA256 --request-id UUID --confirm
+  shuduo agent workflow --id TASK_ID --delivery-id DELIVERY_ID
+  shuduo agent workflow --id TASK_ID --preparation-request-id UUID
   shuduo agent prepare-delivery --id AGENT_TASK_ID
   shuduo agent prepare-delivery --id TASK_ID --source-file SOURCE_JSON --request-id UUID --confirm
   shuduo agent prepare-delivery --id TASK_ID --source-kind MANUAL --source-run-id RUN_ID --request-id UUID --confirm
@@ -803,6 +807,15 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result=await createContextDerivedTask(client,{derivation:{kind:'REGISTERED_CONTEXT_CHANGE',taskId:required(parsed.options,'task_id'),revisionId:required(parsed.options,'revision_id'),runId:required(parsed.options,'run_id'),revisionHash:required(parsed.options,'revision_hash')},
         contextId:required(parsed.options,'context'),message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
     }
+    else if(resource==='agent'&&action==='prepare-calendar'){
+      const allowed=new Set(['id','source_file','calendar_id','calendar_digest','request_id','confirm','base_url','help']),seen=new Set();
+      if(parsed.positionals.length!==2)throw Error('日历交付命令包含额外参数');for(const token of argv.filter(v=>v.startsWith('--'))){const k=token.slice(2).replaceAll('-','_');if(!allowed.has(k)||seen.has(k))throw Error('日历交付含未知或重复参数');seen.add(k);}
+      const file=required(parsed.options,'source_file'),stat=lstatSync(file);if(!stat.isFile()||stat.size<1||stat.size>16384)throw Error('请选择小于16KiB的原来源JSON');
+      result=await prepareAgentCalendar(client,{taskId:required(parsed.options,'id'),source:jsonObject(readFileSync(file,'utf8'),'原交付来源'),calendarSelection:{calendarId:required(parsed.options,'calendar_id'),calendarDigest:required(parsed.options,'calendar_digest')},requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
+    }
+    else if(resource==='agent'&&action==='workflow'&&(parsed.options.delivery_id!==undefined||parsed.options.preparation_request_id!==undefined)){
+      const allowed=new Set(['id','delivery_id','preparation_request_id','base_url','help']);if(Object.keys(parsed.options).some(k=>!allowed.has(k))||parsed.options.delivery_id!==undefined&&parsed.options.preparation_request_id!==undefined)throw Error('指定交付不能混用其他来源');result=await client.request(parsed.options.preparation_request_id!==undefined?agentCalendarRequestWorkflowPath(required(parsed.options,'id'),required(parsed.options,'preparation_request_id')):agentDeliveryWorkflowPath(required(parsed.options,'id'),required(parsed.options,'delivery_id')));
+    }
     else if (resource === "agent" && action === "workflow") {
       validateManualDeliveryFlags(parsed,argv);
       result = parsed.options.source_kind==='MANUAL'?await readManualDeliveryWorkflow(client,{taskId:required(parsed.options,'id'),sourceRunId:required(parsed.options,'source_run_id')}):await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
@@ -850,6 +863,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         {method:"POST",body:{expectedSource},idempotencyKey:requestId});
     }
     else if (resource === "agent" && action === "prepare-delivery") {
+      if(parsed.options.calendar_id!==undefined||parsed.options.calendar_digest!==undefined)throw Error('日历选择请使用agent prepare-calendar，不会按默认日历提交');
       validateManualDeliveryFlags(parsed,argv);
       result = parsed.options.source_kind==='MANUAL'?await prepareManualDelivery(client,{taskId:required(parsed.options,'id'),sourceRunId:required(parsed.options,'source_run_id'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm}):await client.request(
         `/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/prepare-delivery`,

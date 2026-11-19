@@ -1,3 +1,6 @@
+import {agentCalendarBody,checkedCalendarDelivery,agentDeliveryWorkflowPath,agentCalendarRequestWorkflowPath,pendingAgentCalendar,agentCalendarLocation,selectedAgentDelivery,agentDeliveryLocation,leaveAgentCalendarRecovery} from '../../src/v2/agent-calendar-client.mjs';
+import type {CalendarPending} from '../../src/v2/agent-calendar-client.mjs';
+import type {CalendarSelection} from '../../src/v2/trading-calendar-client.mjs';
 import {LocalDistributionControls} from './LocalDistributionControls';
 import {LocalDistributionReview} from './LocalDistributionReview';
 import {distributionMetadataForContext} from '../../src/v2/output-contract-metadata.mjs';
@@ -32,6 +35,7 @@ import type {PublicationSelector} from "./publication-selection";
 import {validServiceSourceBinding,serviceSourceKey,serviceSourceScope,serviceEvidencePath,returnedPublicationMatches,localAgentPublicationPath} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
 import type {PublishedReportSource} from "./published-report-read";
+const AgentCalendarPreparation = lazy(async () => ({default:(await import("./AgentCalendarPreparation")).AgentCalendarPreparation}));
 const InputEvidencePanel = lazy(async () => ({default:(await import("./InputEvidencePanel")).InputEvidencePanel}));
 const FrozenSchedulePanel = lazy(async () => ({default:(await import("./FrozenSchedulePanel")).FrozenSchedulePanel}));
 const AgentReportPanel = lazy(async () => ({ default: (await import("./AgentReportPanel")).AgentReportPanel }));
@@ -52,11 +56,13 @@ function download(name: string, value: unknown) {
   try { document.body.appendChild(link); link.click(); }
   finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
 }
-export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, expectedSourceBinding,codeBusy, onOpenServices, handoffBlocked = false, manual = false, assisted = false, pinPreparation = false, fundPreparation }: { api: Api; taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; expectedSourceBinding?:ServiceSourceBinding; codeBusy: boolean; onOpenServices?: (source:ServiceSourceBinding) => void; handoffBlocked?: boolean; manual?: boolean;assisted?:boolean;pinPreparation?:boolean;fundPreparation?:FundExecutionBinding }) {
+export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, expectedSourceBinding,codeBusy, onOpenServices, handoffBlocked = false, manual = false, assisted = false, pinPreparation = false, localCalendarEntry=false, fundPreparation }: { api: Api; taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; expectedSourceBinding?:ServiceSourceBinding; codeBusy: boolean; onOpenServices?: (source:ServiceSourceBinding) => void; handoffBlocked?: boolean; manual?: boolean;assisted?:boolean;pinPreparation?:boolean;localCalendarEntry?:boolean;fundPreparation?:FundExecutionBinding }) {
   const fund = fundPreparation !== undefined;
   const workflowSourceKey=JSON.stringify([taskId,manual,assisted,runId,revisionId,contextId,expectedSourceBinding,fundPreparation]);
   const [workflowRecord,setWorkflowRecord]=useState<{key:string;value:Workflow}>();
   const workflow=workflowRecord?.key===workflowSourceKey?workflowRecord.value:undefined;
+  const [calendarSelection,setCalendarSelection]=useState<CalendarSelection>(),[calendarRequestMissing,setCalendarRequestMissing]=useState(false);
+  const pendingCalendar=useRef<CalendarPending|undefined>(undefined),selectedDelivery=useRef<string|undefined>(undefined);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [auto, setAuto] = useState(false);
   const [unconfirmedPreparation,setUnconfirmedPreparation]=useState<string>(),preparationFlight=useRef(false);
   const preparationUnknown=unconfirmedPreparation===workflowSourceKey;
@@ -87,7 +93,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const evidenceError=evidenceRecord?.key===workflowSourceKey?evidenceRecord.error??"":"";
   const consumptionEpoch=useRef(0),workflowEpoch=useRef(0);
   const activeConsumptionSource=useRef("");
-  const epoch = useRef(0), alive = useRef(true), requestKey = useRef(crypto.randomUUID());
+  const epoch = useRef(0), alive = useRef(true), requestKey = useRef<string>(crypto.randomUUID());
   const activeTask = useRef(taskId); activeTask.current = taskId;
   const activeWorkflowSource=useRef(workflowSourceKey);activeWorkflowSource.current=workflowSourceKey;
   const load = async () => {
@@ -96,18 +102,24 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     setEvidenceRecord({key:workflowSourceKey,state:"LOADING"});
     try {
       let original: Delivery | undefined;
-      if (pinPreparation && preparationUnknown) {
+      const restored=localCalendarEntry?(pendingCalendar.current??pendingAgentCalendar(location.href,id)):undefined;
+      if(restored){pendingCalendar.current=restored;requestKey.current=restored.requestId;setUnconfirmedPreparation(workflowSourceKey);setCalendarSelection(restored.body.calendarSelection);}
+      let localDeliveryId=localCalendarEntry?(selectedDelivery.current??(revisionId&&runId?selectedAgentDelivery(location.href,id,{revisionId,runId}):undefined)):undefined;
+      if ((pinPreparation && preparationUnknown)||restored) {
         try { original=await api<Delivery>(`/agent/tasks/${id}/delivery-requests/${requestKey.current}`); }
-        catch (cause) { if ((cause as {status?:number}).status !== 404) throw cause; }
+        catch (cause) { if ((cause as {status?:number}).status !== 404) throw cause;if(restored)setCalendarRequestMissing(true); }
         if (!active()) return;
+        if(restored&&original){checkedCalendarDelivery(original,{taskId:id,source:restored.body.expectedSource,calendarSelection:restored.body.calendarSelection});localDeliveryId=original.id;}
       }
-      const raw = await api<unknown>(manual ? `/runs/${runId}/workflow` : `/agent/tasks/${id}/workflow`);
+      const raw = await api<unknown>(manual ? `/runs/${runId}/workflow` : localCalendarEntry?(restored&&!original?agentCalendarRequestWorkflowPath(id,restored.requestId):agentDeliveryWorkflowPath(id,localDeliveryId)):`/agent/tasks/${id}/workflow`);
       if(!active())return;
-      const value=await checkedAgentWorkflow(raw,{taskId,contextId,revisionId,runId,manual,assisted,expectedSourceBinding,fundPreparation});
+      const value=await checkedAgentWorkflow(raw,{taskId,contextId,revisionId,runId,manual,assisted,expectedSourceBinding,fundPreparation,...(restored&&!original?{preparationRequestId:restored.requestId}:localDeliveryId?{deliveryId:localDeliveryId}:{})});
       if (!active()) return;
       if (original && (!original.id || value.delivery?.id !== original.id || original.sourceRevisionId !== revisionId || original.sourceRunId !== runId))
         throw Error("原交付请求已登记，当前读取的版本或批次与原交付不同。请先核对原任务来源。");
       setWorkflowRecord({key:workflowSourceKey,value});setEvidenceRecord({key:workflowSourceKey,state:"READY"});
+      if(restored&&!original)return value;
+      if(restored&&original){selectedDelivery.current=original.id;history.replaceState(null,'',agentDeliveryLocation(location.href,id,original.id,{revisionId:restored.body.expectedSource.revisionId,runId:restored.body.expectedSource.runId}));pendingCalendar.current=undefined;setCalendarSelection(undefined);setCalendarRequestMissing(false);}
       if(preparationUnknown)setError("");
       setUnconfirmedPreparation(old=>old===workflowSourceKey?undefined:old);
       return value;
@@ -129,7 +141,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     }catch(e){if(alive.current&&activeTask.current===id&&activeConsumptionSource.current===key&&sequence===consumptionEpoch.current){setConsumptionRead("ERROR");setConsumptionError(`消费对照尚未确认：${(e as Error).message}。不会新增调用或凭证。`);}}
   };
   useEffect(() => { alive.current = true; return () => { alive.current = false; epoch.current++; }; }, []);
-  useEffect(() => { if (!codeBusy) void load().catch(() => {}); }, [workflowSourceKey, codeBusy]);
+  useEffect(() => { if (!codeBusy) void load().catch(() => {}); }, [workflowSourceKey, codeBusy,localCalendarEntry]);
   const report = workflow?.report, delivery = workflow?.delivery;
   const fundReview=workflow?.verification?.fundReview;
   const rehearsalDigest=fundReview?.status==="READY"?fundReview.digest:undefined;
@@ -148,7 +160,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   activePublicationKey.current=publicationKey;
   const publicationReady=Boolean(publicationKey)&&publicationReadKey===publicationKey&&publicationRead==="READY";
   const journey = agentJourney({ taskId, contextId, fund, revisionId, runId, dirty, evidenceReadable: evidenceRead === "READY", publicationReadable: publicationReady, monitoringVerified: fund&&cloud ? publication?.monitoringVerified===true : undefined, report, delivery, bundle: workflow?.package, verification: workflow?.verification, release, batches, alerts: publication?.alerts, events: publication?.events, consumption:consumptionRead==="READY"?consumption:undefined });
-  const current = journey.current;
+  const current = journey.current && !preparationUnknown;
   const firstBatch = batches.find(batch => batch.sequence === 1);
   const secondBatch = batches.find(batch => batch.sequence === 2);
   const monitorHref = cloud && !manual && publicationReady && journey.publicationCurrent && !dirty && !handoffBlocked &&
@@ -210,7 +222,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   useEffect(() => { if (!canWrite || publicationTarget) { epoch.current++;setAuto(false); } }, [canWrite,publicationTarget?.taskId]);
   useEffect(()=>{setConsumption(undefined);setConsumptionError("");setConsumptionRead("LOADING");void readConsumption();return()=>{consumptionEpoch.current++;};},[serviceHandoffKey,cloud]);
   useEffect(() => { setReview(false); setConfirmed({});setFundPreflight(undefined);setCloudPreflight(undefined); }, [publicationKey,workflow?.package?.digest, workflow?.verification?.id, fileReview?.id, rehearsalDigest, dirty, current, publicationRead]);
-  useEffect(() => { requestKey.current = crypto.randomUUID(); }, [taskId, revisionId, runId]);
+  useEffect(() => { let restored:CalendarPending|undefined;try{restored=localCalendarEntry?pendingAgentCalendar(location.href,taskId):undefined;}catch{}requestKey.current=restored?.requestId??crypto.randomUUID();selectedDelivery.current=undefined;pendingCalendar.current=restored;setCalendarSelection(restored?.body.calendarSelection); }, [taskId, revisionId, runId,localCalendarEntry]);
   async function drive(start: Delivery, snapshot = workflow, reconcileOnce = false) {
     if (!canWrite || publicationTarget) return;
     if(preparationUnknown)return;
@@ -234,16 +246,22 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     } catch (e) { if (token === epoch.current) setError((e as Error).message + " 记录已保留，请刷新核对后继续同一交付。"); }
     finally { if (token === epoch.current) setAuto(false); }
   }
-  async function prepare() {
-    if (!canPrepare || !canWrite || publicationTarget || working || preparationUnknown || preparationFlight.current) return;
+  async function prepare(retryOriginal=false) {
+    if (!canPrepare || !canWrite || publicationTarget || working || (preparationUnknown&&!retryOriginal) || preparationFlight.current) return;
+    if(retryOriginal&&(!localCalendarEntry||!calendarRequestMissing||!pendingCalendar.current))return;
     const source=workflowSourceKey,current=()=>alive.current&&activeWorkflowSource.current===source;preparationFlight.current=true;setBusy(true);setError("");
     try {
-      const body = pinPreparation ? {expectedSource:workflow?.preparationSource} : {};
+      const chosen=localCalendarEntry?(calendarSelection??workflow?.delivery?.calendarSelection):undefined;
+      const localBody=retryOriginal?pendingCalendar.current?.body:chosen&&workflow?.calendarPreparation?agentCalendarBody({taskId,source:workflow.calendarPreparation.source,calendarSelection:chosen}):undefined;
+      if(chosen&&!localBody)throw Error('日历交付来源尚未核对');
+      if(localBody){const pending={taskId,requestId:retryOriginal?pendingCalendar.current!.requestId:requestKey.current,body:localBody};pendingCalendar.current=pending;requestKey.current=pending.requestId;history.replaceState(null,'',agentCalendarLocation(location.href,pending));}
+      const body = localBody??(pinPreparation ? {expectedSource:workflow?.preparationSource} : {});
       const started = await api<Delivery>(manual ? `/runs/${runId}/prepare-delivery` : `/agent/tasks/${taskId}/prepare-delivery`, body, { idempotencyKey: requestKey.current });
       if (!current()) return;
+      if(localBody){checkedCalendarDelivery(started,{taskId,source:localBody.expectedSource,calendarSelection:localBody.calendarSelection});selectedDelivery.current=started.id;}
       const value=await load();
       if (!value || !current()) return;
-      if (pinPreparation) {
+      if (pinPreparation||localBody) {
         const saved=value.delivery;
         if (!saved || saved.id !== started.id || saved.sourceRevisionId !== revisionId || saved.sourceRunId !== runId)
           throw Error("交付回执与已核验版本或批次不同，请核对原请求。");
@@ -440,10 +458,14 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         <button className="button" onClick={() => download("verification-report.json", report)}><Download size={14} />下载核验报告</button>
       </div>
       <div id="agent-files" className="agent-delivery-card"><div className="agent-workflow-title"><Package size={16} /><h3>调度与部署交付</h3></div><p>把当前通过核验的代码、测试、调度依赖、交易日历和部署清单固定到同一版本，再用 Spark 按文件执行一次演练。</p>
+        {localCalendarEntry&&workflow.calendarPreparation&&<Suspense fallback={<p role="status">正在加载新交付日历选择…</p>}><AgentCalendarPreparation api={api} businessDate={workflow.calendarPreparation.businessDate} selection={calendarSelection} disabled={!canWrite||!verified||working||preparationUnknown||Boolean(publicationTarget)} onSelect={value=>{setCalendarSelection(value);requestKey.current=crypto.randomUUID();}}/></Suspense>}
+        {calendarSelection&&localCalendarEntry&&delivery&&<button className="button primary" disabled={!canPrepare||!canWrite||working||preparationUnknown||Boolean(publicationTarget)} onClick={()=>void prepare()}>按所选日历准备或回读交付</button>}
+        {localCalendarEntry&&preparationUnknown&&pendingCalendar.current&&<p><button className="button" disabled={working} onClick={()=>{history.replaceState(null,'',leaveAgentCalendarRecovery(location.href));pendingCalendar.current=undefined;selectedDelivery.current=undefined;requestKey.current=crypto.randomUUID();setCalendarSelection(undefined);setCalendarRequestMissing(false);setUnconfirmedPreparation(undefined);void load().catch(()=>{});}}>退出本页恢复，查看当前来源</button><small>只退出本页恢复，不取消或重做服务器上的原交付。</small></p>}
+        {calendarRequestMissing&&pendingCalendar.current&&preparationUnknown&&<p role="status">原日历请求暂无回执，选择和原编号已保留。<button className="button" disabled={!canPrepare||working} onClick={()=>void prepare(true)}>按原编号重试日历交付</button></p>}
         {preparationUnknown&&<p role="status">交付准备结果待确认。<button className="button" disabled={working||evidenceRead==='LOADING'} onClick={()=>void load().catch(()=>{})}>查询原交付</button>查询只恢复原版本记录；确认前不能重新准备。</p>}
         {pinPreparation && verified && !workflow.preparationSource && !delivery && <p role="status">当前版本的交付来源待核对。请刷新原任务和运行，再准备交付。</p>}
         {!delivery && <button className="button primary" disabled={!canWrite || !canPrepare || working || preparationUnknown} onClick={() => void prepare()}><Play size={14} />{workflow.backgroundRehearsalAvailable?'生成交付文件':'生成交付并演练'}</button>}
-        {delivery && <><strong className="agent-delivery-stage">{auto && <LoaderCircle size={14} className="spin" />}{workerResult==="PENDING"?"原演练结果待核对":workerResult==="CONFIRMED"?"演练失败已确认":['FAILED','CANCELLED','INTERRUPTED'].includes(delivery.status)?deliveryStageText(delivery.stage,journey.publicationCurrent,release?.status,journey.current,delivery.status):fileReview&&!release?(current&&verified&&fileVerified&&evidenceRead==="READY"?"本机文件已审阅，不代表发布批准":"保留的文件审阅，当前待核验"):deliveryStageText(delivery.stage, journey.publicationCurrent, release?.status, journey.current,delivery.status)}</strong>{delivery.error && <p role="alert">{delivery.error}</p>}
+        {delivery && <><strong className="agent-delivery-stage">{auto && <LoaderCircle size={14} className="spin" />}{preparationUnknown?'此前交付仅供回看，新请求结果待确认':workerResult==="PENDING"?"原演练结果待核对":workerResult==="CONFIRMED"?"演练失败已确认":['FAILED','CANCELLED','INTERRUPTED'].includes(delivery.status)?deliveryStageText(delivery.stage,journey.publicationCurrent,release?.status,current,delivery.status):fileReview&&!release?(current&&verified&&fileVerified&&evidenceRead==="READY"?"本机文件已审阅，不代表发布批准":"保留的文件审阅，当前待核验"):deliveryStageText(delivery.stage, journey.publicationCurrent, release?.status, current,delivery.status)}</strong>{delivery.error && <p role="alert">{delivery.error}</p>}
           {current&&workflow.package&&delivery.status==='FAILED'&&<p role="status">原调度与部署文件已保留，演练尚未通过。可预览或下载原文件；重读记录不会重新计算，重新准备会再执行一次演练。发布仍须演练通过并审阅确切版本。</p>}
           {complete(delivery.status)&&!workerResult&&<button className="button" disabled={working||evidenceRead==='LOADING'} onClick={()=>void load().catch(()=>{})}>重读原交付记录</button>}
           {workerResult && <p role="status">{workerResult==="CONFIRMED"
@@ -474,7 +496,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
         {workflow.package && <Suspense fallback={<p role="status">正在读取原包调度说明…</p>}><FrozenSchedulePanel key={workflow.package.digest} api={api} packageId={workflow.package.id} packageDigest={workflow.package.digest} current={current}/></Suspense>}
         {workflow.package && Boolean((workflow.package.manifest as {source?:{syncInput?:unknown}})?.source?.syncInput) && <Suspense fallback={<p role="status">正在加载原包输入证明…</p>}><InputEvidencePanel key={workflow.package.digest} api={api} packageId={workflow.package.id} packageDigest={workflow.package.digest} current={current}/></Suspense>}
         {workflow.package && <DeliveryFilePreview key={workflow.package.digest} bundle={workflow.package} current={current} onDownload={download} />}
-        {workflow.verification && <><p className={fileVerified ? "passed" : ""}>文件演练：{fileVerified ? (fund?"主 SQL、测试 SQL 与登记基金断言通过":"主SQL、测试SQL与五场景回归全部通过") : workflow.verification.status} · {workflow.verification.engine} {workflow.verification.engineVersion}</p>
+        {workflow.verification && <><p className={fileVerified ? "passed" : ""}>{preparationUnknown?'历史文件演练：':'文件演练：'}{fileVerified ? (fund?"主 SQL、测试 SQL 与登记基金断言通过":"主SQL、测试SQL与五场景回归全部通过") : workflow.verification.status} · {workflow.verification.engine} {workflow.verification.engineVersion}</p>
           <dl className="delivery-review-source" aria-label="交付演练来源"><dt>文件演练编号</dt><dd>{workflow.verification.id}</dd><dt>源代码版本</dt><dd>{delivery?.sourceRevisionId ?? "未确认"}</dd><dt>源运行批次</dt><dd>{delivery?.sourceRunId ?? "未确认"}</dd></dl>
           <small>以上编号属于当前读取的交付演练，不代表已经批准或发布；未开放发布时仍可核对来源。</small>
           <button className="button" onClick={() => download(`delivery-evidence-${workflow.package?.id.slice(0,8) ?? taskId.slice(0,8)}.json`, { schema: "shuduo-delivery-evidence/v1", report: workflow.report, delivery: workflow.delivery, package: workflow.package ? { id: workflow.package.id, digest: workflow.package.digest, manifest: workflow.package.manifest } : undefined, verification: workflow.verification, publication: workflow.publication, exportedAt: new Date().toISOString() })}><Download size={14} />下载演练证据</button></>}
