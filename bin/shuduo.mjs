@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {readPackageInputCheck} from '../src/v2/package-input-check-client.mjs';
 import {readInputEvidence} from '../src/v2/input-evidence-client.mjs';
 import {csvChangeConfig,csvChangeRequestId} from '../src/v2/csv-changelog-client.mjs';
 import {qualityRunBody,qualityArchiveInputsPath,qualityRunRequestPath} from '../src/v2/quality-input-client.mjs';
@@ -159,6 +160,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo calendars show --id CALENDAR_ID
   shuduo calendars resolve --id CALENDAR_ID --date YYYY-MM-DD [--digest SHA256]
   shuduo delivery create --source-run-id RUN_ID --name "客户资产 T+1" [--calendar-id ID --calendar-digest SHA256]
+  shuduo delivery input-check --id PACKAGE_ID --package-digest SHA256
   shuduo delivery input-evidence --id PACKAGE_ID --package-digest SHA256
   shuduo delivery schedule-preview --id PACKAGE_ID --package-digest SHA256 [--scheduled-for YYYY-MM-DDT09:00:00+08:00]
   shuduo delivery verify --id PACKAGE_ID --scheduled-for 2026-09-11T09:00:00+08:00
@@ -926,6 +928,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         `/delivery/packages/${encodeURIComponent(required(parsed.options, "id"))}`,
       );
+    else if(resource==='delivery'&&action==='input-check')result=await readPackageInputCheck(client,{packageId:required(parsed.options,'id'),packageDigest:required(parsed.options,'package_digest')});
     else if(resource==='delivery'&&action==='input-evidence')result=await readInputEvidence(client,{packageId:required(parsed.options,'id'),packageDigest:required(parsed.options,'package_digest')});
     else if(resource==='delivery'&&action==='schedule-preview')result=await readFrozenSchedule(client,{packageId:required(parsed.options,'id'),packageDigest:required(parsed.options,'package_digest'),scheduledFor:parsed.options.scheduled_for});
     else if(resource==='calendars'&&action==='list')result=await readTradingCalendars(client);

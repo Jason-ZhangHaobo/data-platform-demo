@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## 原包直接输入核验（2026-11-19，本机）
+
+新增 GET `/delivery/packages/:id/input-check?packageDigest=<SHA256>`，共享原包所有权/回环边界与唯一完整摘要。后端只读取包绑定的登记CSV，版本/元数据/字节失配或文件不可读拒绝，错误不含文件路径；协议shuduo-package-input-check/v1，范围LOCAL_SAVED_INPUT_ONLY。GUI/API/CLI/MCP同结果，不调用模型/Spark、不写业务或批准。见[用法](package-input-check.md)。
+
 ## 原包输入证明导出（2026-11-19，本机）
 
 新增 GET `/delivery/packages/:id/input-evidence?packageDigest=<SHA256>`，沿用原包所有权并要求回环，只接受唯一完整摘要。协议shuduo-sync-input-evidence/v1，最多3MiB、五类白名单记录和原快照，不包含原CSV/文件路径或全库；只读且不准备制品。CLI/MCP与GUI共用回执，离线 `--input-only --input-evidence` 与两库模式互斥。见[完整说明](input-evidence-export.md)。
