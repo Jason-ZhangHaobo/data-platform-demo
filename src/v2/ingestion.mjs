@@ -1190,6 +1190,22 @@ export class IngestionManager {
     });
   }
 
+  readRegisteredCsv({sourceId,sourceRevisionId,metadataVersionId,contentHash}) {
+    const source=this.#source(sourceId),revision=this.#revision(sourceRevisionId),metadata=this.store.get('source_metadata',metadataVersionId,this.project);
+    if(source.sourceType!=='LOCAL_CSV'||revision.sourceType!=='LOCAL_CSV'||revision.sourceId!==source.id||
+        !metadata||metadata.sourceId!==source.id||metadata.revisionId!==revision.id||metadata.contentHash!==contentHash)
+      throw fail(409,'原CSV版本、元数据或摘要未核对一致','SOURCE_EVIDENCE_CHANGED');
+    let input;
+    try { input=this.#read(revision.fileName); }
+    catch(cause) {
+      const allowed=['SOURCE_FILE_NOT_FOUND','SOURCE_SYMLINK_FORBIDDEN','SOURCE_PATH_FORBIDDEN','INVALID_SOURCE_FILE','INVALID_FILE_NAME'];
+      throw fail(allowed.includes(cause.code)?(cause.status??409):409,'原登记CSV不可读取，请使用原文件离线核验',allowed.includes(cause.code)?cause.code:'SOURCE_FILE_UNAVAILABLE');
+    }
+    if(input.fileHash!==contentHash||input.bytes!==metadata.bytes||Buffer.byteLength(input.content)!==input.bytes)
+      throw fail(409,'原CSV字节已变化，请使用原文件离线核验；未采用当前版本替代','SOURCE_CHANGED');
+    return input.content;
+  }
+
   #read(name) {
     const path = this.#resolve(name),
       stat = lstatSync(path);
