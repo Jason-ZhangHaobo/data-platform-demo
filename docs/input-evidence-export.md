@@ -33,7 +33,7 @@ node scripts/verify-saved-sync-sql-lifecycle.mjs \
 - `node bin/shuduo.mjs delivery input-evidence --id <PACKAGE_UUID> --package-digest <SHA256>`：输出同一份 JSON，可保存到项目自己的受保护文件。
 - MCP 工具 `delivery_input_evidence`：只读，参数 `packageId`、`packageDigest`，不创建任务或授予权限。
 
-协议为 `shuduo-sync-input-evidence/v1`，大小上限 3 MiB。包含原包编号/摘要、来源绑定摘要、最小记录、原快照和内容摘要；原 CSV 及原文件路径不包含。GUI 读取并核对结构、范围及内容摘要后才允许下载。失败清除旧材料，切换版本不会把迟到响应当成新版本。
+协议为 `shuduo-sync-input-evidence/v1`，大小上限 3 MiB。离线原 CSV 上限与现有接入一致为 5,000,000 字节，其他文件读取上限保持。包含原包编号/摘要、来源绑定摘要、最小记录、原快照和内容摘要；原 CSV 及原文件路径不包含。GUI 读取并核对结构、范围及内容摘要后才允许下载。失败清除旧材料，切换版本不会把迟到响应当成新版本。
 
 `evidenceHash` 用于内容完整性检查，不是数字签名或不可篡改生产审计。`immutableAuditVerified:false`、`sourceCsvIncluded:false`、`fullLifecycleE2E:false` 为协议固定边界。离线检查同时使用原包内容、可信原包摘要和原 CSV；不能仅凭侧包自己声明的摘要信任未知来源文件。
 

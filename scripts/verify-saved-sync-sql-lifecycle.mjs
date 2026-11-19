@@ -41,9 +41,9 @@ try {
     db.db.exec("BEGIN");
     return db;
   };
-  const text = path => {
+  const text = (path,maxBytes=4*1024*1024) => {
     const stat = lstatSync(path);
-    if (!stat.isFile() || stat.size < 1 || stat.size > 4 * 1024 * 1024) throw invalid();
+    if (!stat.isFile() || stat.size < 1 || stat.size > maxBytes) throw invalid();
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readFileSync(path));
   };
   let readSnapshot;
@@ -55,7 +55,7 @@ try {
   }
   const originalPackage=JSON.parse(text(values['package-file']));
   const readers=evidenceFile===undefined?{store:open(MetadataStore,'metadata'),readSnapshot}:inputEvidenceReaders(JSON.parse(text(evidenceFile)),{bundle:originalPackage,project:values.project,actor:values.actor});
-  const common={...readers,project:values.project,actor:values.actor,packageDigest:values['package-digest'],csv:text(values['source-csv']),originalPackage};
+  const common={...readers,project:values.project,actor:values.actor,packageDigest:values['package-digest'],csv:text(values['source-csv'],5_000_000),originalPackage};
   const result = inputOnly?verifySavedSyncSqlPackageInput(common):await verifySavedSyncSqlLifecycle({ ...common,
     businessStore: open(BusinessQueryStore,"business-snapshots"),
     ...(consumptionOnly ? {consumptionOnly} : {reportStore:open(ReportDataStore,"report-snapshots")}),
