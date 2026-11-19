@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {inputEvidenceReaders} from '../src/v2/input-evidence.mjs';
 import { lstatSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from 'node:sqlite';
@@ -17,6 +18,7 @@ try {
     lineage: { type: "string", multiple: true, default: [] },
     "consumption-only": { type: "boolean", default: false },
     "input-only": { type: "boolean", default: false },
+    "input-evidence": { type: "string" },
     "landing-snapshots": { type: "string" },
     "verify-quality": { type: "boolean", default: false },
     "quality-receipt": { type: "string", multiple: true, default: [] },
@@ -24,9 +26,9 @@ try {
     actor: { type: "string", default: "local-engineer" },
     "test-clock-unit-ms": { type: "string", default: "1000" },
   } });
-  const consumptionOnly=values["consumption-only"],inputOnly=values['input-only'];
-  const selectedRequired=inputOnly?['metadata','source-csv','package-file','package-digest']:consumptionOnly?required.filter(key=>key!=="report-snapshots"):required;
-  if ([...selectedRequired,"project","actor"].some(key => !values[key]?.trim()) ||
+  const consumptionOnly=values["consumption-only"],inputOnly=values['input-only'],evidenceFile=values['input-evidence'];
+  const selectedRequired=inputOnly?[...(evidenceFile===undefined?['metadata']:['input-evidence']),'source-csv','package-file','package-digest']:consumptionOnly?required.filter(key=>key!=="report-snapshots"):required;
+  if (evidenceFile!==undefined&&(!inputOnly||values.metadata!==undefined||values['landing-snapshots']!==undefined)||[...selectedRequired,"project","actor"].some(key => !values[key]?.trim()) ||
       (inputOnly ? consumptionOnly || ['business-snapshots','report-snapshots','release-id','agent-request-id'].some(key=>values[key]!==undefined) || values.lineage.length>0 || values['verify-quality']
         : consumptionOnly ? values["report-snapshots"]!==undefined || values.lineage.length>0 || values["verify-quality"]
         : values.lineage.length!==2) ||
@@ -39,9 +41,9 @@ try {
     db.db.exec("BEGIN");
     return db;
   };
-  const text = path => {
+  const text = (path,maxBytes=4*1024*1024) => {
     const stat = lstatSync(path);
-    if (!stat.isFile() || stat.size < 1 || stat.size > 4 * 1024 * 1024) throw invalid();
+    if (!stat.isFile() || stat.size < 1 || stat.size > maxBytes) throw invalid();
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readFileSync(path));
   };
   let readSnapshot;
@@ -51,8 +53,9 @@ try {
     stores.push({db,close:()=>db.close()});db.exec('BEGIN');
     readSnapshot=runId=>db.prepare('SELECT * FROM landing_run_snapshots WHERE run_id=?').get(runId);
   }
-  const common={store:open(MetadataStore,'metadata'),project:values.project,actor:values.actor,
-    packageDigest:values['package-digest'],csv:text(values['source-csv']),originalPackage:JSON.parse(text(values['package-file'])),readSnapshot};
+  const originalPackage=JSON.parse(text(values['package-file']));
+  const readers=evidenceFile===undefined?{store:open(MetadataStore,'metadata'),readSnapshot}:inputEvidenceReaders(JSON.parse(text(evidenceFile)),{bundle:originalPackage,project:values.project,actor:values.actor});
+  const common={...readers,project:values.project,actor:values.actor,packageDigest:values['package-digest'],csv:text(values['source-csv'],5_000_000),originalPackage};
   const result = inputOnly?verifySavedSyncSqlPackageInput(common):await verifySavedSyncSqlLifecycle({ ...common,
     businessStore: open(BusinessQueryStore,"business-snapshots"),
     ...(consumptionOnly ? {consumptionOnly} : {reportStore:open(ReportDataStore,"report-snapshots")}),

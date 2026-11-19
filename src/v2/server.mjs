@@ -1,3 +1,4 @@
+import {buildInputEvidence} from './input-evidence.mjs';
 import {changeHash} from './csv-changelog.mjs';
 import {createQualityArchiveSource,qualityArchiveSelection} from './quality-source.mjs';
 import {frozenSchedulePreview} from './frozen-schedule-preview.mjs';
@@ -5575,7 +5576,7 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/delivery/reviews" && method === "GET")
         return json(res, 200, visibleDelivery("delivery_review"));
       const deliveryRecord = path.match(
-        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|review|approve|review-evidence|schedule-preview))?$/,
+        /^\/api\/v2\/delivery\/(packages|verifications)\/([a-f0-9-]+)(?:\/(verify|cancel|review|approve|review-evidence|schedule-preview|input-evidence))?$/,
       );
       if (deliveryRecord) {
         const kind =
@@ -5584,6 +5585,12 @@ export function createV2Server(options = {}) {
             : "delivery_verification";
         const item = get(kind, deliveryRecord[2]);
         requireDeliveryEvidence(kind, item);
+        if(method==='GET'&&kind==='delivery_package'&&deliveryRecord[3]==='input-evidence'){
+          requireSyncSqlLocal(req);
+          if(url.searchParams.size!==1||url.searchParams.getAll('packageDigest').length!==1||!(/^[a-f0-9]{64}$/).test(url.searchParams.get('packageDigest')??''))throw fail(422,'输入证明只接受确切原包摘要');
+          if(url.searchParams.get('packageDigest')!==item.digest)throw fail(409,'输入证明与所选原包版本不一致');
+          return json(res,200,buildInputEvidence({store,project:PROJECT,bundle:item,readSnapshot:id=>landingStore.db.prepare('SELECT * FROM landing_run_snapshots WHERE run_id=?').get(id)}));
+        }
         if(method==='GET'&&kind==='delivery_package'&&deliveryRecord[3]==='schedule-preview'){
           if([...url.searchParams.keys()].some(key=>!['packageDigest','scheduledFor'].includes(key))||url.searchParams.size!==new Set(url.searchParams.keys()).size)throw fail(422,'调度预检只接受原包摘要和计划时点');
           const digest=url.searchParams.get('packageDigest');
