@@ -35,6 +35,7 @@ test("workspace is lazy loaded, identity scoped and private preview is opt-in", 
 test("the workbench exposes its single business context selector before history and details", () => {
   const ui = readFileSync("web/src/AgentDevelopmentWorkbench.tsx", "utf8");
   const header = ui.slice(ui.indexOf('<header className="agent-dev-heading">'), ui.indexOf('<div className="agent-dev-grid">'));
+  assert.match(header, /<p>\{context\?\.name \?\? "证券数据开发"\}/);
   assert.match(header, /!derivationActive && <label className="agent-dev-context-picker">/);
   assert.match(header, /aria-label="Agent 验证数据" disabled=\{contextLocked\} value=\{contextId\}/);
   assert.equal(ui.match(/aria-label="Agent 验证数据"/g)?.length, 1);

@@ -757,7 +757,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       <div>
         <div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div>
         <h1>把需求交给 Agent，<span>把结果握在手里。</span></h1>
-        <p>{scopedLabels?context?.validationFamily?.name:"客户资产 T+1"} · 需求、代码与真实执行，在一个工作台完成。</p>
+        <p>{context?.name ?? "证券数据开发"} · {readOnly ? "查看已登记口径和保存的结果。" : "需求、代码与运行结果在同一页查看。"}</p>
       </div>
       <div className="agent-dev-heading-controls">
         {!derivationActive && <label className="agent-dev-context-picker">
