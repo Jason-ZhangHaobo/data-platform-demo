@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {readNativeSyncPublication,submitNativeSyncPublication} from '../src/v2/native-sync-publication-client.mjs';
 import {prepareAgentCalendar,agentDeliveryWorkflowPath,agentCalendarRequestWorkflowPath} from '../src/v2/agent-calendar-client.mjs';
 import {readPackageInputCheck} from '../src/v2/package-input-check-client.mjs';
 import {readNativeSyncReview} from '../src/v2/native-sync-review-client.mjs';
@@ -64,6 +65,7 @@ const syncConsentSchema = { type: "object", additionalProperties: false,
     scheduleSpec: distributionApprovalSchema.properties.scheduleSpec, confirmFrozenFictionalData: { const: true } },
   required: ["scope", "packageDigest", "verificationId", "snapshotHash", "businessDate", "scheduleSpec", "confirmFrozenFictionalData"] };
 const distributionRollbackSchema={type:'object',additionalProperties:false,properties:{scope:{const:'LOCAL_TEST_RELEASE'},targetPackageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},metadataHash:{type:'string',pattern:'^[a-f0-9]{64}$'},confirmFrozenFictionalData:{const:true}},required:['scope','targetPackageDigest','metadataHash','confirmFrozenFictionalData']};
+const nativeSyncReleaseRequestSchema={type:'object',additionalProperties:false,properties:Object.fromEntries(['taskId','deliveryId','packageId','verificationId','reviewId','requestId'].map(k=>[k,{type:'string',pattern:'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$'}]).concat(['packageDigest','syncRehearsalDigest'].map(k=>[k,{type:'string',pattern:'^[a-f0-9]{64}$'}]))),required:['taskId','deliveryId','packageId','verificationId','reviewId','requestId','packageDigest','syncRehearsalDigest']};
 const tools = [
   { name: "fund_preparation_submit", description: "保存指定基金交易日和固定输出字段的本机需求准备，不运行模型或 Spark。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, contextId: { type: "string" },
@@ -173,6 +175,8 @@ const tools = [
   { name: "release_runs_list", description: "列出真实调度发布批次及验证证据。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_list", description: "列出交付包摘要、源代码版本和发布状态，不返回文件正文。", inputSchema: { type: "object", properties: {} } },
   { name: "delivery_package_detail", description: "读取指定不可变交付包、文件与可信摘要。", inputSchema: { type: "object", properties: { packageId: { type: "string" } }, required: ["packageId"] } },
+  {name:'agent_sync_release_read',description:'按原请求只读核对本机批准、两批及监控，不自动激活或重跑。',inputSchema:{type:'object',additionalProperties:false,properties:{request:nativeSyncReleaseRequestSchema},required:['request']},annotations:{readOnlyHint:true}},
+  {name:'agent_sync_release',description:'明确批准后，复用原请求提交本机两批测试或继续激活原批准；未知结果先只读查询，不自动重试。',inputSchema:{type:'object',additionalProperties:false,properties:{request:nativeSyncReleaseRequestSchema,confirm:{const:true},activateOnly:{type:'boolean'}},required:['request','confirm']}},
   {name:'agent_sync_review_preflight',description:'只读核对本机原生冻结持仓的确切交付、八文件、成功演练、本人审阅和两批测试范围；不创建批准、不运行计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:publicationIdSchema,deliveryId:publicationIdSchema,packageId:publicationIdSchema,packageDigest:publicationProperties.packageDigest,verificationId:publicationIdSchema},required:['taskId','deliveryId','packageId','packageDigest','verificationId']},annotations:{readOnlyHint:true}},
   {name:'delivery_input_check',description:'只读核验确切原包的登记CSV字节、冻结输入和原目标，不计算SQL/模型、不读取当前源替代，不审阅或发布。',inputSchema:{type:'object',additionalProperties:false,properties:{packageId:{type:'string'},packageDigest:{type:'string'}},required:['packageId','packageDigest']},annotations:{readOnlyHint:true}},
   {name:'delivery_input_evidence',description:'只读导出确切原包的最小输入证明，含所选持仓和必要来源记录；不含原CSV或全库，不计算、不审批、不发布。',inputSchema:{type:'object',additionalProperties:false,properties:{packageId:{type:'string'},packageDigest:{type:'string'}},required:['packageId','packageDigest']},annotations:{readOnlyHint:true}},
@@ -582,6 +586,8 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(
       `/delivery/packages/${encodeURIComponent(args.packageId)}`,
     );
+  if(name==='agent_sync_release_read')return readNativeSyncPublication(client,args.request);
+  if(name==='agent_sync_release')return submitNativeSyncPublication(client,args.request,{confirm:args.confirm,activateOnly:args.activateOnly??false});
   if(name==='agent_sync_review_preflight')return readNativeSyncReview(client,args);
   if(name==='delivery_input_check')return readPackageInputCheck(client,args);
   if(name==='delivery_input_evidence')return readInputEvidence(client,args);

@@ -126,8 +126,7 @@ export function activateSyncSqlRelease({ store, project, bundle, plan, approval,
   return { release, replayed: result.replayed };
 }
 
-export function assertSyncSqlBatch({ bundle, plan, approval, verification, review, release, run, batches, enabled, timeUnitMs,
-  expectedStatus = "RUNNING", historical = false }) {
+export function assertSyncSqlReleasePlan({ bundle, plan, approval, verification, review, release, batches, enabled, timeUnitMs, historical = false }) {
   assertSyncSqlApproval({ bundle, plan, approval, verification, review, spec: release.scheduleSpec,
     actorId: plan.source.syncInput.actorId, enabled });
   const activated = Date.parse(release.activatedAt);
@@ -137,18 +136,23 @@ export function assertSyncSqlBatch({ bundle, plan, approval, verification, revie
       activated < Date.parse(approval.approvedAt) || activated >= Date.parse(approval.expiresAt) ||
       release.packageId !== bundle.id || release.packageDigest !== bundle.digest || release.sourceRevisionId !== plan.source.revisionId ||
       release.sourceSqlHash !== plan.source.sqlHash || !same(release.syncInput, plan.source.syncInput) ||
-      release.businessScheduledFor !== verification.scheduledFor || release.publicDeployed !== false || run.status !== expectedStatus)
+      release.businessScheduledFor !== verification.scheduledFor || release.publicDeployed !== false)
     throw invalid();
   const expected = plannedLocalRuns({ releaseId: release.id, packageId: bundle.id, packageDigest: bundle.digest,
     businessScheduledFor: release.businessScheduledFor, spec: release.scheduleSpec, nowMs: activated, timeUnitMs });
-  if (batches.length !== expected.length || !batches.some(batch => batch.id === run.id) ||
+  if (batches.length !== expected.length ||
       !expected.every(planned => batches.filter(batch => batch.sequence === planned.sequence &&
         ["releaseId", "packageId", "packageDigest", "businessScheduledFor", "scheduledTriggerAt", "triggerReason"]
           .every(key => batch[key] === planned[key]) &&
         batch.sourceRevisionId === release.sourceRevisionId && batch.snapshotHash === release.syncInput.snapshotHash &&
-        batch.publicDeployed === false).length === 1) ||
-      run.schedulerTriggered !== true || run.clockMode !== "WALL_CLOCK_TIMER" ||
-      !(Date.parse(run.triggeredAt) >= Date.parse(run.scheduledTriggerAt))) throw invalid();
+        batch.publicDeployed === false).length === 1)) throw invalid();
+}
+
+export function assertSyncSqlBatch(input) {
+  assertSyncSqlReleasePlan(input);
+  const {run,batches,expectedStatus='RUNNING'}=input;
+  if(!batches.some(batch=>batch.id===run.id)||run.status!==expectedStatus||run.schedulerTriggered!==true||
+    run.clockMode!=='WALL_CLOCK_TIMER'||!(Date.parse(run.triggeredAt)>=Date.parse(run.scheduledTriggerAt)))throw invalid();
 }
 
 export function syncSqlScheduledSchemaDetails({ store, project, run, enabled, timeUnitMs }) {

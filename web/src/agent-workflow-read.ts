@@ -145,7 +145,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
  if(pending!==undefined){if(!record(pending)||!id(pending.requestId)||!['FOUND','NOT_FOUND'].includes(String(pending.status))||p.scope!=='LOCAL_TEST_RELEASE'||(pending.status==='NOT_FOUND'?(d!==undefined||b!==undefined||v!==undefined||pending.deliveryId!==undefined||p.available!==false):!record(d)||pending.deliveryId!==d.id))throw bad();}
  if(selection.preparationRequestId!==undefined&&(!record(pending)||pending.requestId!==selection.preparationRequestId))throw bad();
  if(selection.deliveryId!==undefined&&(!id(selection.deliveryId)||!record(d)||d.id!==selection.deliveryId))throw bad();
- let signedFund=false;
+ let signedFund=false,nativeSync=false;
  if(d!==undefined){
   if(!record(d)||!id(d.id)||!Number.isSafeInteger(d.version)||Number(d.version)<1||!['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','INTERRUPTED'].includes(String(d.status))||typeof d.stage!=='string'||!d.stage||
    !['mode','error'].every(k=>optional(d[k],text))||!['packageId','verificationId'].every(k=>optional(d[k],id))||!optional(d.packageDigest,hash)||
@@ -172,6 +172,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
   if(record(d)&&d.calendarSelection!==undefined){let cal;try{cal=JSON.parse(files['calendar.json'] as string);}catch{throw bad();}const selected=d.calendarSelection as CalendarSelection;if(cal.schema!=='shuduo-calendar/v2'||cal.reference?.id!==selected.calendarId||cal.reference?.digest!==selected.calendarDigest)throw bad();}
   const attribution=source.attribution;
   signedFund=source.fundSignedExecution!==undefined;
+  nativeSync=p.scope==='LOCAL_TEST_RELEASE'&&!selection.manual&&record(source.syncInput)&&source.syncInput.agentTaskId===selection.taskId&&['LIVE_MODEL','SYNTHETIC_MODEL'].includes(String(source.syncInput.developmentMode));
   if(signedFund&&!selection.fundPreparation)throw bad();
   if (isolatedFund) {
    const origin=source.fundDevelopment;
@@ -220,7 +221,7 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
  }
  if(value.fileReview!==undefined){
   const f=value.fileReview;
-  if((!selection.fundPreparation&&!distributionMetadataForContext(r.contextId as string))||!record(f)||Object.keys(f).length!==(signedFund?8:7)||
+  if((!nativeSync&&!selection.fundPreparation&&!distributionMetadataForContext(r.contextId as string))||!record(f)||Object.keys(f).length!==(signedFund?8:7)||
    (signedFund?!hash(f.fundRehearsalDigest):f.fundRehearsalDigest!==undefined)||!id(f.id)||f.status!=='REVIEWED'||f.scope!=='LOCAL_FILE_REVIEW'||!text(f.reviewedAt)||
    !record(b)||!record(v)||f.packageId!==b.id||f.packageDigest!==b.digest||f.verificationId!==v.id||v.status!=='SUCCEEDED')throw bad();
  }

@@ -1,0 +1,10 @@
+import type{NativeSyncReviewBinding}from'./native-sync-review-client.mjs';
+export type NativeSyncPublicationRequest=NativeSyncReviewBinding&{requestId:string;reviewId:string;syncRehearsalDigest:string};
+export type NativeSyncPublication={phase:'NOT_FOUND'|'APPROVED'|'EXPIRED'|'RELEASED';binding:NativeSyncPublicationRequest;approval?:{id:string;expiresAt:string};monitor?:{releaseId:string;status:string;health:string;businessDate:string;runs:{id:string;sequence:number;status:string;scheduledTriggerAt:string;schedulerTriggered:boolean;resultUnknown:boolean;rowCount?:number;regressionCount?:number}[];monitorEventCount:number;openAlertCount:number;completed:boolean};evidenceDigest:string};
+type Client={request:(path:string,options?:{method?:string;idempotencyKey?:string;body?:unknown})=>Promise<unknown>};
+export function publicationBinding(request:NativeSyncPublicationRequest):NativeSyncReviewBinding;
+export function nativeSyncReceiptPath(request:NativeSyncPublicationRequest):string;
+export function readNativeSyncPublication(client:Client,request:NativeSyncPublicationRequest):Promise<NativeSyncPublication>;
+export function submitNativeSyncPublication(client:Client,request:NativeSyncPublicationRequest,options:{confirm:boolean;activateOnly?:boolean}):Promise<NativeSyncPublication>;
+export function nativePublicationLocation(href:string,request:NativeSyncPublicationRequest):string;
+export function pendingNativePublication(href:string,binding:NativeSyncReviewBinding):NativeSyncPublicationRequest|undefined;

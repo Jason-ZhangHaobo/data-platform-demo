@@ -31,5 +31,5 @@ export function InputEvidencePanel({api,packageId,packageDigest,current,reviewTa
    <button className="button" onClick={save}><Download size={14}/>下载输入证明 JSON</button>
    <details className="input-evidence-text"><summary>下载未生成？查看证明文本</summary><pre tabIndex={0} aria-label="原包输入证明 JSON">{JSON.stringify(value,null,2)}</pre></details></>}
   {notice&&<p role="status">{notice}</p>}
- </section>{reviewTarget&&<NativeSyncReview key={JSON.stringify(reviewTarget)} api={api} binding={{taskId:reviewTarget.taskId,deliveryId:reviewTarget.deliveryId,verificationId:reviewTarget.verificationId,packageId,packageDigest}} current={current} enabled={reviewTarget.enabled}/>}</>;
+ </section>{reviewTarget&&<NativeSyncReview key={JSON.stringify(reviewTarget)} api={api} binding={{taskId:reviewTarget.taskId,deliveryId:reviewTarget.deliveryId,verificationId:reviewTarget.verificationId,packageId,packageDigest}} current={current} enabled={reviewTarget.enabled} publicationEnabled={reviewTarget.mayPublish}/>}</>;
 }

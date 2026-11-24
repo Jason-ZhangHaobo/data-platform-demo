@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {readNativeSyncPublication,submitNativeSyncPublication} from '../src/v2/native-sync-publication-client.mjs';
 import {prepareAgentCalendar,agentDeliveryWorkflowPath,agentCalendarRequestWorkflowPath} from '../src/v2/agent-calendar-client.mjs';
 import {readPackageInputCheck} from '../src/v2/package-input-check-client.mjs';
 import {readNativeSyncReview} from '../src/v2/native-sync-review-client.mjs';
@@ -131,6 +132,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services task-evidence [--task-id AGENT_TASK_ID | --manual-delivery-task-id MANUAL_DELIVERY_ID] --package-digest SHA256 [--release-id RELEASE_ID [--batch-id BATCH_ID] [--call-id-digest SHA256]]
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
   shuduo agent prepare-calendar --id TASK_ID --source-file SOURCE_JSON --calendar-id ID --calendar-digest SHA256 --request-id UUID --confirm
+  shuduo agent sync-release-read --request-file REQUEST_JSON
+  shuduo agent sync-release --request-file REQUEST_JSON --confirm [--activate-only]
   shuduo agent sync-review-preflight --id TASK_ID --delivery-id UUID --package-id UUID --package-digest SHA256 --verification-id UUID
   shuduo agent workflow --id TASK_ID --delivery-id DELIVERY_ID
   shuduo agent workflow --id TASK_ID --preparation-request-id UUID
@@ -944,6 +947,11 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       result = await client.request(
         `/delivery/packages/${encodeURIComponent(required(parsed.options, "id"))}`,
       );
+    else if(resource==='agent'&&['sync-release-read','sync-release'].includes(action)){
+      const allowed=new Set(['request_file','confirm','activate_only','base_url','help']),seen=new Set();if(parsed.positionals.length!==2)throw Error('本机发布命令含额外参数');for(const token of argv.filter(v=>v.startsWith('--'))){const k=token.slice(2).replaceAll('-','_');if(!allowed.has(k)||seen.has(k))throw Error('本机发布含未知或重复参数');seen.add(k);}
+      const file=required(parsed.options,'request_file'),stat=lstatSync(file);if(!stat.isFile()||stat.size<1||stat.size>16384)throw Error('请选择小于16KiB的确切发布请求JSON');const request=jsonObject(readFileSync(file,'utf8'),'本机发布请求');
+      if(action==='sync-release-read'){if(parsed.options.confirm!==undefined||parsed.options.activate_only!==undefined)throw Error('只读回读不接受发布参数');result=await readNativeSyncPublication(client,request);}else result=await submitNativeSyncPublication(client,request,{confirm:parsed.options.confirm===true,activateOnly:parsed.options.activate_only===true});
+    }
     else if(resource==='agent'&&action==='sync-review-preflight'){
       const allowed=new Set(['id','delivery_id','package_id','package_digest','verification_id','base_url','help']),seen=new Set();
       if(parsed.positionals.length!==2)throw Error('审阅预检不接受额外参数');for(const token of argv.filter(v=>v.startsWith('--'))){const k=token.slice(2).replaceAll('-','_');if(!allowed.has(k)||seen.has(k))throw Error('审阅预检含未知或重复参数');seen.add(k);}
