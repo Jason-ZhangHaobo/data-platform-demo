@@ -140,6 +140,8 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const historyFlight=useRef<Promise<void>|undefined>(undefined),startupStarted=useRef(false);
   const restoredManual=useRef<string|undefined>(undefined),draftRef=useRef(draft);draftRef.current=draft;
   const epoch = useRef(0), selectedId = useRef<string | undefined>(undefined);
+  const taskRead = useRef<{ epoch: number } | undefined>(undefined);
+  const [taskReadFailure, setTaskReadFailure] = useState<{ id: string; message: string }>();
   const alive = useRef(true), manualRequest = useRef<{ revisionId: string; key: string } | undefined>(initialManual?.revisionId&&initialManual.requestKey?{revisionId:initialManual.revisionId,key:initialManual.requestKey}:undefined);
   const [pendingAgentKey,setPendingAgentKey]=useState<string|undefined>(()=>typeof window==="undefined"?undefined:agentSubmissionRequest(window.location.href));
   const scopeEditable=mayEditScopedTask(taskOnly,targetTaskId,task?.id,originTaskId);
@@ -331,7 +333,14 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     if (initialContextId && contextId === initialContextId && contexts.length && !contexts.some(item => item.id === contextId))
       setContextId(contexts[0].id);
   }, [initialContextId, contextId, availableContexts]);
-  useEffect(() => { if (readOnly || !originalCanWrite || publicationTarget) { epoch.current++; setAutomatic(false); setBusy(false); } }, [readOnly, originalCanWrite, publicationTarget?.taskId]);
+  useEffect(() => {
+    if (!readOnly && originalCanWrite && !publicationTarget) return;
+    const previousEpoch = epoch.current++;
+    setAutomatic(false);
+    // A same-session permission recheck pauses writes but can finish the exact GET.
+    if (taskRead.current?.epoch === previousEpoch) taskRead.current.epoch = epoch.current;
+    else setBusy(false);
+  }, [readOnly, originalCanWrite, publicationTarget?.taskId]);
   // The parent mounts this view only after identity/capabilities are confirmed.
   // Initialize its read/write epoch above before starting the first task read.
   // Context or worker readiness updates must not refetch the same task/history.
@@ -359,6 +368,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   }, [run?.id, run?.status, automatic]);
   const rememberSelection = (id?: string) => {
     selectedId.current = id;
+    setTaskReadFailure(undefined);
     const url = clearContextDerivation(location.href);
     if (url.searchParams.get("task") !== id) clearAgentArchivePin(url);
     if (id) url.searchParams.set("task", id); else url.searchParams.delete("task");
@@ -384,20 +394,24 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     if (manualUnconfirmed || pendingSaveKey || pendingAgentKey) { setNotice("请先确认原提交、保存或运行请求，再切换任务；不会丢弃未确认请求。"); return; }
     const keepDraft = selectedId.current === id && dirty;
     if (protectDraft && dirty && !keepDraft && !confirm("当前代码有未保存修改，是否放弃修改并切换任务？")) return;
-    const selectionEpoch = ++epoch.current; setAutomatic(false); setBusy(true); setError(""); setRetryConsent(false);
-    rememberSelection(id);
-    let readingRun=false;
+    const selection = { epoch: ++epoch.current };
+    taskRead.current = selection;
+    const isCurrent = () => alive.current && taskRead.current === selection && epoch.current === selection.epoch;
+    setAutomatic(false); setBusy(true); setError(""); setRetryConsent(false); setTaskReadFailure(undefined);
+    let readingRun = false;
     try {
       const current = checkedAgentTask<Task>(await api<unknown>(`/agent/tasks/${id}`),id);
-      if (!alive.current || selectedId.current !== id || epoch.current !== selectionEpoch) return;
+      if (!isCurrent()) return;
       if(expectedSourceBinding){
         if(!expectedSourceBinding.revisionId||!expectedSourceBinding.runId)throw Error("返程链接缺少原代码版本或运行编号，未采用最新版本。");
         const [saved,actual,sources]=await Promise.all([api<SavedRevision>(`/revisions/${expectedSourceBinding.revisionId}`),api<Run>(`/runs/${expectedSourceBinding.runId}`),api<unknown>(serviceSourcesPath(expectedSourceBinding))]);
-        if(!alive.current||selectedId.current!==id||epoch.current!==selectionEpoch)return;
+        if(!isCurrent())return;
         if(!agentReturnSourceMatches(expectedSourceBinding,current,actual,saved,sources))throw Error("原任务的代码、运行或发布来源已变化，无法恢复此冻结版本；未展示最新版本冒充原证据。");
+        rememberSelection(id);
         accept(current);setContextId(current.contextId);setDraft(saved.sql);setBaseline(saved.sql);setBaselineRevisionId(saved.id);setDiff(false);setRun(actual);setReturnSourceError("");
         setNotice("已核对原生 Agent、代码、运行和确切发布来源；当前返程只读，不创建人工版本或启动计算。");return;
       }
+      rememberSelection(id);
       const checkingBackground = pendingBackground.current.delete(id);
       accept(current); setContextId(current.contextId);
       if (checkingBackground) {
@@ -409,10 +423,20 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       setRun(undefined);readingRun=Boolean(current.runId);
       if(readingRun)setRunRead({state:"LOADING"});
       const actual = current.runId ? checkedAgentRun<Run>(await api<unknown>(`/runs/${current.runId}`),current) : undefined;
-      if (!alive.current || selectedId.current !== id || epoch.current !== selectionEpoch) return;
+      if (!isCurrent() || selectedId.current !== id) return;
       setRun(actual);
       if (!checkingBackground) setNotice(keepDraft ? "服务端状态已刷新，未保存的编辑已保留；运行结果仍对应原代码版本。" : "已读取原任务及其保存记录。");
-    } catch (e) { if (alive.current && epoch.current === selectionEpoch){if(sourceReturnActive){setReturnSourceError((e as Error).message);setTask(undefined);setRun(undefined);setDraft("");setBaseline("");setBaselineRevisionId(undefined);}else {if(readingRun)setRunRead({state:"ERROR",message:(e as Error).message});setError((e as Error).message);}} } finally { if (alive.current && epoch.current === selectionEpoch) setBusy(false); }
+    } catch (e) {
+      if (!isCurrent()) return;
+      const message = e instanceof Error ? e.message : "暂时无法读取，请重试。";
+      if (sourceReturnActive) {
+        setReturnSourceError(message); setTask(undefined); setRun(undefined); setDraft(""); setBaseline(""); setBaselineRevisionId(undefined);
+      } else if (readingRun) setRunRead({ state: "ERROR", message });
+      else setTaskReadFailure({ id, message });
+    } finally {
+      if (isCurrent()) setBusy(false);
+      if (taskRead.current === selection) taskRead.current = undefined;
+    }
   }
   async function delegateSavedTask() {
     if (!task || !backgroundAction || backgroundDisabled || pendingBackground.current.has(task.id)) return;
@@ -762,6 +786,11 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     {loading ? <div className="agent-dev-notice" role="status"><LoaderCircle size={14} className="spin" />正在连接服务并读取项目上下文…</div> : !ready && !publicationTarget && <div className="agent-dev-alert">{readinessReason??"模型或执行环境尚未就绪；历史任务仍可查询。"}</div>}
     {!loading && ready && !originalCanWrite && !readOnly && <div className="agent-dev-alert">需要有数据开发权限的账号才能提交任务。<button className="button" onClick={onLogin}>登录 / 查看账号</button></div>}
     {error && <div className="agent-dev-alert error" role="alert">{error}<button onClick={() => setError("")} aria-label="关闭错误提示">×</button></div>}
+    {taskReadFailure && <div className="agent-dev-alert error agent-dev-task-read-error" role="alert">
+      <div><strong>任务 {taskReadFailure.id.slice(0,8)} 暂未读取</strong><p>{taskReadFailure.message}</p>
+        {task && task.id !== taskReadFailure.id && <small>当前显示已读取的任务 {task.id.slice(0,8)}。</small>}</div>
+      <button className="button" disabled={working} onClick={() => void selectTask(taskReadFailure.id)}>重新读取此任务</button>
+    </div>}
     {notice && <div className="agent-dev-notice" role="status">{notice}</div>}
     {derivationActive&&<AgentContextDerivation draft={derivationDraft} source={derivationSource} state={derivationState} error={derivationError} reason={derivationSubmitReason} contexts={contexts}
       busy={working} pending={Boolean(pendingAgentKey)} locked={Boolean(contextDerivationAccessReason({...derivationAccess,working:false,pending:false,dirty:false}))}
