@@ -10,6 +10,7 @@ import {readFrozenSchedule} from '../src/v2/frozen-schedule-client.mjs';
 import {readTradingCalendars,readTradingCalendarVersion,readTradingDay} from '../src/v2/trading-calendar-client.mjs';
 import {readQualityVersionRequest,qualityVersionRequestPath} from '../src/v2/quality-version-request.mjs';
 import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
+import { readSyncRunRequest, settleSyncRunRequest } from "../src/v2/sync-run-request.mjs";
 import {readSyncSqlArchives,readArchivedSyncedPositions,readMaterializedSyncSqlArchives,readMaterializedSyncedPositions} from '../src/v2/sync-sql-output-schema-client.mjs';
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/delivery-preparation-request.mjs";
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
@@ -238,6 +239,17 @@ const tools = [
   { name: "sync_recovery_save", description: "明确审阅后保存恢复草稿。保留原失败记录，执行需另行确认。", inputSchema: {type:"object",additionalProperties:false,properties:{taskId:{type:"string"},basisDigest:{type:"string"},confirm:{const:true},mapping:{type:"object",additionalProperties:{type:"string"}}},required:["taskId","basisDigest","confirm","mapping"]} },
   { name: "sync_task_create", description: "创建FULL、INCREMENTAL_UPSERT或本机CSV显式变更草稿；mapping使用源到目标字段，keyFields与watermarkField使用目标字段。可同时提供sourceRevisionId和metadataVersionId绑定已核对版本。", inputSchema: { type: "object", properties: { name: { type: "string" }, sourceId: { type: "string" }, sourceRevisionId: { type: "string" }, metadataVersionId: { type: "string" }, targetTable: { type: "string" }, mode: { type: "string", enum: ["FULL", "INCREMENTAL_UPSERT","INCREMENTAL_CHANGELOG"] }, mapping: { type: "object", additionalProperties: { type: "string" } }, keyFields: { type: "array", items: { type: "string" } }, watermarkField: { type: "string" },requestId:{type:"string"},changeConfig:{type:"object",properties:{epochId:{type:"string"},operationField:{type:"string"},sequenceField:{type:"string"}},required:["epochId","operationField","sequenceField"],additionalProperties:false} }, required: ["name", "sourceId", "targetTable", "mode", "mapping", "keyFields"] } },
   { name: "sync_task_run", description: "实际执行离线同步并返回读写、摘要和水位。", inputSchema: { type: "object", properties: { taskId: { type: "string" },requestId:{type:"string"} }, required: ["taskId"] } },
+  { name: "sync_run_request", description: "按原任务和执行请求编号只读查询离线同步回执，保留落地已提交、结果待核对及终态信息。", inputSchema: {
+    type: "object", additionalProperties: false,
+    properties: { taskId: { type: "string", format: "uuid" }, requestId: { type: "string", minLength: 1, maxLength: 100 } },
+    required: ["taskId", "requestId"],
+  }, annotations: { readOnlyHint: true } },
+  { name: "sync_run_request_settle", description: "确认已核验原落地回执后补记运行状态，使用原运行编号和回执摘要，不重新落地。", inputSchema: {
+    type: "object", additionalProperties: false,
+    properties: { taskId: { type: "string", format: "uuid" }, requestId: { type: "string", minLength: 1, maxLength: 100 },
+      runId: { type: "string", format: "uuid" }, receiptHash: { type: "string", pattern: "^[a-f0-9]{64}$" }, confirm: { const: true } },
+    required: ["taskId", "requestId", "runId", "receiptHash", "confirm"],
+  }, annotations: { readOnlyHint: false } },
   { name:'sync_run_snapshot', description:'只读核对指定任务原成功批次的落地快照，每次重算摘要；本机虚构数据范围。未留存或损坏不以当前表代替，不触发计算。',inputSchema:{type:'object',properties:{taskId:{type:'string'},runId:{type:'string'},page:{type:'integer',minimum:1},pageSize:{type:'integer',minimum:1,maximum:100}},required:['taskId','runId'],additionalProperties:false} },
   { name: "sync_target_rows", description: "读取本机合成落地区目标行，用于验收。", inputSchema: { type: "object", properties: { targetTable: { type: "string" } }, required: ["targetTable"] } },
   { name: "ingestion_plan_list", description: "列出受治理的同步Agent方案。", inputSchema: { type: "object", properties: {} } },
@@ -760,6 +772,17 @@ async function callTool(name, args = {}, client=defaultClient) {
       `/sources/${encodeURIComponent(args.sourceId)}/revisions`,
       { method: "POST", body: { fileName: args.fileName } },
     );
+  if (name === "sync_run_request" || name === "sync_run_request_settle") {
+    const settling = name === "sync_run_request_settle";
+    const keys = ["taskId", "requestId", ...(settling ? ["runId", "receiptHash", "confirm"] : [])];
+    if (!args || typeof args !== "object" || Array.isArray(args) ||
+        Object.keys(args).length !== keys.length || !keys.every(key => Object.hasOwn(args, key)))
+      throw Error("原同步请求的参数不完整或含未知字段");
+    const selected = { taskId: args.taskId, requestKey: args.requestId };
+    if (!settling) return readSyncRunRequest(client, selected);
+    if (args.confirm !== true) throw Error("请先核对原落地回执并明确确认");
+    return settleSyncRunRequest(client, selected, { runId: args.runId, receiptHash: args.receiptHash });
+  }
   if (name === 'sync_run_snapshot') return client.request(syncRunSnapshotPath(args));
   if (name === "sync_task_list") return client.request("/sync/tasks");
   if (name === "sync_recovery_preview" || name === "sync_recovery_save") {

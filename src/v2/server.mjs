@@ -4,6 +4,7 @@ import {nativeSyncReviewPreflight} from './native-sync-review.mjs';
 import {nativeSyncReviewPath} from './native-sync-review-client.mjs';
 import {nativeSyncPublicationReceipt,nativeSyncMonitor} from './native-sync-publication.mjs';
 import {nativeSyncReceiptPath,publicationBinding} from './native-sync-publication-client.mjs';
+import { validSyncRunRequestKey } from "./sync-run-request.mjs";
 import {buildInputEvidence} from './input-evidence.mjs';
 import {changeHash} from './csv-changelog.mjs';
 import {createQualityArchiveSource,qualityArchiveSelection} from './quality-source.mjs';
@@ -2606,6 +2607,23 @@ export function createV2Server(options = {}) {
           dedup.replayed ? 200 : 201,
           ingestion.taskDetail(dedup.id),
         );
+      }
+      const syncRunRequest = path.match(/^\/api\/v2\/sync\/tasks\/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/requests$/);
+      if (syncRunRequest && (method === "GET" || method === "POST")) {
+        const session = auth.sessionFromHeaders(req.headers);
+        if (!workspaceReadActor(req) || (session && !session.permissions.some(permission => ["*", "INGESTION"].includes(permission))))
+          throw fail(403, "当前身份无权查阅同步执行回执");
+        const requestKey = url.searchParams.get("request_key");
+        if (url.searchParams.size !== 1 || !validSyncRunRequestKey(requestKey))
+          throw fail(422, "只接受一个有效的原执行请求编号");
+        if (method === "GET") return json(res, 200, ingestion.taskRunRequest(syncRunRequest[1], requestKey));
+        const body = await readBody(req);
+        if (!body || typeof body !== "object" || Array.isArray(body) || body.confirm !== true ||
+            Object.keys(body).length !== 3 || !Object.hasOwn(body, "runId") || !Object.hasOwn(body, "receiptHash"))
+          throw fail(422, "补记回执须明确确认原运行和落地回执摘要", "INVALID_SYNC_SETTLEMENT_BASIS");
+        return json(res, 200, ingestion.settleTaskRunRequest(syncRunRequest[1], requestKey, {
+          runId: body.runId, receiptHash: body.receiptHash,
+        }));
       }
       const syncRunSnapshot = path.match(/^\/api\/v2\/sync\/tasks\/([a-f0-9-]{36})\/runs\/([a-f0-9-]{36})\/snapshot$/);
       if (syncRunSnapshot && method === 'GET') {

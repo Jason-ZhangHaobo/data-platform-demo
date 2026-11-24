@@ -1,4 +1,6 @@
-import {csvChangeMode,csvChangeConfig,csvChangeRequestId} from '../../src/v2/csv-changelog-client.mjs';
+import {csvChangeMode,csvChangeConfig} from '../../src/v2/csv-changelog-client.mjs';
+import { checkedSyncRunRequest, readSyncRunRequest, settleSyncRunRequest, validSyncRunRequestKey } from "../../src/v2/sync-run-request.mjs";
+import type { SyncRunRequestReceipt } from "../../src/v2/sync-run-request.mjs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -26,6 +28,8 @@ import {newSyncMappingDraft,syncMappingProblem,syncTaskMappingFields} from './sy
 import type {SyncMappingDraft} from './sync-task-mapping';
 import { createIngestionReader } from "./ingestion-read";
 import type { IngestionReadStatus } from "./ingestion-read";
+import { syncRunSelectionFromLocation, syncRunSelectionLocation } from "./sync-run-request";
+import type { SyncRunSelection } from "./sync-run-request";
 
 type Api = <T>(path: string, body?: unknown,options?:{idempotencyKey?:string}) => Promise<T>;
 type Column = {
@@ -105,6 +109,23 @@ type SyncTask = {
   recovery?: { previousTaskId:string; failedRunId:string; basisDigest:string };
   runs: SyncRun[];
 };
+type OriginalRun = {
+  requestKey: string;
+  receipt?: SyncRunRequestReceipt;
+  reading?: boolean;
+  error?: string;
+  showSnapshot?: boolean;
+};
+const originalRunLabels = {
+  SUCCEEDED: "同步已成功",
+  FAILED: "同步失败已确认",
+  LANDING_COMMITTED: "数据已落地，运行回执待结算",
+  UNCONFIRMED: "原执行结果待核对",
+};
+const terminalReceipt = (receipt: OriginalRun["receipt"]) =>
+  receipt?.state === "SUCCEEDED" || receipt?.state === "FAILED";
+const receiptCount = (value: unknown) =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 type AgentPlan = {
   id: string;
   message: string;
@@ -174,7 +195,10 @@ export function IngestionWorkbench({
     [plans, setPlans] = useState<AgentPlan[]>([]),
     [targetRows, setTargetRows] = useState<Record<string, unknown>[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState(""),
-    [selectedTaskId, setSelectedTaskId] = useState(()=>{const id=new URL(location.href).searchParams.get("sync_task");return id&&/^[a-f0-9-]{36}$/.test(id)?id:"";}),
+    [selectedTaskId, setSelectedTaskId] = useState(() => {
+      const tasks = new URL(location.href).searchParams.getAll("sync_task");
+      return tasks.length === 1 && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(tasks[0]) ? tasks[0] : "";
+    }),
     [busy, setBusy] = useState(""),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
@@ -189,8 +213,22 @@ export function IngestionWorkbench({
     [targetTable, setTargetTable] = useState("raw_positions_review");
   const [mappingDrafts,setMappingDrafts]=useState<Record<string,SyncMappingDraft>>({});
   const [changeEpoch,setChangeEpoch]=useState<string>(()=>crypto.randomUUID()),[operationField,setOperationField]=useState('op'),[sequenceField,setSequenceField]=useState('seq');
-  const runRequests=useRef(new Map<string,string>());
-  useEffect(()=>{const u=new URL(location.href),task=u.searchParams.get('sync_task'),request=u.searchParams.get('sync_run_request');if(task&&request){try{if(u.searchParams.getAll('sync_task').length!==1||u.searchParams.getAll('sync_run_request').length!==1)throw Error('原执行链接含重复编号');runRequests.current.set(task,csvChangeRequestId(request));}catch(cause){setError((cause as Error).message);}}},[]);
+  const [originalLink] = useState(() => {
+    try {
+      return { selection: syncRunSelectionFromLocation(location.href) };
+    } catch (cause) {
+      return { error: (cause as Error).message };
+    }
+  });
+  const [originalRuns, setOriginalRuns] = useState<Record<string, OriginalRun>>(() => {
+    const selection = originalLink.selection;
+    return selection ? { [selection.taskId]: { requestKey: selection.requestKey } } : {};
+  });
+  const originalReads = useRef(new Map<string, symbol>());
+  useEffect(() => {
+    const pending = originalReads.current;
+    return () => pending.clear();
+  }, [api]);
   const taskCreateRequest=useRef<{signature:string;key:string}|undefined>(undefined);
   const [agentMessage, setAgentMessage] = useState(
       "基于证券持仓增量CSV，生成写入raw_positions的增量合并任务，position_id为主键，trade_date为水位",
@@ -213,6 +251,17 @@ export function IngestionWorkbench({
     );
 
   const lastRun = selectedTask?.runs[0];
+  const original = originalRuns[selectedTaskId];
+  const originalCounts = original?.receipt?.state === "LANDING_COMMITTED" ? original.receipt.landingEvidence : original?.receipt?.run;
+  const originalReadCount = receiptCount(originalCounts?.readCount), originalFinalCount = receiptCount(originalCounts?.finalCount);
+  const pendingLanding = original?.receipt?.state === "LANDING_COMMITTED" ? original.receipt.landingEvidence : undefined;
+  const originalSettlement = pendingLanding && typeof pendingLanding.runId === "string" &&
+    pendingLanding.runId === original?.receipt?.run.id &&
+    typeof pendingLanding.receiptHash === "string" && /^[a-f0-9]{64}$/.test(pendingLanding.receiptHash)
+    ? { runId: pendingLanding.runId, receiptHash: pendingLanding.receiptHash } : undefined;
+  const originalOperationBusy = busy === "run-task" || busy === "settle-original-run";
+  const waitingForOriginal = Boolean(original && !terminalReceipt(original.receipt));
+  const hasOutstandingRun = selectedTask?.runs.some(run => ["RUNNING", "UNCONFIRMED"].includes(run.status));
   const mappingDraft=mappingDrafts[taskSourceId]??(metadataForTask?newSyncMappingDraft(taskSourceId,metadataForTask):undefined);
   let changeProblem:string|undefined;
   if(taskMode===csvChangeMode){try{const cfg=csvChangeConfig({epochId:changeEpoch,operationField,sequenceField});if(!localChangelog||sourceForTask?.sourceType!=='LOCAL_CSV')throw Error('此模式仅支持本机CSV');const fields=new Set(metadataForTask?.columns.map(c=>c.name));if(!fields.has(cfg.operationField)||!fields.has(cfg.sequenceField))throw Error('请在当前源选择操作与序号字段');if(mappingDraft?.mapping[cfg.operationField]?.trim()||mappingDraft?.mapping[cfg.sequenceField]?.trim())throw Error('操作与序号字段仅作控制，目标映射须留空');}catch(cause){changeProblem=(cause as Error).message;}}
@@ -331,15 +380,77 @@ export function IngestionWorkbench({
       },
       "同步任务已绑定当前源与元数据版本",
     );
-  const runTask = () => selectedTask && action('run-task',async()=>{
-    let key=runRequests.current.get(selectedTask.id);if(!key){const unknown=selectedTask.runs.find(r=>['RUNNING','UNCONFIRMED'].includes(r.status)&&r.requestKey);key=unknown?.requestKey??crypto.randomUUID();}
-    runRequests.current.set(selectedTask.id,key);const url=new URL(location.href);url.searchParams.set('sync_task',selectedTask.id);url.searchParams.set('sync_run_request',key);history.replaceState(null,'',url);
-    const original=await api<SyncTask>(`/sync/tasks/${selectedTask.id}`),known=original.runs.find(r=>r.requestKey===key);
-    const run=known&&['SUCCEEDED','FAILED'].includes(known.status)?known:await api<SyncRun>(`/sync/tasks/${selectedTask.id}/run`,{},{idempotencyKey:key});
-    if(run.taskId!==selectedTask.id||run.configHash!==selectedTask.configHash)throw Error('原执行回执与所选任务不一致，请保留请求编号');
-    if(!['SUCCEEDED','FAILED'].includes(run.status))throw Error('原执行仍待核对，不提交新请求');runRequests.current.delete(selectedTask.id);
-    if(run.status==='FAILED')throw Error('原执行失败已确认；请按原记录修正并创建新源版本，不重放同一失败请求');
-  },'已核对原运行；读写、删除与重放计数保留，未改用其他请求');
+  function rememberOriginalRun(selection: SyncRunSelection, details: Omit<OriginalRun, "requestKey"> = {}) {
+    history.replaceState(null, "", syncRunSelectionLocation(location.href, selection));
+    setOriginalRuns(previous => ({ ...previous, [selection.taskId]: { requestKey: selection.requestKey, ...details } }));
+  }
+  function updateOriginalRun(selection: SyncRunSelection, details: Omit<OriginalRun, "requestKey">) {
+    setOriginalRuns(previous => {
+      if (previous[selection.taskId]?.requestKey !== selection.requestKey) return previous;
+      return { ...previous, [selection.taskId]: { requestKey: selection.requestKey, ...details } };
+    });
+  }
+  async function readOriginalRun(selection: SyncRunSelection) {
+    const { taskId, requestKey } = selection;
+    const current = originalRuns[taskId];
+    if (originalOperationBusy || originalReads.current.has(taskId) ||
+      (current && current.requestKey !== requestKey && !terminalReceipt(current.receipt))) return;
+    const configHash = taskId === selectedTask?.id ? selectedTask.configHash : undefined;
+    const token = Symbol();
+    originalReads.current.set(taskId, token);
+    rememberOriginalRun(selection, { reading: true });
+    try {
+      const receipt = await readSyncRunRequest({ request: path => api(path) }, selection);
+      if (configHash !== undefined && receipt.run.configHash !== configHash) {
+        throw Error("原执行回执与所选任务版本不一致。");
+      }
+      if (originalReads.current.get(taskId) === token) updateOriginalRun(selection, { receipt });
+    } catch (cause) {
+      if (originalReads.current.get(taskId) === token) {
+        const missing = (cause as { code?: string })?.code === "SYNC_RUN_REQUEST_NOT_FOUND";
+        const message = cause instanceof Error ? cause.message : "原执行回执读取未确认。";
+        updateOriginalRun(selection, { error: missing ? "暂未查到此原请求，编号已保留。" : message });
+      }
+    } finally {
+      if (originalReads.current.get(taskId) === token) originalReads.current.delete(taskId);
+    }
+  }
+  function runTask() {
+    if (!selectedTask || waitingForOriginal || hasOutstandingRun || recoverableFailure ||
+      originalReads.current.has(selectedTask.id)) return;
+    const task = selectedTask;
+    return action("run-task", async () => {
+      const selection = { taskId: task.id, requestKey: crypto.randomUUID() };
+      rememberOriginalRun(selection);
+      const run = await api<SyncRun>(`/sync/tasks/${task.id}/run`, {}, { idempotencyKey: selection.requestKey });
+      if (run?.taskId !== task.id || run.requestKey !== selection.requestKey || run.configHash !== task.configHash) {
+        throw Error("执行返回与原请求或任务版本不一致，请按原编号核对。");
+      }
+      if (!["SUCCEEDED", "FAILED"].includes(run.status)) throw Error("原执行仍待核对，请按原编号查询。");
+      const receipt = checkedSyncRunRequest({
+        schema: "shuduo-sync-run-request/v1", ...selection, state: run.status, run,
+      }, selection);
+      updateOriginalRun(selection, { receipt });
+      if (run.status === "FAILED") throw Error("原执行失败已确认；请查看原回执。");
+    }, "已取得本次执行回执，原请求编号已保留。");
+  }
+  function settleOriginalRun() {
+    if (!canWrite || busy || !selectedTask || !original || !originalSettlement ||
+      originalReads.current.has(selectedTask.id)) return;
+    const selection = { taskId: selectedTask.id, requestKey: original.requestKey };
+    const configHash = selectedTask.configHash;
+    const proof = originalSettlement;
+    return action("settle-original-run", async () => {
+      // Keep the key, but require an exact read before another explicit settlement
+      // if this response cannot be confirmed.
+      updateOriginalRun(selection, {});
+      const receipt = await settleSyncRunRequest({ request: (path, options) => api(path, options?.body) }, selection, proof);
+      if (receipt.run.configHash !== configHash) {
+        throw Error("补记结果与原任务版本不一致，请按原编号核对。");
+      }
+      updateOriginalRun(selection, { receipt });
+    }, "原执行回执已补记，可查看此批次快照。");
+  }
   const planWithAgent = () =>
     action(
       "agent",
@@ -525,6 +636,41 @@ export function IngestionWorkbench({
             {agentPlan && <div className="ingestion-agent-plan"><span className={"status-pill " + agentPlan.status.toLowerCase()}>{statusLabels[agentPlan.status] ?? agentPlan.status}</span><div><strong>{agentPlan.proposal?.name ?? "正在读取元数据"}</strong><p>{agentPlan.explanation ?? agentPlan.error ?? "生成中…"}</p>{agentPlan.proposal && <code>{agentPlan.proposal.mode} → {agentPlan.proposal.targetTable} · {agentPlan.proposal.configHash.slice(0, 12)}</code>}</div><button className="button" onClick={applyPlan} disabled={!canWrite || agentPlan.status !== "SUCCEEDED" || !!busy}><CheckCircle2 size={14} />确认创建草稿</button></div>}
             <small>{catalogReady ? `${plans.length}条Agent方案` : "方案目录尚未确认"} · 不自动运行</small>
           </section>
+          {originalLink.error && !original && <p role="alert" className="ingestion-feedback error">{originalLink.error}</p>}
+          {original && <section className="sync-recovery" aria-label="原同步请求">
+            <header>
+              <h4>原执行回执</h4>
+              <button className="button" disabled={original.reading || originalOperationBusy}
+                onClick={() => void readOriginalRun({ taskId: selectedTaskId, requestKey: original.requestKey })}>
+                <RefreshCw size={14} />核对原执行
+              </button>
+            </header>
+            <p>原请求 <code style={{ overflowWrap: "anywhere" }}>{original.requestKey}</code></p>
+            {busy === "settle-original-run" && !original.receipt ? <p role="status">正在补记原执行回执。</p> :
+              original.reading ? <p role="status">正在读取此请求的回执。</p> :
+              original.error ? <p role="alert">{original.error} 可继续核对原请求。</p> :
+              original.receipt ? <>
+                <p role="status"><strong>{originalRunLabels[original.receipt.state]}</strong> · 运行 <code>{original.receipt.run.id}</code></p>
+                {original.receipt.state !== "UNCONFIRMED" && (originalReadCount !== undefined || originalFinalCount !== undefined) &&
+                  <p>读取 {originalReadCount ?? "—"} 行 · 批次落地后 {originalFinalCount ?? "—"} 行</p>}
+                {original.receipt.state === "LANDING_COMMITTED" && <>
+                  <p>落地事务已提交，运行状态待结算。
+                    {original.receipt.landingEvidence?.snapshotStatus === "RETAINED" && " 原批次快照已留存。"}</p>
+                  {canWrite && originalSettlement && <div>
+                    <p>补记只保存原运行状态和计数。</p>
+                    <button className="button" disabled={!!busy || original.reading} onClick={() => void settleOriginalRun()}>确认补记原回执</button>
+                  </div>}
+                </>}
+                {original.receipt.state === "SUCCEEDED" && !original.showSnapshot &&
+                  <button className="button" onClick={() => updateOriginalRun(
+                    { taskId: selectedTaskId, requestKey: original.requestKey }, { receipt: original.receipt, showSnapshot: true },
+                  )}>查看此批次快照</button>}
+                {original.receipt.state === "SUCCEEDED" && original.showSnapshot &&
+                  <SyncRunSnapshotPanel key={original.receipt.run.id} api={api} taskId={selectedTaskId}
+                    runs={[{ id: original.receipt.run.id, status: "SUCCEEDED" }]} />}
+              </> : <p role="status">原执行结果待核对。</p>}
+            <small>核对只读取此编号的回执。未确认时保留原编号。</small>
+          </section>}
           {catalogReady && <><div className="sync-layout">
             <aside className="sync-task-list">
               <header><div><span className="eyebrow">OFFLINE JOBS</span><h3>同步任务</h3></div><span>{tasks.length}</span></header>
@@ -532,14 +678,19 @@ export function IngestionWorkbench({
             </aside>
             <section className="sync-detail">
               {selectedTask ? <>
-                <header className="sync-detail-head"><div><span className="eyebrow">{selectedTask.mode} · VERSION BOUND</span><h3>{selectedTask.name}</h3><p>{selectedTaskSource?.name} → {selectedTask.targetTable}</p></div><button className="button primary" onClick={runTask} disabled={!canWrite || !!busy || recoverableFailure}>{busy === "run-task" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{runRequests.current.has(selectedTask.id)?"核对原执行":"实际执行"}</button></header>
+                <header className="sync-detail-head"><div><span className="eyebrow">{selectedTask.mode} · VERSION BOUND</span><h3>{selectedTask.name}</h3><p>{selectedTaskSource?.name} → {selectedTask.targetTable}</p></div><button className="button primary" onClick={runTask} disabled={!canWrite || !!busy || recoverableFailure || waitingForOriginal || hasOutstandingRun}>{busy === "run-task" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际执行</button></header>
+                {hasOutstandingRun && !original && <p role="status">有运行待核对，请先读取原执行回执。</p>}
                 <div className="sync-proof"><div><span>源版本</span><code>{selectedTask.sourceRevisionId.slice(0, 8)}</code></div><div><span>元数据版本</span><code>{selectedTask.metadataVersionId.slice(0, 8)}</code></div><div><span>主键</span><strong>{selectedTask.keyFields.join(", ")}</strong></div><div><span>{selectedTask.changeConfig?"精确序号字段":"水位"}</span><strong>{selectedTask.changeConfig?.sequenceField??selectedTask.watermarkField??"无"}</strong></div></div>
                 {selectedTask.changeConfig&&<section className="sync-change-info"><strong>CSV显式变更 · 非数据库CDC</strong><p>变更代号 {selectedTask.changeConfig.epochId.slice(0,8)} · {selectedTask.changeConfig.operationField} / {selectedTask.changeConfig.sequenceField}</p><button className="button" disabled={!canWrite||!!busy} onClick={()=>{setTaskMode(csvChangeMode);setChangeEpoch(selectedTask.changeConfig!.epochId);setOperationField(selectedTask.changeConfig!.operationField);setSequenceField(selectedTask.changeConfig!.sequenceField);setTargetTable(selectedTask.targetTable);setTaskName('下一批 · '+selectedTask.name.slice(0,65));setNotice('已复用变更代号与目标；请选择下一份已采集CSV，核对映射后创建新任务。');document.querySelector('.sync-create-panel')?.scrollIntoView({behavior:'smooth'});}}>复用此配置创建下一批</button></section>}
                 <div className="sync-runs">
                   <header><h4>运行证据</h4><span>{selectedTask.runs.length}次</span></header>
-                  {selectedTask.runs.map((run) => <article key={run.id}><span className={"status-pill " + run.status.toLowerCase()}>{statusLabels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><span>读取 {run.readCount ?? "—"}</span><span>新增 {run.inserted ?? "—"}</span><span>更新 {run.updated ?? "—"}</span><span>删除 {run.deleted??"—"}</span><span>最终 {run.finalCount ?? "—"}</span>{run.changeState&&<><span>接受事件 {run.changeState.appliedEvents}</span><span>删除事件 {run.changeState.deleteEvents}</span><span>重复跳过 {run.changeState.duplicateEvents}</span><span>旧事件跳过 {run.changeState.staleEvents}</span></>}</div><small>{run.error ?? `${run.durationMs}ms · ${run.targetHash?.slice(0, 12)}`}</small></article>)}
+                  {selectedTask.runs.map((run) => <article key={run.id}><span className={"status-pill " + run.status.toLowerCase()}>{statusLabels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><span>读取 {run.readCount ?? "—"}</span><span>新增 {run.inserted ?? "—"}</span><span>更新 {run.updated ?? "—"}</span><span>删除 {run.deleted??"—"}</span><span>最终 {run.finalCount ?? "—"}</span>{run.changeState&&<><span>接受事件 {run.changeState.appliedEvents}</span><span>删除事件 {run.changeState.deleteEvents}</span><span>重复跳过 {run.changeState.duplicateEvents}</span><span>旧事件跳过 {run.changeState.staleEvents}</span></>}</div><small>{run.error ?? `${run.durationMs}ms · ${run.targetHash?.slice(0, 12)}`}</small>
+                    {validSyncRunRequestKey(run.requestKey) && !waitingForOriginal &&
+                      <button className="button" disabled={original?.reading || originalOperationBusy}
+                        onClick={() => void readOriginalRun({ taskId: selectedTask.id, requestKey: run.requestKey! })}>核对此请求</button>}
+                  </article>)}
                 </div>
-                <SyncRunSnapshotPanel key={selectedTask.id} api={api} taskId={selectedTask.id} runs={selectedTask.runs}/>
+                {!original && <SyncRunSnapshotPanel key={selectedTask.id} api={api} taskId={selectedTask.id} runs={selectedTask.runs}/>}
                 {selectedTask.recovery && <div className="sync-recovery-origin">
                   <p>来自原失败 <code>{selectedTask.recovery.failedRunId.slice(0,8)}</code> <button className="button" onClick={()=>setSelectedTaskId(selectedTask.recovery!.previousTaskId)}>查看原任务</button></p>
                 </div>}

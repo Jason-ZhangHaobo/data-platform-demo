@@ -117,6 +117,8 @@ export const V2_OPERATIONS = Object.freeze([
   "sync_recovery_save",
   "sync_task_create",
   "sync_task_run",
+  "sync_run_request",
+  "sync_run_request_settle",
   "sync_target_rows",
   "sync_run_snapshot",
   "ingestion_plan_list",

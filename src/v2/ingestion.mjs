@@ -1,6 +1,7 @@
 import {changelogMode,normalizeChangeConfig,changeSpecHash,initializeChangeTables,inspectChangeState,prepareChangeEvents,assertChangeStart,applyChangeEvents,changeStateHash,changeHash} from './csv-changelog.mjs';
 import {ingestionWatermark} from './ingestion-watermark.mjs';
 import { buildSyncSnapshot, checkedSyncSnapshot, syncSnapshotLimits } from './sync-run-snapshot.mjs';
+import { checkedStandardSyncReceipt, standardSyncReceiptProtocol } from './sync-standard-receipt.mjs';
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import {
@@ -34,6 +35,16 @@ const canonical = (value) =>
       : value,
   );
 const stableHash = (value) => hash(canonical(value));
+const standardRunRequestHash = run => stableHash({
+  key: run.requestKey ?? null, signature: run.requestSignature ?? null,
+});
+const standardLandingOutput = receipt => ({
+  targetTable: receipt.targetTable, sourceHash: receipt.binding.sourceHash,
+  readCount: receipt.readCount, inserted: receipt.inserted, updated: receipt.updated,
+  unchanged: receipt.unchanged, deleted: receipt.deleted, finalCount: receipt.finalCount,
+  targetHash: receipt.targetHash, snapshotStatus: receipt.snapshotStatus,
+  landingSnapshotHash: receipt.landingSnapshotHash, watermark: receipt.watermark,
+});
 export const ingestionSchemaHash = columns => stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable })));
 const landingHash = rows => stableHash(rows.map(({ sourceHash: _source, syncedAt: _time, ...row }) => row));
 const staleSyncErrors = {
@@ -203,6 +214,7 @@ export class LandingStore {
       "CREATE TABLE IF NOT EXISTS landing_rows(target_table TEXT NOT NULL,row_key TEXT NOT NULL,payload TEXT NOT NULL,source_hash TEXT NOT NULL,synced_at TEXT NOT NULL,PRIMARY KEY(target_table,row_key)); CREATE INDEX IF NOT EXISTS landing_target ON landing_rows(target_table,row_key); CREATE TABLE IF NOT EXISTS landing_commits(target_table TEXT PRIMARY KEY,run_id TEXT NOT NULL,target_hash TEXT NOT NULL);",
     );
     this.db.exec('CREATE TABLE IF NOT EXISTS landing_run_snapshots(run_id TEXT PRIMARY KEY,target_table TEXT NOT NULL,payload TEXT NOT NULL,snapshot_hash TEXT NOT NULL,byte_count INTEGER NOT NULL)');
+    this.db.exec('CREATE TABLE IF NOT EXISTS landing_run_receipts(run_id TEXT PRIMARY KEY,target_table TEXT NOT NULL,payload TEXT NOT NULL,receipt_hash TEXT NOT NULL)');
     initializeChangeTables(this.db);
     this.mutationListener = undefined;
   }
@@ -211,7 +223,7 @@ export class LandingStore {
     this.mutationListener = listener;
   }
 
-  sync({ targetTable, mode, rows, mapping, keyFields, sourceHash, syncedAt, runId, snapshotBinding,changeConfig,changeGuard }) {
+  sync({ targetTable, mode, rows, mapping, keyFields, sourceHash, syncedAt, runId, snapshotBinding,changeConfig,changeGuard,standardExecution }) {
     const target = identifier(targetTable, "目标表"),
       normalizedMapping = normalizeMapping(mapping),
       keys = normalizeKeys(keyFields, normalizedMapping),
@@ -237,6 +249,8 @@ export class LandingStore {
     const config=mode===changelogMode?normalizeChangeConfig(changeConfig,normalizedMapping,keys):undefined,
       events=config?prepareChangeEvents(rows,normalizedMapping,keys,config):undefined,specHash=config?changeSpecHash(config,normalizedMapping,keys):undefined;
     if(config&&(!runId||!snapshotBinding))throw fail(422,'变更批次须绑定原运行和快照配置','CHANGE_RUN_BINDING_REQUIRED');
+    if (standardExecution && (config || !runId || snapshotBinding?.sourceHash !== sourceHash))
+      throw fail(422, '标准同步落地回执须绑定原运行和确切源摘要', 'SYNC_LANDING_RECEIPT_BINDING_REQUIRED');
     let changeCounts,changeState;
     let inserted = 0,
       updated = 0,
@@ -247,6 +261,8 @@ export class LandingStore {
     try {
       if (runId && this.db.prepare('SELECT 1 FROM landing_run_snapshots WHERE run_id=?').get(runId))
         throw fail(409,'原同步运行已留存快照，不允许重复落地覆盖','SYNC_SNAPSHOT_EXISTS');
+      if (runId && this.db.prepare('SELECT 1 FROM landing_run_receipts WHERE run_id=?').get(runId))
+        throw fail(409, '原同步运行已留存提交回执，不允许重复落地覆盖', 'SYNC_LANDING_RECEIPT_EXISTS');
       if(config){assertChangeStart({db:this.db,target,targetHash:landingHash(this.readTable(target)),config,specHash,guard:changeGuard,events});
         changeCounts=applyChangeEvents(this.db,target,events,sourceHash,syncedAt);({inserted,updated,unchanged,deleted}=changeCounts);
       }else{
@@ -297,6 +313,17 @@ export class LandingStore {
         const stateHash=changeHash({dataStateHash,receiptHash:changeHash(receipt)});changeState={...info,changeStateHash:stateHash};
         this.db.prepare('INSERT INTO landing_change_targets VALUES(?,?,?,?,?,?) ON CONFLICT(target_table) DO UPDATE SET state_hash=excluded.state_hash,last_run_id=excluded.last_run_id,receipt=excluded.receipt').run(target,config.epochId,specHash,stateHash,runId,JSON.stringify(receipt));
       }
+      if (standardExecution) {
+        const receipt = { protocol: standardSyncReceiptProtocol, runId, targetTable: target, binding: snapshotBinding,
+          mode, sourceType: standardExecution.sourceType, requestHash: standardExecution.requestHash,
+          landedAt: new Date(standardExecution.now()).toISOString(), readCount: rows.length,
+          inserted, updated, unchanged, deleted, finalCount: finalRows.length, targetHash, ...snapshotReceipt,
+          ...(standardExecution.watermark === undefined ? {} : { watermark: standardExecution.watermark }) };
+        const row = { run_id: runId, target_table: target, payload: canonical(receipt), receipt_hash: stableHash(receipt) };
+        checkedStandardSyncReceipt(row, snapshotBinding.projectId);
+        this.db.prepare('INSERT INTO landing_run_receipts VALUES(?,?,?,?)')
+          .run(row.run_id, row.target_table, row.payload, row.receipt_hash);
+      }
       this.db.exec("COMMIT");
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
@@ -324,6 +351,11 @@ export class LandingStore {
     const record = this.db.prepare('SELECT * FROM landing_run_snapshots WHERE run_id=?').get(expected.runId);
     if (!record) throw fail(409,'原批次快照缺失；未使用当前表替代','SYNC_SNAPSHOT_MISSING');
     return checkedSyncSnapshot(record,expected);
+  }
+
+  readStandardRunReceipt(runId, project) {
+    const row = this.db.prepare('SELECT * FROM landing_run_receipts WHERE run_id=?').get(runId);
+    return row ? checkedStandardSyncReceipt(row, project) : undefined;
   }
 
   inspectTarget(targetTable, { includeRows = false } = {}) {
@@ -650,6 +682,145 @@ export class IngestionManager {
     };
   }
 
+  taskRunRequest(taskId, requestKey) {
+    const { task, key, run } = this.#taskRunByRequest(taskId, requestKey);
+    return this.#taskRunRequestView(task, key, run, this.#standardReceipt(task, run));
+  }
+
+  settleTaskRunRequest(taskId, requestKey, basis) {
+    if (!basis || typeof basis !== 'object' || Array.isArray(basis) || Object.keys(basis).length !== 2 ||
+        !Object.hasOwn(basis, 'runId') || !Object.hasOwn(basis, 'receiptHash') ||
+        typeof basis.runId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(basis.runId) ||
+        typeof basis.receiptHash !== 'string' || !/^[a-f0-9]{64}$/.test(basis.receiptHash))
+      throw fail(422, '结算须提供已核对的原运行编号与落地回执摘要', 'INVALID_SYNC_SETTLEMENT_BASIS');
+    const { task, key, run } = this.#taskRunByRequest(taskId, requestKey);
+    const mismatch = () => fail(409, '原同步运行或落地回执摘要已变化，请重新核对', 'SYNC_SETTLEMENT_BASIS_MISMATCH');
+    if (run.id !== basis.runId) throw mismatch();
+    const proof = this.#standardReceipt(task, run);
+    if (!proof) throw fail(409, '原运行缺少确切落地回执，不能结算', 'SYNC_LANDING_RECEIPT_MISSING');
+    if (proof.receiptHash !== basis.receiptHash) throw mismatch();
+    if (run.status === 'SUCCEEDED') {
+      this.#updateTaskRunSummary(task.id, run.id, { status: 'SUCCEEDED', watermark: run.watermark });
+      return this.#taskRunRequestView(task, key, run, proof);
+    }
+    const settled = this.#finishStandard(task, run, { reconciled: true, proof });
+    return this.#taskRunRequestView(task, key, settled, this.#standardReceipt(task, settled));
+  }
+
+  #taskRunByRequest(taskId, requestKey) {
+    const task = this.#task(taskId), key = text(requestKey, '原同步请求编号');
+    const matches = this.store.list('offline_sync_run', this.project)
+      .filter(run => run.taskId === task.id && run.requestKey === key);
+    if (matches.length === 0) throw fail(404, '未找到此任务的原同步请求', 'SYNC_RUN_REQUEST_NOT_FOUND');
+    const [run] = matches;
+    if (matches.length !== 1 || run.configHash !== task.configHash ||
+        run.sourceRevisionId !== task.sourceRevisionId || run.metadataVersionId !== task.metadataVersionId)
+      throw fail(409, '原同步请求与任务版本不一致', 'SYNC_RUN_REQUEST_MISMATCH');
+    return { task, key, run };
+  }
+
+  #taskRunRequestView(task, key, run, proof) {
+    const state = ['SUCCEEDED', 'FAILED'].includes(run.status) ? run.status :
+      proof ? 'LANDING_COMMITTED' : 'UNCONFIRMED';
+    const fields = ['id', 'taskId', 'status', 'configHash', 'sourceRevisionId', 'metadataVersionId', 'sourceHash',
+      'readCount', 'inserted', 'updated', 'unchanged', 'deleted', 'finalCount', 'targetHash', 'snapshotStatus',
+      'landingSnapshotHash', 'watermark', 'startedAt', 'finishedAt', 'durationMs'];
+    const summary = Object.fromEntries(fields.filter(field => run[field] !== undefined).map(field => [field, run[field]]));
+    return {
+      schema: 'shuduo-sync-run-request/v1', taskId: task.id, requestKey: key, state,
+      run: { ...summary, sourceType: task.sourceType, targetTable: task.targetTable,
+        ...(typeof run.errorCode === 'string' && /^[A-Z0-9_]{1,80}$/.test(run.errorCode) ? { errorCode: run.errorCode } : {}) },
+      ...(proof ? { landingEvidence: { runId: proof.runId, ...standardLandingOutput(proof),
+        landedAt: proof.landedAt, receiptHash: proof.receiptHash } } : {}),
+    };
+  }
+
+  #standardReceipt(task, run) {
+    if (run.standardReceiptVersion !== 1) return undefined; // No promotion from legacy summaries or mutable rows.
+    const proof = this.landingStore.readStandardRunReceipt(run.id, this.project);
+    if (!proof) {
+      if (run.status === 'SUCCEEDED' || run.landingReceiptHash)
+        throw fail(409, '原运行缺少确切落地回执', 'SYNC_LANDING_RECEIPT_MISSING');
+      return undefined;
+    }
+    const sourceHash = proof.binding.sourceHash;
+    const csvMetadata = task.sourceType === 'LOCAL_CSV'
+      ? this.store.get('source_metadata', task.metadataVersionId, this.project) : undefined;
+    const output = standardLandingOutput(proof);
+    const invalid = proof.targetTable !== task.targetTable || proof.mode !== task.mode || proof.sourceType !== task.sourceType ||
+      run.taskId !== task.id || run.sourceType !== task.sourceType || run.configHash !== task.configHash ||
+      run.sourceRevisionId !== task.sourceRevisionId || run.metadataVersionId !== task.metadataVersionId ||
+      proof.requestHash !== standardRunRequestHash(run) ||
+      stableHash(proof.binding) !== stableHash(this.#snapshotBinding(task, sourceHash)) ||
+      !Number.isFinite(Date.parse(run.startedAt)) || Date.parse(proof.landedAt) < Date.parse(run.startedAt) ||
+      (task.sourceType === 'LOCAL_CSV' && csvMetadata?.contentHash !== sourceHash) ||
+      !['RUNNING', 'UNCONFIRMED', 'INTERRUPTED', 'SUCCEEDED'].includes(run.status) ||
+      (run.status === 'SUCCEEDED' && (run.landingReceiptHash !== proof.receiptHash ||
+        run.finishedAt !== proof.landedAt || run.durationMs !== Date.parse(proof.landedAt) - Date.parse(run.startedAt) ||
+        Object.entries(output).some(([field, value]) => run[field] !== value)));
+    if (invalid) throw fail(409, '原同步落地回执与任务、版本或结果不一致', 'SYNC_LANDING_RECEIPT_MISMATCH');
+    return proof;
+  }
+
+  #beginTaskRun(task, pending) {
+    if (!this.store.update('offline_sync_task', task.id, this.project,
+      { status: 'RUNNING', lastRunId: pending.id }, { expectedVersion: task.version }))
+      throw fail(409, '同步任务启动状态未确认', 'SYNC_TASK_START_UNCONFIRMED');
+  }
+
+  #updateTaskRunSummary(taskId, runId, patch) {
+    const current = this.store.get('offline_sync_task', taskId, this.project);
+    if (current?.lastRunId === runId && Object.entries(patch).some(([field, value]) => current[field] !== value))
+      this.store.update('offline_sync_task', taskId, this.project, patch, { expectedVersion: current.version });
+  }
+
+  #finishStandard(task, pending, { reconciled = false, proof = this.#standardReceipt(task, pending) } = {}) {
+    if (!proof) throw fail(409, '原落地结果待核对，不重新执行', 'SYNC_RESULT_UNCONFIRMED');
+    const run = this.store.update('offline_sync_run', pending.id, this.project, {
+      ...standardLandingOutput(proof), landingReceiptHash: proof.receiptHash, status: 'SUCCEEDED',
+      sourceType: task.sourceType, actualExecution: true, fullLifecycleE2E: false,
+      ...(task.sourceType === 'SERVER_MYSQL' ? { sourceStrategy: task.mode === 'FULL'
+        ? 'BOUNDED_FULL_SNAPSHOT' : 'BOUNDED_SNAPSHOT_DIFF_UPSERT' } : {}),
+      durationMs: Date.parse(proof.landedAt) - Date.parse(pending.startedAt), finishedAt: proof.landedAt,
+      ...(reconciled ? { reconciled: true, recoveredFromStatus: pending.status } : {}),
+      error: undefined, errorCode: undefined,
+    }, { expectedVersion: pending.version });
+    this.#updateTaskRunSummary(task.id, run.id, { status: 'SUCCEEDED', watermark: run.watermark });
+    return run;
+  }
+
+  #replayStandard(task, prior) {
+    if (prior.standardReceiptVersion === 1) {
+      const proof = this.#standardReceipt(task, prior);
+      if (proof && prior.status === 'SUCCEEDED')
+        this.#updateTaskRunSummary(task.id, prior.id, { status: 'SUCCEEDED', watermark: prior.watermark });
+      else if (proof && ['RUNNING', 'UNCONFIRMED', 'INTERRUPTED'].includes(prior.status))
+        return { ...this.#finishStandard(task, prior, { reconciled: true, proof }), replayed: true };
+    }
+    if (['SUCCEEDED', 'FAILED'].includes(prior.status)) return { ...prior, replayed: true };
+    throw fail(409, '该同步请求仍在运行或已中断，请先检查运行记录', 'SYNC_RUN_UNCERTAIN');
+  }
+
+  #preserveStandardCommit(task, pending, cause) {
+    let current, proof;
+    try {
+      current = this.store.get('offline_sync_run', pending.id, this.project);
+      proof = this.#standardReceipt(task, current ?? pending);
+      if (!proof && cause?.code !== 'SYNC_RESULT_UNCONFIRMED') return; // An ordinary precommit failure.
+    } catch {
+      // Corrupt or inaccessible evidence cannot justify a terminal failure.
+    }
+    try {
+      if (current?.status !== 'SUCCEEDED') {
+        this.store.update('offline_sync_run', pending.id, this.project, {
+          status: 'UNCONFIRMED', error: '原落地结果待核对，不重新执行', errorCode: 'SYNC_RESULT_UNCONFIRMED',
+        });
+        this.#updateTaskRunSummary(task.id, pending.id, { status: 'UNCONFIRMED' });
+      }
+    } catch { /* Keep the original request even if metadata is temporarily unavailable. */ }
+    throw Object.assign(fail(409, '原落地结果待核对，不重新执行', 'SYNC_RESULT_UNCONFIRMED'), { runId: pending.id });
+  }
+
   createTask(input) {
     if(!input||typeof input!=='object'||Array.isArray(input))throw fail(422,'同步配置须为对象','INVALID_SYNC_CONFIG');
     if(['operationField','sequenceField','deleteValues','changePolicy'].some(k=>Object.hasOwn(input,k)))throw fail(422,'请使用独立变更模式和完整changeConfig，不接受忽略的删除控项','UNKNOWN_CHANGE_OPTIONS');
@@ -839,6 +1010,7 @@ export class IngestionManager {
     const task = this.#task(taskId),
       started = this.now();
     let resumed,changeReservation;
+    let landingAttempted = false;
     if(task.mode!==changelogMode&&this.store.list('sync_change_target',this.project).some(r=>r.targetTable===task.targetTable))throw fail(409,'变更受控目标不可用旧任务覆盖','CHANGE_TARGET_MANAGED');
     if(task.mode===changelogMode&&!this.allowChangelog)throw fail(403,'变更模式当前仅供本机执行','CHANGE_LOCAL_ONLY');
     if (request.requestKey) {
@@ -846,13 +1018,14 @@ export class IngestionManager {
         .list("offline_sync_run", this.project)
         .find((run) => run.requestKey === request.requestKey);
       if (prior) {
-        if (prior.requestSignature !== request.requestSignature)
+        if (prior.taskId !== task.id || prior.requestSignature !== request.requestSignature)
           throw fail(
             409,
             "相同幂等键不能用于不同同步请求",
             "SYNC_IDEMPOTENCY_CONFLICT",
           );
-        if(task.mode===changelogMode&&!['SUCCEEDED','FAILED'].includes(prior.status)){
+        if (task.mode !== changelogMode) return this.#replayStandard(task, prior);
+        if(!['SUCCEEDED','FAILED'].includes(prior.status)){
           const receipt=this.#changeReceipt(task,prior);if(receipt)return {...this.#finishChange(task,prior,receipt,{reconciled:true}),replayed:true};
           const r=this.#changeRegistry(task);if(r.status!=='UPDATING'||r.pendingRunId!==prior.id)throw fail(409,'原变更请求缺少可核对的控制状态','CHANGE_STATE_UNCONFIRMED');resumed=prior;
         }
@@ -872,17 +1045,15 @@ export class IngestionManager {
       sourceRevisionId: task.sourceRevisionId,
       metadataVersionId: task.metadataVersionId,
       configHash: task.configHash,
+      ...(task.mode === changelogMode ? {} : { standardReceiptVersion: 1, sourceType: task.sourceType }),
       requestKey: request.requestKey,
       requestSignature: request.requestSignature,
       startedAt: new Date(started).toISOString(),
       actualExecution: true,
       fullLifecycleE2E: false,
     });
-    this.store.update("offline_sync_task", task.id, this.project, {
-      status: "RUNNING",
-      lastRunId: pending.id,
-    });
     try {
+      this.#beginTaskRun(task, pending);
       const source = this.#source(task.sourceId);
       if (source.sourceType === "SERVER_MYSQL")
         throw fail(
@@ -918,8 +1089,12 @@ export class IngestionManager {
         );
       const watermark=ingestionWatermark(parsed.rows,task.watermarkField?Object.entries(task.mapping).find(([,target])=>target===task.watermarkField)?.[0]:undefined,metadata.columns);
       if(task.mode===changelogMode)changeReservation=this.#reserveChange(task,pending);
+      landingAttempted = true;
       const output = this.landingStore.sync({
         ...(changeReservation?{changeConfig:task.changeConfig,changeGuard:changeReservation.guard}:{}),
+        ...(task.mode === changelogMode ? {} : { standardExecution: {
+          sourceType: task.sourceType, requestHash: standardRunRequestHash(pending), watermark, now: () => this.now(),
+        } }),
         runId: pending.id,
         snapshotBinding: this.#snapshotBinding(task,input.fileHash),
         targetTable: task.targetTable,
@@ -931,37 +1106,14 @@ export class IngestionManager {
         syncedAt: new Date(this.now()).toISOString(),
       });
       if(task.mode===changelogMode)return this.#finishChange(task,pending,{...output,sourceHash:input.fileHash},{reconciled:Boolean(resumed)});
-      const run = this.store.update(
-          "offline_sync_run",
-          pending.id,
-          this.project,
-          {
-          status: "SUCCEEDED",
-          sourceRevisionId: task.sourceRevisionId,
-          metadataVersionId: task.metadataVersionId,
-          configHash: task.configHash,
-          sourceHash: input.fileHash,
-          ...output,
-          watermark,
-          durationMs: this.now() - started,
-          finishedAt: new Date(this.now()).toISOString(),
-          actualExecution: true,
-          fullLifecycleE2E: false,
-          },
-        );
-      this.store.update("offline_sync_task", task.id, this.project, {
-        status: "SUCCEEDED",
-        lastRunId: run.id,
-        watermark,
-      });
-      return run;
+      return this.#finishStandard(task, pending);
     } catch (error) {
       if(task.mode===changelogMode){
         let receipt;try{receipt=this.#changeReceipt(task,pending);}catch{throw Object.assign(fail(409,'原变更控制证据待核对，保留原请求','CHANGE_STATE_UNCONFIRMED'),{runId:pending.id});}
         if(receipt){try{const r=this.#changeRegistry(task);this.store.update('sync_change_target',r.id,this.project,{status:'UPDATING',pendingRunId:pending.id});this.store.update('offline_sync_run',pending.id,this.project,{status:'UNCONFIRMED',error:'落地已提交，元数据结果待原请求核对',errorCode:'CHANGE_RESULT_UNCONFIRMED'});this.store.update('offline_sync_task',task.id,this.project,{status:'UNCONFIRMED',lastRunId:pending.id});}catch{}throw Object.assign(fail(409,'落地已提交，请使用原请求回读，不重新落地','CHANGE_RESULT_UNCONFIRMED'),{runId:pending.id});}
         if(resumed&&!changeReservation)changeReservation=this.#reserveChange(task,pending);
         this.#rollbackChange(task,pending,changeReservation);
-      }
+      } else if (landingAttempted) this.#preserveStandardCommit(task, pending, error);
       const run = this.store.update(
         "offline_sync_run",
         pending.id,
@@ -977,38 +1129,35 @@ export class IngestionManager {
         finishedAt: new Date(this.now()).toISOString(),
         actualExecution: true,
         fullLifecycleE2E: false,
-        },
+        }, { expectedVersion: pending.version },
       );
-      this.store.update("offline_sync_task", task.id, this.project, {
-        status: "FAILED",
-        lastRunId: run.id,
-      });
+      this.#updateTaskRunSummary(task.id, run.id, { status: 'FAILED' });
       throw Object.assign(error, { runId: run.id });
     }
   }
 
   async runServerMysqlTask(taskId, request = {}) {
-    const selected=this.#task(taskId);if(this.store.list('sync_change_target',this.project).some(r=>r.targetTable===selected.targetTable))throw fail(409,'变更受控目标不可被MySQL任务覆盖','CHANGE_TARGET_MANAGED');
-
     const task = this.#task(taskId),
-      source = this.#source(task.sourceId),
       started = this.now();
-    if (source.sourceType !== "SERVER_MYSQL")
+    if (this.store.list('sync_change_target', this.project).some(r => r.targetTable === task.targetTable))
+      throw fail(409, '变更受控目标不可被MySQL任务覆盖', 'CHANGE_TARGET_MANAGED');
+    if (task.sourceType !== "SERVER_MYSQL")
       throw fail(409, "当前同步任务不是SERVER_MYSQL", "SOURCE_TYPE_MISMATCH");
-    if (this.serverMysqlAdapter?.supportsOfflineSync !== true)
-      throw fail(409, "服务端MySQL同步尚未启用", "MYSQL_SYNC_NOT_ENABLED");
     if (request.requestKey) {
       const prior = this.store
         .list("offline_sync_run", this.project)
         .find((run) => run.requestKey === request.requestKey);
       if (prior) {
-        if (prior.requestSignature !== request.requestSignature)
+        if (prior.taskId !== task.id || prior.requestSignature !== request.requestSignature)
           throw fail(409, "相同幂等键不能用于不同同步请求", "SYNC_IDEMPOTENCY_CONFLICT");
-        if (["SUCCEEDED", "FAILED"].includes(prior.status))
-          return { ...prior, replayed: true };
-        throw fail(409, "该同步请求仍在运行或已中断，请先检查运行记录", "SYNC_RUN_UNCERTAIN");
+        return this.#replayStandard(task, prior);
       }
     }
+    const source = this.#source(task.sourceId);
+    if (source.sourceType !== "SERVER_MYSQL")
+      throw fail(409, "当前同步任务不是SERVER_MYSQL", "SOURCE_TYPE_MISMATCH");
+    if (this.serverMysqlAdapter?.supportsOfflineSync !== true)
+      throw fail(409, "服务端MySQL同步尚未启用", "MYSQL_SYNC_NOT_ENABLED");
     const pending = this.store.create("offline_sync_run", this.project, {
       taskId: task.id,
       status: "RUNNING",
@@ -1016,17 +1165,16 @@ export class IngestionManager {
       sourceRevisionId: task.sourceRevisionId,
       metadataVersionId: task.metadataVersionId,
       configHash: task.configHash,
+      standardReceiptVersion: 1,
       requestKey: request.requestKey,
       requestSignature: request.requestSignature,
       startedAt: new Date(started).toISOString(),
       actualExecution: true,
       fullLifecycleE2E: false,
     });
-    this.store.update("offline_sync_task", task.id, this.project, {
-      status: "RUNNING",
-      lastRunId: pending.id,
-    });
+    let landingAttempted = false;
     try {
+      this.#beginTaskRun(task, pending);
       if (source.currentRevisionId !== task.sourceRevisionId)
         throw fail(409, "数据源版本已变化，请新建同步任务版本", "SOURCE_REVISION_STALE");
       const metadata = this.store.get("source_metadata", task.metadataVersionId, this.project);
@@ -1059,8 +1207,10 @@ export class IngestionManager {
             ),
         ),
         sourceHash = stableHash(rows),
-        watermark=ingestionWatermark(rows,task.watermarkField?Object.entries(task.mapping).find(([,target])=>target===task.watermarkField)?.[0]:undefined,metadata.columns),
-        output = this.landingStore.sync({
+        watermark=ingestionWatermark(rows,task.watermarkField?Object.entries(task.mapping).find(([,target])=>target===task.watermarkField)?.[0]:undefined,metadata.columns);
+      landingAttempted = true;
+      this.landingStore.sync({
+          standardExecution: { sourceType: task.sourceType, requestHash: standardRunRequestHash(pending), watermark, now: () => this.now() },
           runId: pending.id,
           snapshotBinding: this.#snapshotBinding(task,sourceHash),
           targetTable: task.targetTable,
@@ -1070,32 +1220,10 @@ export class IngestionManager {
           keyFields: task.keyFields,
           sourceHash,
           syncedAt: new Date(this.now()).toISOString(),
-        }),
-        run = this.store.update("offline_sync_run", pending.id, this.project, {
-          status: "SUCCEEDED",
-          sourceType: "SERVER_MYSQL",
-          sourceStrategy:
-            task.mode === "FULL"
-              ? "BOUNDED_FULL_SNAPSHOT"
-              : "BOUNDED_SNAPSHOT_DIFF_UPSERT",
-          sourceRevisionId: task.sourceRevisionId,
-          metadataVersionId: task.metadataVersionId,
-          configHash: task.configHash,
-          sourceHash,
-          ...output,
-          watermark,
-          durationMs: this.now() - started,
-          finishedAt: new Date(this.now()).toISOString(),
-          actualExecution: true,
-          fullLifecycleE2E: false,
-        });
-      this.store.update("offline_sync_task", task.id, this.project, {
-        status: "SUCCEEDED",
-        lastRunId: run.id,
-        watermark,
       });
-      return run;
+      return this.#finishStandard(task, pending);
     } catch (error) {
+      if (landingAttempted) this.#preserveStandardCommit(task, pending, error);
       const run = this.store.update("offline_sync_run", pending.id, this.project, {
         status: "FAILED",
         sourceType: "SERVER_MYSQL",
@@ -1108,11 +1236,8 @@ export class IngestionManager {
         finishedAt: new Date(this.now()).toISOString(),
         actualExecution: true,
         fullLifecycleE2E: false,
-      });
-      this.store.update("offline_sync_task", task.id, this.project, {
-        status: "FAILED",
-        lastRunId: run.id,
-      });
+      }, { expectedVersion: pending.version });
+      this.#updateTaskRunSummary(task.id, run.id, { status: 'FAILED' });
       throw Object.assign(error, { runId: run.id });
     }
   }

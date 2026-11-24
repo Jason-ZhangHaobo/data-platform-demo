@@ -45,3 +45,20 @@ CLI提供 `--source-revision-id` 与 `--metadata-version-id`，须同时填写�
 API：`GET /sync/tasks/:taskId/runs/:runId/snapshot?page=1&pageSize=50`。CLI：`shuduo sync snapshot --id TASK_UUID --run-id RUN_UUID --page 1 --page-size 50`。MCP：`sync_run_snapshot`。三者共用相同只读接口和版本绑定；页大小1—100。新增行数据入口当前仅本机工程师范围，公网与受邀云端还需独立部署和权限验收，不因工具登记而开放。
 
 测试见`sync-run-snapshot.test.mjs`。API、CLI、MCP、SQLite重开和数据面恢复分别核对；本机实际CSV／SQLite及浏览器结果不计完整Agent E2E。
+
+## 按原请求核对和补记
+
+「核对原执行」使用任务与原请求编号读取回执。结果未确认或请求不存在时保留编号。页面刷新后可查询同一回执。已有同步读取权限的会话可查看记录，行快照仍沿用原访问边界。
+
+全量和增量合并在同一 SQLite 事务中保存落地行、批次摘要与执行回执。回执保留读写计数、源摘要、配置和原快照状态。数据已提交但运行状态记录未写完时，页面显示「数据已落地，运行回执待结算」。提交前失败与这种状态分别记录。旧运行缺少可验证证据时按原状态查看。
+
+有写权限时可明确确认补记。服务端按原任务、请求、运行编号和回执摘要校验，只补齐原运行元数据。补记完成后可查看合格的原批次快照。若补记响应丢失，按原编号继续核对。补记前后读取到的当前表可以属于后续批次。
+
+查询与补记共用 `/sync/tasks/:taskId/requests?request_key=...`。查询为 GET。补记为 POST，提交 `runId`、`receiptHash` 和 `confirm: true`。对应的 MCP 工具为 `sync_run_request` 和 `sync_run_request_settle`。
+
+```sh
+shuduo sync run-request --id TASK_UUID --request-id KEY
+shuduo sync settle-request --id TASK_UUID --request-id KEY --run-id RUN_UUID --receipt-hash SHA256 --confirm
+```
+
+本机验收用虚构持仓 CSV 模拟落地后回执写入失败、SQLite 重开、后续增量覆盖和补记响应丢失。原批次仍为 3 行，当前表为 4 行，落地共用原事务计数。旧数据面快照可由新版读取。包含新增回执的状态交给旧版写入前，需要验证回执可以保留，或使用只读回滚。正式环境结果单独验收。
