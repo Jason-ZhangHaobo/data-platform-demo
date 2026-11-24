@@ -2,6 +2,8 @@ import {readAgentCalendarPreparation,localAgentCalendarSource,assertAgentCalenda
 import {checkRegisteredPackageInput} from './package-input-check.mjs';
 import {nativeSyncReviewPreflight} from './native-sync-review.mjs';
 import {nativeSyncReviewPath} from './native-sync-review-client.mjs';
+import {nativeSyncPublicationReceipt,nativeSyncMonitor} from './native-sync-publication.mjs';
+import {nativeSyncReceiptPath,publicationBinding} from './native-sync-publication-client.mjs';
 import {buildInputEvidence} from './input-evidence.mjs';
 import {changeHash} from './csv-changelog.mjs';
 import {createQualityArchiveSource,qualityArchiveSelection} from './quality-source.mjs';
@@ -5800,6 +5802,7 @@ export function createV2Server(options = {}) {
             consent: body.syncConsent, actorId: approver.id, enabled: syncSqlLocal && releaseSchedulerMode === "LOCAL_TIMER" });
           const approvedAt = syncConsent ? options.now?.() ?? Date.now() : Date.now();
           const syncReviewDigest = syncConsent && syncSqlReviewDigest(latestRehearsal, latestReview);
+          if(syncConsent&&body.expectedSyncRehearsalDigest!==undefined)assertSyncSqlReviewBinding(latestRehearsal,body.expectedSyncRehearsalDigest);
           const findExistingApproval = () => store
             .list("release_approval", PROJECT)
             .find(
@@ -5819,6 +5822,9 @@ export function createV2Server(options = {}) {
             return existingApproval;
           };
           const existingApproval = findExistingApproval();
+          if(existingApproval&&syncConsent&&body.expectedSyncRehearsalDigest!==undefined&&
+            store.deduplicatedId(PROJECT+':release-approval:'+text(req.headers['idempotency-key'],1,100))!==existingApproval.id)
+            throw Object.assign(fail(409,'此版本已有批准，请返回原发布请求查询；不能借新请求沿用或重批'),{code:'SYNC_APPROVAL_USE_ORIGINAL_REQUEST'});
           if (existingApproval) return json(res, 200, checkExistingApproval(existingApproval));
           if (syncConsent) assertSyncSqlReviewBinding(latestRehearsal, latestReview.syncRehearsalDigest);
           const key = text(req.headers["idempotency-key"], 1, 100),
@@ -6385,6 +6391,20 @@ export function createV2Server(options = {}) {
           publication: {available: Boolean(privatePublicationConfig && cloudPublication), scope: "PRIVATE_CLOUD_TEST", sourceKind: "MANUAL", sourceRunId: source.run.id,
             agentIndependentE2E: false, reason: privatePublicationConfig && cloudPublication ? "审阅此人工版本的确切包与成功演练后，可创建两个受控云端测试批次；人工来源保留，原开发、参考和费用记录不变。" : bundle?"当前人工辅助交付记录已保留；云端调度驱动尚未配置，发布需在确切包的有效权限范围内进行。":"先生成并演练当前版本的交付文件；云端调度驱动尚未配置，不代表已经发布。"}});
       }
+      const syncReceipt=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/sync-publication\/requests\/([a-f0-9-]+)$/);
+      if(method==='GET'&&syncReceipt){
+        requireSyncSqlLocal(req);
+        const request={taskId:syncReceipt[1],requestId:syncReceipt[2],...Object.fromEntries(url.searchParams)};
+        try{nativeSyncReceiptPath(request);}catch{throw fail(422,'发布回读须指定原请求、交付、审阅及演练摘要');}
+        if(url.searchParams.size!==6)throw fail(422,'发布回读参数不可重复或省略');
+        const input=publicationBinding(request),agent=get('agent',input.taskId);requireDurableAgentOwner(agent,req);
+        const bundle=get('delivery_package',input.packageId),verification=get('delivery_verification',input.verificationId);
+        requireDeliveryEvidence('delivery_package',bundle);requireDeliveryEvidence('delivery_verification',verification);
+        if(bundle.digest!==input.packageDigest)throw fail(409,'发布回读原包摘要已变化');validateAnyDeliveryPackage(bundle);
+        const preflight=nativeSyncReviewPreflight({store,project:PROJECT,actor:workspaceReadActor(req),agent,
+          delivery:store.get('agent_delivery_task',input.deliveryId,PROJECT),bundle,verification,schedulerEnabled:releaseSchedulerMode==='LOCAL_TIMER'});
+        return json(res,200,nativeSyncPublicationReceipt({store,project:PROJECT,request,preflight,bundle,now:options.now?.()??Date.now(),timeUnitMs:releaseTimeUnitMs}));
+      }
       const syncReviewPath=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/sync-review-preflight$/);
       if(method==='GET'&&syncReviewPath){
         requireSyncSqlLocal(req);
@@ -6555,7 +6575,10 @@ export function createV2Server(options = {}) {
               assertFundAgentMonitoring({ bundle, verification, release, batches, events, alerts });
             }));
           }
-          return json(res,200,localTaskPublication(store,PROJECT,agent,selector));
+          return json(res,200,localTaskPublication(store,PROJECT,agent,selector,agent.syncInput?(release)=>{
+            const bundle=get('delivery_package',release.packageId),approval=get('release_approval',release.approvalId);validateAnyDeliveryPackage(bundle);
+            nativeSyncMonitor({store,project:PROJECT,bundle,approval,verification:get('delivery_verification',approval.rehearsalId),review:get('delivery_review',approval.reviewId),timeUnitMs:releaseTimeUnitMs});
+          }:undefined));
         }
         if(agent.executionMode!==durableSqlAgentMode)throw fail(422,"云端发布仅支持持久SQL Agent任务");
         if (method==="GET" && !privatePublication[2]) {

@@ -1,5 +1,9 @@
 # V2 API 契约与实现边界
 
+## 原生持仓发布请求与监控
+
+`GET /agent/tasks/:id/sync-publication/requests/:uuid`接受唯一`deliveryId/packageId/packageDigest/verificationId/reviewId/syncRehearsalDigest`。只读阶段回执与两批监控不激活、不重跑；批准/激活仍复用原接口。新增CLI`agent sync-release-read/sync-release`、MCP`agent_sync_release_read/agent_sync_release`，发布明确确认。后端批准可核对`expectedSyncRehearsalDigest`，详见[契约](native-sync-publication.md)。
+
 ## 原生持仓审阅预检
 
 `GET /agent/tasks/:taskId/sync-review-preflight`严格指定唯一`deliveryId/packageId/packageDigest/verificationId`，原作者/本机/原生来源/代码/冻结输入/成功演练一致才返回。GUI、`agent sync-review-preflight`与MCP`agent_sync_review_preflight`共享校验；不创建批准或计算，未同意范围与本人文件审阅分开。见[契约及恢复](native-sync-review.md)。
