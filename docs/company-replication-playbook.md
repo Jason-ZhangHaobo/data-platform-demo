@@ -145,6 +145,19 @@ API是原子能力和治理契约；GUI、CLI、MCP是不同使用入口，不�
 
 资料包含标识和业务快照时，按授权在受保护目录交接。原始凭证从企业凭证库分配，复核报告只留必要编号、摘要、计数及归因。保持业务版本、报告及分页调用编号原样，遇到缺项回查原记录。
 
+### 交接公网验收与评测状态
+
+公网试点按案例交接原 V3 检查点、确切审阅摘要、完成回执和两个原批次的独立消费计划与报告。计划和报告都保留原发布、固定接口版本、应用撤销及调用摘要。临时定时器和权限的清理回执单独留存。把授权材料保存在受保护目录，保留受校验的原报告路径。
+
+在仓库根目录用当前源码执行只读核验。设置 `V3_CHECKPOINT` 和 `V3_COMPLETION` 为已交接文件的绝对路径。完成回执尚未生成时使用第一条查看原阶段。
+
+```sh
+node bin/shuduo.mjs agent v3-run --checkpoint "$V3_CHECKPOINT"
+node bin/shuduo.mjs agent v3-run --checkpoint "$V3_CHECKPOINT" --completion-file "$V3_COMPLETION"
+```
+
+记录 `expectedCaseCount`、`verifiedCloudCaseCount`、`cases[].checkpointStage` 和 `score.directAutonomousSuccesses`。两批是同一个案例的执行证据。正式公网匹配成功和全链路直接自主计分分别按评测契约核对。实际首屏和网络验收使用独立浏览器记录。 [正式 V3 复核步骤](live-lifecycle-evaluation.md#核验原案例并查看-20-例续接状态) · [正式浏览器验收](acceptance.md)
+
 ### 在新目录走查本机留存证据
 
 使用仓库对应源码和 Node.js 24。只读复核直接打开保存库，可在没有运行中的数舵服务和模型凭证时执行。先把授权提供的两组证据存入独立目录，设置 `WEALTH_DIR`、`FUND_DIR` 和尚无同名报告的受保护目录 `ACCEPTANCE_OUT`。命令中的其他变量为交接表所列原编号或 SHA-256。缺少留存库时，先按[本机启动与参考流程](v2-quickstart.md#在空目录复刻并读回证据)准备样例，再按[财富管理原生集成](local-real-spark-service-integration.md)或[基金保存证据复核](acceptance.md#复核已保存的基金-agent-端到端证据)走对应流程。
