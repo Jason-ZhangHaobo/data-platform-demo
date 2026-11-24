@@ -348,6 +348,8 @@ shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CA
 
 现金变更签名旅程的本机回归独立验证现金与总资产，覆盖失败修正、演练、双批发布和签名消费。带 `SHUDUO_TEST_LOCAL_SPARK_WORKBENCH=true` 执行 `test/v2/public-development-journey.test.mjs` 中的 `cash-change` 旅程时，计算使用本机 Spark，模型和事件使用测试夹具，完成范围为 `LOCAL_MATCHED_ONLY`。
 
+同一回归文件还从本机已生成的首例完成回执续接第二例。模拟创建响应丢失和进程重开后，只读查询按原请求找回同一任务。签名事件沿原任务完成现金变更独立核验和八文件交付。恢复只读后，原任务和交付回执仍可核对；推进请求被拒，模型和 Spark 用量保持原记录。这一条回归的验证范围截至第二例交付生成。
+
 ### 续接基于已核验父版本的派生案例
 
 基础案例结算后，沿同一 `v3-prepare-next` 和 `--case-records` 顺序准备目录中的派生案例。仅选择各自父案例已核验成功的条目。父案例确认失败时，报告仍保留对应派生案例及其来源状态，随后选择其他有成功父版本的案例。
