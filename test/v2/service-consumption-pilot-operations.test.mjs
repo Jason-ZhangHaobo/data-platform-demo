@@ -14,6 +14,7 @@ import { runServiceCodePrestage } from '../../scripts/service-code-prestage.mjs'
 import { readReadonlyRuntimeProbe } from '../../scripts/readonly-runtime-verification.mjs';
 import { currentLiveLifecycleContract, liveLifecyclePlan } from '../../src/v2/live-lifecycle-evaluation.mjs';
 import { recoveryDigest } from '../../scripts/development-recovery-window.mjs';
+import { nextCloudConsumptionScope, nextCloudDeliveryBindingProtocol } from '../../scripts/next-cloud-v3-delivery-binding.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const failure = safeCode => Object.assign(new Error(safeCode), { safeCode });
@@ -123,7 +124,7 @@ function fixture(options = {}) {
     const plan = { ...structuredClone(lastPlan ?? basePlan), mode,
       ...(lastReport ? { phase: lastReport.phase, baseline: lastReport.baseline,
         ...(lastReport.servicePlanDigest ? { servicePlanDigest: lastReport.servicePlanDigest } : {}),
-        ...(lastPlan.scope === firstCloudConsumptionScope ? {} : {
+        ...([firstCloudConsumptionScope, nextCloudConsumptionScope].includes(lastPlan.scope) ? {} : {
           stagedDigest: lastReport.staged && functionDigest(lastReport.staged),
         }), candidate: lastReport.candidate,
         ...(lastReport.activated ? { activated: lastReport.activated } : {}), priorUsage: lastReport.cumulativeUsage,
@@ -1119,6 +1120,48 @@ function existingLiveServiceFixture(f, sequence = 1, previousServiceClose) {
   };
 }
 const appRevoked = () => ({state:'REVOKED',evidenceDigest:sha('synthetic app revocation proof')});
+
+function nextLiveServiceFixture(f) {
+  const {firstCase, ...base}=existingLiveServiceFixture(f);
+  const definition=liveLifecyclePlan(2,{contractId:currentLiveLifecycleContract.id}).selectedCases[1];
+  const nextCase={...firstCase,protocol:'SHUDUO_V3_NEXT_CHECKPOINT_BINDING_V1',caseId:definition.id,
+    contextId:definition.contextId,checkpointDigest:sha('synthetic cash change checkpoint'),requestKeyHash:sha('synthetic next case request key'),
+    requestBodyHash:sha(JSON.stringify({message:definition.request,sql:definition.seedSql,contextId:definition.contextId})),
+    previousCase:{checkpointDigest:firstCase.checkpointDigest,completionDigest:sha('synthetic first completion'),
+      reserveCny:88,approvalDigest:sha('synthetic first development approval')}};
+  const publicationApprovalDigest=sha('synthetic cash change publication approval');
+  const releaseBinding={...base.releaseBinding,publicationApprovalDigest};
+  const nextCaseDelivery={protocol:nextCloudDeliveryBindingProtocol,caseId:nextCase.caseId,contextId:nextCase.contextId,
+    checkpointDigest:nextCase.checkpointDigest,predecessorCompletionDigest:nextCase.previousCase.completionDigest,
+    developmentApprovalDigest:sha('synthetic cash change development approval'),approvalDigest:base.approvalDigest,
+    taskId:releaseBinding.taskId,packageId:releaseBinding.packageId,packageDigest:releaseBinding.packageDigest,
+    verificationId:releaseBinding.verificationId,reviewDigest:releaseBinding.reviewDigest,
+    publicationApprovalDigest,releaseId:releaseBinding.releaseId,batchIds:releaseBinding.batchIds};
+  return {...base,scope:nextCloudConsumptionScope,priorReserveCny:nextCase.previousCase.reserveCny,nextCase,nextCaseDelivery,releaseBinding};
+}
+
+test('next cash-change services close with the exact publication and no code or timer IO', async () => {
+  const f=fixture(), plan=nextLiveServiceFixture(f);
+  const opened=await f.step('activate',plan);
+  assert.equal(opened.phase,'OPENED');
+  assert.deepEqual(opened.nextCaseDelivery,plan.nextCaseDelivery);
+  assert.deepEqual(opened.releaseBinding,plan.releaseBinding);
+  const closed=await f.step('close',{applicationBoundary:appRevoked()});
+  assert.equal(closed.phase,'CLOSED_READONLY');
+  assert.deepEqual(closed.nextCase,plan.nextCase);
+  assert.deepEqual(f.current,f.baseline);
+  assert.equal(closed.cumulativeUsage.configWrites,2);
+  for (const key of ['objectGets','objectPuts','triggerCreates','triggerDeletes','permissionProbes'])
+    assert.equal(closed.cumulativeUsage[key],0);
+
+  for (const change of [p=>{p.releaseBinding.publicationApprovalDigest=sha('foreign approval');},
+    p=>{p.nextCaseDelivery.contextId='holdings-t1';},p=>{p.priorReserveCny--; }]) {
+    const invalid=fixture(), foreign=nextLiveServiceFixture(invalid);
+    change(foreign);
+    await assert.rejects(invalid.step('activate',foreign),/FIRST_V3_SERVICE_LIVE_APPLICATION_UNCONFIRMED/);
+    assert.deepEqual(invalid.calls,[]);
+  }
+});
 
 test('live first-case services reuse exact original code and restore read-only after active expiry', async () => {
   const f=fixture(), first=existingLiveServiceFixture(f);

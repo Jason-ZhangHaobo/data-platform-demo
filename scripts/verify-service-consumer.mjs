@@ -136,10 +136,10 @@ export function validateConsumerPlan(plan) {
 }
 
 // No redirects, proxy configuration, cookies, arbitrary headers, POSTs or retries.
-function requestOnce(url, token, timeoutMs) {
+function requestOnce(url, token, timeoutMs, agent) {
   return new Promise((resolveResponse, reject) => {
     const transport = url.protocol === "https:" ? https : http;
-    const request = transport.request(url, { method: "GET", agent: false,
+    const request = transport.request(url, { method: "GET", agent,
       headers: { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } }, (response) => {
       const chunks = []; let size = 0;
       response.on("data", (chunk) => {
@@ -261,6 +261,8 @@ export async function runConsumerAcceptance({ planFile, tokenFile, phase = "cons
   const token = readPrivate(tokenFile, 200).trim();
   requireThat(/^sz_(?:private|local)_[A-Za-z0-9_-]{32}$/.test(token), "INVALID_TOKEN_FILE");
   const planHash = digest(canonical(plan)), credentialDigest = digest(token), lock = `${plan.reportFile}.lock`;
+  const transport = new URL(plan.origin).protocol === "https:" ? https : http;
+  const agent = new transport.Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1 });
   let lockDescriptor, report, phaseStarted = false;
   try {
     try { lockDescriptor = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
@@ -297,7 +299,7 @@ export async function runConsumerAcceptance({ planFile, tokenFile, phase = "cons
         const url = new URL(`/api/v2/open/${service.type === "DAPI" ? "dapis" : "xapis"}/${service.slug}`, plan.origin);
         for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
         requireThat(Date.now() < bounds.deadline, "FIXED_DEADLINE_REACHED");
-        const response = await requestOnce(url, auth, Math.max(1, Math.min(plan.timeoutMs, bounds.deadline - Date.now())));
+        const response = await requestOnce(url, auth, Math.max(1, Math.min(plan.timeoutMs, bounds.deadline - Date.now())), agent);
         entry.statusCode = response.status;
         requireThat(response.status === expectedStatus, "HTTP_STATUS_MISMATCH");
         if (expectedStatus === 200) {
@@ -344,6 +346,7 @@ export async function runConsumerAcceptance({ planFile, tokenFile, phase = "cons
     }
     throw new AcceptanceError(safeCode(error));
   } finally {
+    agent.destroy();
     if (lockDescriptor !== undefined) { closeSync(lockDescriptor); unlinkSync(lock); }
   }
 }
