@@ -19,6 +19,7 @@ import { developmentRecoveryScope, developmentRecoveryModes, runDevelopmentRecov
 import { inspectedControlEntryScriptBytes, readInspectedWebIndex, readInspectedWebScript, WEB_INDEX_LIMIT } from './control-web-entry.mjs';
 import { readReadonlyRuntimeProbe, verifyReadonlyRuntime } from './readonly-runtime-verification.mjs';
 import { cloudV3DevelopmentScope, nextCloudDevelopmentScope, firstCloudDevelopmentModes, firstCloudApplicationBinding } from './first-cloud-v3-window.mjs';
+import { nextCloudPublicationScope, nextCloudConsumptionScope, nextCloudDeliveryApplicationBinding } from './next-cloud-v3-delivery-binding.mjs';
 
 const check = (v, code) => { if (!v) throw Object.assign(new Error(code), { safeCode: code }); };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -102,7 +103,7 @@ export function publicationPilotEnvironment(before, plan, now = Date.now()) {
   return { ...e, V2_FC_PUBLIC_READ_ONLY: 'false', V2_FC_PUBLIC_WRITE_SCOPE: 'PUBLICATION_ONLY',
     V2_PUBLIC_PUBLICATION_TASK_ID: target.taskId, V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST: target.packageDigest, V2_PUBLIC_PUBLICATION_VERIFICATION_ID: target.verificationId,
     V2_PUBLIC_PUBLICATION_STARTS_AT: new Date(now).toISOString(),
-    V2_PUBLIC_PUBLICATION_EXPIRES_AT: new Date(plan.scope === firstCloudPublicationScope ? plan.activeDeadline : now + 2 * 3600000).toISOString(),
+    V2_PUBLIC_PUBLICATION_EXPIRES_AT: new Date(cloudPublicationScope(plan.scope) ? plan.activeDeadline : now + 2 * 3600000).toISOString(),
     V2_PRIVATE_RELEASE_ENABLED: 'true', V2_PRIVATE_RELEASE_TRIGGER_NAMES: plan.triggerNames.join(','), V2_SCHEDULER_TICK_SECRET: plan.schedulerSecret,
     V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: String(runLimit), V2_ACCOUNT_MONTHLY_SPEND_CNY: String(plan.billCny) };
 }
@@ -133,7 +134,7 @@ export function validateServicePilotReserve(plan, preStaged = validatePilotPacka
 function servicePilotBaseline(before, plan, now) {
   const e = before?.environmentVariables;
   const preStaged = validatePilotPackageTransport(plan);
-  const liveService = plan?.scope === firstCloudConsumptionScope;
+  const liveService = cloudConsumptionScope(plan?.scope);
   check(liveService ? firstCloudConsumptionBudget(plan) :
     plan?.scope === 'INVITED_SERVICE_CONSUMPTION_PILOT_V1' && plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 &&
     plan.maxIncrementCny === 2 && plan.monthlyCny === 200 && validateServicePilotReserve(plan, preStaged), 'SERVICE_PILOT_SCOPE_INVALID');
@@ -310,9 +311,20 @@ const firstCloudConsumptionModes = ['activate', 'close'];
 const firstCloudPublicationCleanupMs = 5 * 60 * 1000;
 const publicationUuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 const publicationDigest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const cloudPublicationScope = scope => scope === firstCloudPublicationScope || scope === nextCloudPublicationScope;
+const cloudConsumptionScope = scope => scope === firstCloudConsumptionScope || scope === nextCloudConsumptionScope;
+function cloudDeliveryApplication(plan, kind) {
+  if (plan.scope === nextCloudPublicationScope || plan.scope === nextCloudConsumptionScope) {
+    const app = nextCloudDeliveryApplicationBinding(plan, kind);
+    if (app && plan.priorReserveCny >= plan.nextCase.previousCase.reserveCny) return app;
+    return;
+  }
+  if (plan.nextCase !== undefined || plan.nextCaseDelivery !== undefined || plan.firstCase?.origin !== formalOrigin) return;
+  return firstCloudApplicationBinding(plan.applicationInspection, plan.firstCase);
+}
 function publicationBudgetScope(plan) {
   if (plan?.maxModelCalls !== 0 || plan.maxSparkRuns !== 2 || plan.monthlyCny !== 200) return false;
-  if (plan.scope === firstCloudPublicationScope) {
+  if (cloudPublicationScope(plan.scope)) {
     return Number.isFinite(plan.maxIncrementCny) && plan.maxIncrementCny > 0 && plan.maxIncrementCny <= 5 &&
       Number.isFinite(plan.priorReserveCny) && plan.priorReserveCny >= 76 &&
       plan.priorReserveCny + plan.maxIncrementCny < plan.monthlyCny;
@@ -331,7 +343,7 @@ function assertFirstCloudPublicationActivation(plan, now) {
   check(isDeepStrictEqual(environment, expected), 'PUBLICATION_ACTIVE_SNAPSHOT_MISMATCH');
 }
 
-function validateFirstCloudPublicationPlan(plan, now) {
+function validateCloudPublicationPlan(plan, now) {
   check(firstCloudPublicationModes.includes(plan.mode) && publicationBudgetScope(plan) &&
     Number.isSafeInteger(plan.activeDeadline) && Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) &&
     plan.issuedAt <= now && plan.issuedAt < plan.activeDeadline &&
@@ -339,9 +351,9 @@ function validateFirstCloudPublicationPlan(plan, now) {
     plan.deadline - plan.issuedAt <= 3600000 && now < plan.deadline &&
     (['cleanup-timers', 'close'].includes(plan.mode) || now < plan.activeDeadline),
   'FIRST_V3_PUBLICATION_WINDOW_INVALID');
-  const app = firstCloudApplicationBinding(plan.applicationInspection, plan.firstCase);
+  const app = cloudDeliveryApplication(plan, 'publication');
   const baseline = plan.baseline, code = plan.previous;
-  check(app && plan.firstCase.origin === formalOrigin && baseline && code && Object.keys(code).length === 3 &&
+  check(app && baseline && code && Object.keys(code).length === 3 &&
     code.sha256 === app.sha256 && code.bytes === app.bytes &&
     typeof code.crc64 === 'string' && /^\d+$/.test(code.crc64) &&
     baseline.codeSize === code.bytes && String(baseline.codeChecksum) === code.crc64 &&
@@ -385,16 +397,16 @@ function firstCloudConsumptionBudget(plan) {
     plan.priorReserveCny + plan.maxIncrementCny < plan.monthlyCny;
 }
 
-function validateFirstCloudConsumptionPlan(plan, now) {
+function validateCloudConsumptionPlan(plan, now) {
   check(firstCloudConsumptionModes.includes(plan.mode) && firstCloudConsumptionBudget(plan) &&
     Number.isSafeInteger(plan.activeDeadline) && Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) &&
     plan.issuedAt <= now && plan.issuedAt < plan.activeDeadline &&
     plan.activeDeadline + firstCloudPublicationCleanupMs <= plan.deadline &&
     plan.deadline - plan.issuedAt <= 3600000 && now < plan.deadline &&
     (plan.mode === 'close' || now < plan.activeDeadline), 'FIRST_V3_SERVICE_WINDOW_INVALID');
-  const app = firstCloudApplicationBinding(plan.applicationInspection, plan.firstCase);
+  const app = cloudDeliveryApplication(plan, 'consumption');
   const baseline = plan.baseline, code = plan.previous;
-  check(app && plan.firstCase.origin === formalOrigin && baseline && code && Object.keys(code).length === 3 &&
+  check(app && baseline && code && Object.keys(code).length === 3 &&
     code.sha256 === app.sha256 && code.bytes === app.bytes &&
     typeof code.crc64 === 'string' && /^\d+$/.test(code.crc64) &&
     baseline.codeSize === code.bytes && String(baseline.codeChecksum) === code.crc64 &&
@@ -403,7 +415,7 @@ function validateFirstCloudConsumptionPlan(plan, now) {
       'cloudTransferContinuation','triggerNames','timerRecords','timerPreparedAt','schedulerSecret','permissionProbe','releaseId']
       .some(key => Object.hasOwn(plan, key)), 'FIRST_V3_SERVICE_LIVE_APPLICATION_UNCONFIRMED');
   const release = plan.releaseBinding, batch = plan.target?.sourceReleaseRunId;
-  check(release && Object.keys(release).length === 12 &&
+  check(release && Object.keys(release).length === (plan.scope === nextCloudConsumptionScope ? 13 : 12) &&
     ['taskId','packageId','verificationId','releaseId'].every(key => publicationUuid(release[key])) &&
     ['packageDigest','reviewDigest','closeReportDigest'].every(key => publicationDigest(release[key])) &&
     release.baselineDigest === plan.baselineDigest && release.applicationSha256 === app.sha256 &&
@@ -418,7 +430,7 @@ function validateFirstCloudConsumptionPlan(plan, now) {
     check(prior === undefined, 'FIRST_V3_SERVICE_WRONG_BATCH_ORDER');
   } else {
     check(prior && Object.keys(prior).length === 13 &&
-      prior.scope === firstCloudConsumptionScope && prior.sequence === 1 &&
+      prior.scope === plan.scope && prior.sequence === 1 &&
       prior.sourceReleaseRunId === release.batchIds[0] && prior.releaseId === release.releaseId &&
       prior.baselineDigest === plan.baselineDigest && prior.applicationSha256 === app.sha256 &&
       prior.approvalDigest === plan.approvalDigest && publicationDigest(prior.reportDigest) &&
@@ -473,12 +485,12 @@ function assertPilotTimer(actual, record) {
 // tests use synthetic IO only. Service mode never enters timer operations.
 export async function runPublicationPilotOperation(plan, before, report, io) {
   const now = io.now ?? Date.now, wait = io.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
-  const liveService = plan.scope === firstCloudConsumptionScope;
+  const liveService = cloudConsumptionScope(plan.scope);
   const serviceOnly = plan.scope === serviceConsumptionScope || liveService;
-  const livePublication = plan.scope === firstCloudPublicationScope;
+  const livePublication = cloudPublicationScope(plan.scope);
   const reuseLive = livePublication || liveService;
-  if (livePublication) validateFirstCloudPublicationPlan(plan, now());
-  if (liveService) validateFirstCloudConsumptionPlan(plan, now());
+  if (livePublication) validateCloudPublicationPlan(plan, now());
+  if (liveService) validateCloudConsumptionPlan(plan, now());
   const codeOnly = plan.scope === readonlyCodeRefreshScope, noTimers = serviceOnly || codeOnly;
   const web = codeOnly ? plan.readonlyWeb : undefined;
   const extendedCode = codeOnly && (plan.budgetFixContinuation !== undefined || plan.targetTaskCodeContinuation !== undefined);
@@ -523,6 +535,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     priorUsage: structuredClone(plan.priorUsage), cumulativeUsage: usage, target: plan.target, releaseId: plan.releaseId, previous: plan.previous,
     baseline: ['stage', 'resume-stage'].includes(plan.mode) ? before : plan.baseline, candidate: plan.candidate,
     activated: plan.activated,
+    ...(plan.scope === nextCloudPublicationScope || plan.scope === nextCloudConsumptionScope ? {
+      nextCase: structuredClone(plan.nextCase), nextCaseDelivery: structuredClone(plan.nextCaseDelivery) } : {}),
     ...(liveService ? { approvalDigest:plan.approvalDigest, sequence:plan.sequence, activeDeadline:plan.activeDeadline,
       priorReserveCny:plan.priorReserveCny, maxIncrementCny:plan.maxIncrementCny,
       releaseBinding:structuredClone(plan.releaseBinding), previousServiceClose:plan.previousServiceClose,
@@ -1029,10 +1043,12 @@ async function main(env = process.env) {
       check(env.V2_PILOT_BUILD_RUN === plan.buildRunId && env.V2_PILOT_ARTIFACT_ID === plan.artifactId, 'ARTIFACT_BINDING_INVALID');
     const boundCase = cloudV3DevelopmentScope(plan.scope);
     const environmentOnly=boundCase || plan.scope===developmentRecoveryScope;
-    check((environmentOnly || ['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, firstCloudPublicationScope, serviceConsumptionScope, firstCloudConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) &&
+    const livePublication = cloudPublicationScope(plan.scope), liveService = cloudConsumptionScope(plan.scope);
+    const publicationOperator = livePublication || liveService || [publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope);
+    check((environmentOnly || publicationOperator || plan.scope === 'INVITED_DEVELOPMENT_PILOT_V1') &&
       plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
       (!boundCase || (plan.scope===nextCloudDevelopmentScope?plan.nextCase:plan.firstCase)?.origin==='https://shuduoai.cn') &&
-      (boundCase ? firstCloudDevelopmentModes : plan.scope === developmentRecoveryScope ? developmentRecoveryModes : plan.scope === publicationScope ? publicationModes : plan.scope === firstCloudPublicationScope ? firstCloudPublicationModes : plan.scope === firstCloudConsumptionScope ? firstCloudConsumptionModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
+      (boundCase ? firstCloudDevelopmentModes : plan.scope === developmentRecoveryScope ? developmentRecoveryModes : plan.scope === publicationScope ? publicationModes : livePublication ? firstCloudPublicationModes : liveService ? firstCloudConsumptionModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
     check(plan.issuedAt <= Date.now() && (plan.deadline > Date.now() || (environmentOnly && ['close', 'rollback'].includes(plan.mode))) &&
       plan.deadline - plan.issuedAt <= (environmentOnly ? 7200000 : 3600000), 'PLAN_EXPIRED');
     report.scope = plan.scope; report.planVerified = true; save();
@@ -1056,7 +1072,7 @@ async function main(env = process.env) {
     }
     const credentials = { accessKeyId: env.ALIBABA_CLOUD_ACCESS_KEY_ID, accessKeySecret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET, securityToken: env.ALIBABA_CLOUD_SECURITY_TOKEN };
     const bucket = before.environmentVariables.OSS_BUCKET;
-    if ([publicationScope, firstCloudPublicationScope, serviceConsumptionScope, firstCloudConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) {
+    if (publicationOperator) {
       await runPublicationPilotOperation(plan, before, report, {
         save,
         command: (args, body) => {
@@ -1065,15 +1081,15 @@ async function main(env = process.env) {
           return command([...args, '--body-file', file]);
         },
         readCandidate: () => {
-          check(plan.scope !== firstCloudPublicationScope && plan.scope !== firstCloudConsumptionScope,
-            plan.scope === firstCloudConsumptionScope ? 'FIRST_V3_SERVICE_CODE_IO_FORBIDDEN' : 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
+          check(!livePublication && !liveService,
+            liveService ? 'FIRST_V3_SERVICE_CODE_IO_FORBIDDEN' : 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
           check(!preStaged, 'PILOT_PRESTAGED_CANDIDATE_READ_FORBIDDEN');
           check(env.V2_PILOT_BUILD_RUN === plan.buildRunId && env.V2_PILOT_ARTIFACT_ID === plan.artifactId, 'ARTIFACT_BINDING_INVALID');
           return readFileSync('.candidate/v2-function.zip');
         },
         object: (pkg, method, bytes, query) => {
-          check(plan.scope !== firstCloudPublicationScope && plan.scope !== firstCloudConsumptionScope,
-            plan.scope === firstCloudConsumptionScope ? 'FIRST_V3_SERVICE_CODE_IO_FORBIDDEN' : 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
+          check(!livePublication && !liveService,
+            liveService ? 'FIRST_V3_SERVICE_CODE_IO_FORBIDDEN' : 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
           if (preStaged) check(method === 'GET' && bytes === undefined, 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
           const request = privateOssRequest({ bucket, region: config.region, credentials, key: controlPackageObject(pkg.sha256), method, body: bytes, query });
           return fetch(request.url, { ...request.options, signal: AbortSignal.timeout(method === 'PUT' ? 300000 : 120000) });

@@ -22,9 +22,11 @@ async function cli(args) {
 }
 
 test("real loopback consumer proves rows, exact versions, nested joins, pagination, auth, limits and later revocation", async (t) => {
-  const f = await fixture(t);
+  const sockets = new Set();
+  const f = await fixture(t, { onRequest: (_state, request) => sockets.add(request.socket) });
   const consumed = await f.run();
   assert.equal(consumed.requestCount, 14); assert.equal(consumed.evidence, "LOCAL_HTTP_FIXTURE");
+  assert.equal(sockets.size, 1);
   const before = load(f.plan.reportFile);
   assert.equal(before.phases.consume, "PASSED"); assert.equal(before.phases.revoked, "NOT_STARTED");
   assert.equal(before.requests.filter((entry) => entry.childBindingsVerified).length, 3);
@@ -33,6 +35,7 @@ test("real loopback consumer proves rows, exact versions, nested joins, paginati
   assert.equal(f.state.requests.filter((entry) => entry.path.endsWith("cash-demo")).length, 1);
   f.state.revoked = true;
   assert.equal((await f.run({ phase: "revoked" })).requestCount, 15);
+  assert.equal(sockets.size, 2);
   const after = load(f.plan.reportFile);
   assert.deepEqual(after.requests.slice(0, 14), before.requests);
   assert.deepEqual(after.phases, { consume: "PASSED", revoked: "PASSED" });

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { runPublicationPilotOperation, markUnacceptedPilotFailure, firstCloudPublicationScope } from '../../scripts/deploy-development-pilot.mjs';
+import { nextCloudDeliveryBindingProtocol, nextCloudPublicationScope } from '../../scripts/next-cloud-v3-delivery-binding.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
 import { publicationPilotTimerNames } from '../../scripts/publication-pilot-timers.mjs';
 import { currentLiveLifecycleContract, liveLifecyclePlan } from '../../src/v2/live-lifecycle-evaluation.mjs';
@@ -41,7 +42,10 @@ function fixture() {
   const io = {
     now: () => now, wait: async () => {},
     save: report => { saved = structuredClone(report); },
-    readCandidate: async () => candidateBytes,
+    readCandidate: async () => {
+      assert.notEqual(controls.forbidCandidateRead, true, 'formal publication must reuse the inspected application');
+      return candidateBytes;
+    },
     command: async (args, body) => {
       assert.deepEqual(saved.cumulativeUsage, activeReport.cumulativeUsage, 'usage must be saved before every effect');
       calls.push({ args: [...args], body: structuredClone(body), permissionProbe: activeReport.permissionProbe?.outcome === 'REQUESTED' });
@@ -115,7 +119,7 @@ function fixture() {
   async function step(mode, changes = {}) {
     const plan = { ...structuredClone(lastPlan ?? basePlan), mode,
       ...(lastReport ? { phase: lastReport.phase, baseline: lastReport.baseline,
-        ...(lastPlan.scope === firstCloudPublicationScope ? {} : {
+        ...([firstCloudPublicationScope, nextCloudPublicationScope].includes(lastPlan.scope) ? {} : {
           stagedDigest: lastReport.staged && functionDigest(lastReport.staged),
         }), permissionProbe: lastReport.permissionProbe,
         candidate: lastReport.candidate, activated: lastReport.activated, timerRecords: lastReport.timerRecords,
@@ -383,16 +387,19 @@ test('workflow downloads frozen code only for deploy or stage and preserves encr
 });
 
 
-function firstCloudPublicationFixture(f) {
-  const { selectedCases: [definition], caseSetDigest } = liveLifecyclePlan(1, { contractId: currentLiveLifecycleContract.id });
+function firstCloudPublicationFixture(f, { next = false } = {}) {
+  const { selectedCases, caseSetDigest } = liveLifecyclePlan(next ? 2 : 1, { contractId: currentLiveLifecycleContract.id });
+  const definition = selectedCases.at(-1);
   const sourceRevision = 'b'.repeat(40), applicationTree = 'c'.repeat(40);
-  const firstCase = {
-    protocol: 'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1',
+  const caseBinding = {
+    protocol: next ? 'SHUDUO_V3_NEXT_CHECKPOINT_BINDING_V1' : 'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1',
     evaluationRunId: '00000000-0000-4000-8000-000000000012',
     caseId: definition.id, contextId: definition.contextId, caseSetDigest, projectId: 'synthetic-securities',
-    origin: 'https://shuduoai.cn', sourceRevision, applicationTree, checkpointDigest: sha('first checkpoint'),
+    origin: 'https://shuduoai.cn', sourceRevision, applicationTree, checkpointDigest: sha(next ? 'next checkpoint' : 'first checkpoint'),
     requestBodyHash: sha(JSON.stringify({ message: definition.request, sql: definition.seedSql, contextId: definition.contextId })),
     requestKeyHash: sha('synthetic original key'),
+    ...(next ? { previousCase: { checkpointDigest: sha('first checkpoint'), completionDigest: sha('first completion'),
+      approvalDigest: sha('first development approval'), reserveCny: 88 } } : {}),
   };
   const applicationInspection = {
     protocol: 'shuduo-control-artifact-inspection/v1', applicationSource: sourceRevision, applicationTree,
@@ -404,12 +411,18 @@ function firstCloudPublicationFixture(f) {
   const target = { ...f.basePlan.target, verificationId: '00000000-0000-4000-8000-000000000002' };
   const publicationApproval = { ...target, packageId: '00000000-0000-4000-8000-000000000013',
     approvalDigest: sha('scope and human approval'), reviewDigest: sha('exact review') };
+  const caseProof = next ? {
+    nextCase: caseBinding,
+    nextCaseDelivery: { protocol: nextCloudDeliveryBindingProtocol, caseId: caseBinding.caseId, contextId: caseBinding.contextId,
+      checkpointDigest: caseBinding.checkpointDigest, predecessorCompletionDigest: caseBinding.previousCase.completionDigest,
+      developmentApprovalDigest: sha('next development approval'), ...publicationApproval },
+  } : { firstCase: caseBinding };
   const { approvalDigest, ...releaseTarget } = publicationApproval;
   const releaseId = '00000000-0000-4000-8000-000000000003';
   return {
-    activate: { scope: firstCloudPublicationScope, phase: 'READONLY_VERIFIED', baseline: f.baseline,
-      previous: f.previous, candidate: f.previous, priorReserveCny: 76, maxIncrementCny: 5,
-      activeDeadline: f.basePlan.deadline - 5 * 60 * 1000, firstCase, applicationInspection, target, publicationApproval },
+    activate: { scope: next ? nextCloudPublicationScope : firstCloudPublicationScope, phase: 'READONLY_VERIFIED', baseline: f.baseline,
+      previous: f.previous, candidate: f.previous, priorReserveCny: next ? 88 : 76, maxIncrementCny: 5,
+      activeDeadline: f.basePlan.deadline - 5 * 60 * 1000, ...caseProof, applicationInspection, target, publicationApproval },
     timers: { releaseId, releaseBinding: { ...releaseTarget, releaseId, batchCount: 2 } },
   };
 }
@@ -442,6 +455,47 @@ test('first V3 publication reuses the live application and closes during reserve
   assert.deepEqual(f.current, f.baseline);
   assert.ok(f.calls.filter(call => call.args?.[1] === 'PUT').every(call => Object.keys(call.body).join() === 'environmentVariables'));
   assert.equal(f.calls.filter(call => Object.hasOwn(call, 'object')).length, 0);
+});
+
+test('next V3 cash-change publication opens and restores only the reviewed environment', async () => {
+  const f = fixture(), { activate } = firstCloudPublicationFixture(f, { next: true });
+  f.controls.forbidCandidateRead = true;
+  const opened = await f.step('activate', activate);
+  assert.equal(opened.phase, 'OPENED');
+  assert.equal(opened.applicationReused, true);
+  assert.equal(opened.nextCase.contextId, 'cash-change');
+  assert.deepEqual(opened.nextCaseDelivery, activate.nextCaseDelivery);
+  assert.equal(f.current.environmentVariables.V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST, activate.nextCaseDelivery.packageDigest);
+
+  f.advance(activate.activeDeadline - Date.parse('2026-10-27T08:00:00Z') + 1000);
+  const closed = await f.step('close');
+  assert.equal(closed.phase, 'CLOSED_READONLY');
+  assert.equal(closed.controlBaselineVerified, true);
+  assert.equal(closed.timersAbsenceVerified, true);
+  assert.deepEqual(closed.nextCaseDelivery, opened.nextCaseDelivery);
+  assert.deepEqual(f.current, f.baseline);
+  assert.deepEqual([...f.timers.values()], [f.unrelated]);
+  assert.equal(closed.cumulativeUsage.configWrites, 2);
+  assert.equal(closed.cumulativeUsage.objectGets, 0);
+  assert.equal(closed.cumulativeUsage.objectPuts, 0);
+  assert.equal(closed.cumulativeUsage.triggerCreates, 0);
+  assert.ok(f.calls.filter(call => call.args?.[1] === 'PUT').every(call => Object.keys(call.body).join() === 'environmentVariables'));
+  assert.ok(!f.calls.some(call => Object.hasOwn(call, 'object')));
+});
+
+test('next V3 publication rejects a mismatched predecessor, prior approval or reduced reserve before IO', async () => {
+  for (const change of [
+    p => { p.nextCaseDelivery.predecessorCompletionDigest = sha('different predecessor'); },
+    p => { p.nextCaseDelivery.approvalDigest = p.publicationApproval.approvalDigest = p.nextCase.previousCase.approvalDigest; },
+    p => { p.priorReserveCny = p.nextCase.previousCase.reserveCny - 1; },
+  ]) {
+    const f = fixture(), { activate } = firstCloudPublicationFixture(f, { next: true });
+    f.controls.forbidCandidateRead = true;
+    change(activate);
+    await assert.rejects(f.step('activate', activate), { safeCode: 'FIRST_V3_LIVE_APPLICATION_UNCONFIRMED' });
+    assert.equal(f.calls.length, 0);
+    assert.deepEqual(f.current, f.baseline);
+  }
 });
 
 test('first V3 close seals physical restore and timer absence before HTTP verification', async () => {

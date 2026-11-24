@@ -34,6 +34,7 @@ import { validatePrivateApplicationRequest } from '../../src/v2/private-applicat
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
 import { validateDeliveryPackage } from '../../src/v2/delivery.mjs';
+import { cloudV3PhaseAttribution } from '../../src/v2/cloud-v3-phase-attribution.mjs';
 import { createCloudPublication } from '../../src/v2/cloud-publication.mjs';
 import { batchServiceHistoryTarget, opsPublicationTarget, publicationBatchReportHref, publicationMonitorHref, readOpsPublication } from '../../web/src/ops-publication.ts';
 import { checkedAgentPublication, checkedAgentConsumption, checkedBatchConsumption, checkedExactPublicationReceipt } from '../../web/src/agent-delivery-evidence-read.ts';
@@ -788,6 +789,10 @@ const baseConsumerRows=[
   {client_id:'CLIENT-001',holding_market_value:'1500.00',available_cash:'300.00',total_assets:'1800.00',security_count:2},
   {client_id:'CLIENT-002',holding_market_value:'750.00',available_cash:'200.00',total_assets:'950.00',security_count:1},
 ];
+const cashChangeConsumerRows=[
+  {client_id:'CLIENT-001',holding_market_value:'1500.00',available_cash:'800.00',total_assets:'2300.00',security_count:2},
+  {client_id:'CLIENT-002',holding_market_value:'750.00',available_cash:'200.00',total_assets:'950.00',security_count:1},
+];
 const stockConsumerRows=[
   {client_id:'CLIENT-001',holding_market_value:'1000.00',available_cash:'300.00',total_assets:'1300.00',security_count:1},
   {client_id:'CLIENT-002',holding_market_value:'750.00',available_cash:'200.00',total_assets:'950.00',security_count:1},
@@ -1205,15 +1210,18 @@ async function developWorkbenchInBackground(t,f,taskPath,created,definition,meas
   return {current,drivers:attempts,preparedFiles,deliveryRequestId};
 }
 
-async function requestBoundPublicationJourney(t,{separateApproval=false,backgroundPublication=false,agentConsumption=false,withAgentEvidence=false,backgroundDevelopment=false}={}) {
+async function requestBoundPublicationJourney(t,{separateApproval=false,backgroundPublication=false,agentConsumption=false,
+  withAgentEvidence=false,backgroundDevelopment=false,cashChange=false}={}) {
   const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true,
     ...(backgroundDevelopment?{sqlForAttempt:(attempt,input)=>attempt===1?'SELECT 1 AS wrong_metric':referenceSqlForContext(input.context.id)}:{})});
   const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_WORKBENCH==='true';
-  const definition=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}).selectedCases[0];
+  const caseLimit=cashChange?2:1;
+  const plan=liveLifecyclePlan(caseLimit,{contractId:currentLiveLifecycleContract.id});
+  const definition=plan.selectedCases.at(-1);
   const body={message:definition.request,sql:definition.seedSql,contextId:definition.contextId};
   const key=randomUUID();
   const checkpoint=join(f.directory,'workbench-case.json'), origin=new URL(f.base).origin, requests=[];
-  const plan=liveLifecyclePlan(1,{contractId:currentLiveLifecycleContract.id}), evaluationRunId=randomUUID();
+  const evaluationRunId=randomUUID();
   const startedAt=new Date(f.now()-1000).toISOString();
   const {user:{id:actorId}}=(await f.call('/auth/session')).body;
   const month=(await f.call('/status')).body.budget.month;
@@ -1242,8 +1250,13 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal(created.status,202,created.body.message);
   assert.equal(created.body.requestBound,true);
   assert.equal(created.body.derivedFrom,undefined);
+  // A local predecessor reference isolates the second case's signed journey.
+  // The actual predecessor receipt handoff is exercised by the first-case tests.
+  const previousCase=cashChange?{checkpointDigest:sha256('fixture holdings checkpoint'),
+    completionDigest:sha256('fixture holdings completion'),approvalDigest:null,reserveCny:64}:undefined;
   writeFileSync(checkpoint,JSON.stringify({evaluationRunId,contract:plan.contract,startedAt,caseSetDigest:plan.caseSetDigest,
-    caseLimit:1,origin,projectId:PROJECT,reviewedSource:'a'.repeat(40),submission:{actorId,
+    caseLimit,origin,projectId:PROJECT,reviewedSource:'a'.repeat(40),previousCase,submission:{actorId,
+      ...(cashChange?{submittedAt:created.body.createdAt}:{}),
       bill:{month,unsettledReserveCny:64},usage:{modelCalls:0,remoteSparkRuns:0,remoteSparkSeconds:0}},
     outcomes:[{...liveCaseCheckpoint(definition,startedAt,plan.caseSetDigest,{contractId:plan.contract.id,evaluationRunId}),
       status:'PAUSED',phase:'CODE_AND_DEBUG',taskId:created.body.id,
@@ -1673,7 +1686,8 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   const consumed=[];
   for (const [index,batchId] of batchIds.entries())
     consumed.push(await consumeOriginalBatch(f,cli,{taskId:created.body.id,releaseId,packageDigest:bundle.digest,
-      batchId,sequence:index+1,origin,withAgentEvidence}));
+      batchId,sequence:index+1,origin,withAgentEvidence,
+      ...(cashChange?{expectedRows:cashChangeConsumerRows,differentContextRows:baseConsumerRows}:{})}));
   const selection=new URLSearchParams({agent_task_id:created.body.id,package_digest:bundle.digest,release_id:releaseId});
   const sourcesPath='/data-services/sources?'+selection;
   const originalSources=await f.call(sourcesPath);
@@ -1767,6 +1781,25 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).consumptionAttribution,consumptionAttribution);
   assert.deepEqual(f.store.list('service_call',PROJECT),savedCalls);
   assert.deepEqual(f.store.list('service_app',PROJECT),savedApplications);
+  if(cashChange){
+    const receipt=JSON.parse(readFileSync(completionFile,'utf8'));
+    const item=saved().outcomes[0];
+    const phaseAttribution=cloudV3PhaseAttribution(item,{approvalTimingVerified:true,verifiedCompletionScope:receipt.scope});
+    assert.equal(receipt.caseId,'v3-fresh--cash-change');
+    assert.equal(item.code.contextId,'cash-change');
+    assert.deepEqual(receipt.batchIds,batchIds);
+    const proofs=consumed.map(value=>value.bound.consumption.agent);
+    assert.deepEqual(receipt.agentConsumption,proofs);
+    assert.equal(phaseAttribution.phases.authorizedConsumption,'SIGNED_AGENT_AND_INDEPENDENT_HTTP');
+    assert.deepEqual(phaseAttribution.unconfirmedAutonomousStages,[]);
+    assert.equal(phaseAttribution.directAutonomousEligible,false);
+    assert.ok(savedApplications.every(app=>app.status==='REVOKED'));
+    assert.deepEqual(f.queueCounts(),queueBeforeReadback);
+    t.diagnostic(JSON.stringify({case:receipt.caseId,scope:receipt.scope,modelSource:'DETERMINISTIC_TEST_FIXTURE',
+      cloudEventTransport:'LOCAL_TEST_FIXTURE',spark:measure?'ACTUAL_LOCAL_SPARK':'SYNTHETIC_WORKER_RECEIPTS',
+      phases:phaseAttribution.phases,verifiedCloudCases:0}));
+    return;
+  }
   const run=await cli('v3-run',['--completion-file',completionFile]);
   assert.equal(run.verifiedCloudCaseCount,0);
   assert.equal(run.cases[0].status,'LOCAL_MATCHED_ONLY');
@@ -1857,6 +1890,8 @@ test('v3 keeps separate signed and independent HTTP consumption on both original
   requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true,withAgentEvidence:true}));
 test('one signed holdings case repairs its Spark result and reaches both consumers after reviewed publication',t=>
   requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true,withAgentEvidence:true,backgroundDevelopment:true}));
+test('the signed cash-change case reaches both exact consumers with its own independent cash expectations',t=>
+  requestBoundPublicationJourney(t,{separateApproval:true,backgroundPublication:true,withAgentEvidence:true,backgroundDevelopment:true,cashChange:true}));
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.

@@ -344,6 +344,10 @@ shuduo agent v3-run --checkpoint "$FIRST_CASE_CHECKPOINT" --completion-file "$CA
 
 提交与恢复沿用 `v3-start --confirm` 和 `v3-start --reconcile`。运行时限定受邀管理员的确切需求、SQL、口径与幂等键，丢失响应后只用原编号查询。后续各阶段沿原案例检查点处理。第二例旧报告参数 `--next-checkpoint`、`--next-completion-file` 仍可使用。
 
+后续案例的发布和消费计划使用各自的受保护范围。计划核对冻结案例、前序完成回执、应用制品和本阶段授权。发布绑定同一任务、交付包、演练和审阅。消费进一步核对原发布批准、已关窗的发布和两个成功批次。进入第二批前须回读首批窗口关闭和应用撤销记录。执行器复用运行应用，按原窗口关闭和预算规则恢复只读。
+
+现金变更签名旅程的本机回归独立验证现金与总资产，覆盖失败修正、演练、双批发布和签名消费。带 `SHUDUO_TEST_LOCAL_SPARK_WORKBENCH=true` 执行 `test/v2/public-development-journey.test.mjs` 中的 `cash-change` 旅程时，计算使用本机 Spark，模型和事件使用测试夹具，完成范围为 `LOCAL_MATCHED_ONLY`。
+
 ### 续接基于已核验父版本的派生案例
 
 基础案例结算后，沿同一 `v3-prepare-next` 和 `--case-records` 顺序准备目录中的派生案例。仅选择各自父案例已核验成功的条目。父案例确认失败时，报告仍保留对应派生案例及其来源状态，随后选择其他有成功父版本的案例。
