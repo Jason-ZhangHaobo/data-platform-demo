@@ -40,3 +40,14 @@ test("the workbench exposes its single business context selector before history 
   assert.equal(ui.match(/aria-label="Agent 验证数据"/g)?.length, 1);
   assert.match(ui, /<summary>本次数据与业务口径/);
 });
+
+test("a failed task switch preserves the accepted selection and can retry the exact failed task", () => {
+  const ui = readFileSync("web/src/AgentDevelopmentWorkbench.tsx", "utf8");
+  const selection = ui.slice(ui.indexOf("async function selectTask("), ui.indexOf("async function delegateSavedTask("));
+  const identityCheck = selection.indexOf("const current = checkedAgentTask");
+  assert.ok(identityCheck >= 0 && !selection.slice(0, identityCheck).includes("rememberSelection(id)"));
+  assert.match(selection, /if\(!agentReturnSourceMatches[^\n]+\n\s*rememberSelection\(id\);/);
+  assert.match(selection, /else setTaskReadFailure\(\{ id, message \}\)/);
+  assert.match(ui, /selectTask\(taskReadFailure\.id\).*重新读取此任务/);
+  assert.match(ui, /if \(taskRead\.current\?\.epoch === previousEpoch\) taskRead\.current\.epoch = epoch\.current/);
+});
