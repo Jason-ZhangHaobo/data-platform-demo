@@ -1,4 +1,6 @@
 import {validateChangeSnapshot} from './csv-changelog.mjs';
+import { checkedSyncSnapshot } from './sync-run-snapshot.mjs';
+import { checkedStandardSyncReceipt } from './sync-standard-receipt.mjs';
 import { createHash } from "node:crypto";
 
 const FORMAT = "shuduo-data-state/v1";
@@ -25,6 +27,11 @@ const specs = {
     store:'landingStore', table:'landing_run_snapshots',
     columns:['run_id','target_table','payload','snapshot_hash','byte_count'],
     key:['run_id'], order:'run_id', optional:true,
+  },
+  landingRunReceipts: {
+    store: 'landingStore', table: 'landing_run_receipts',
+    columns: ['run_id', 'target_table', 'payload', 'receipt_hash'],
+    key: ['run_id'], order: 'run_id', optional: true,
   },
   landingChangeTargets:{store:'landingStore',table:'landing_change_targets',columns:['target_table','epoch_id','spec_hash','state_hash','last_run_id','receipt'],key:['target_table'],order:'target_table',optional:true},
   landingChangeKeys:{store:'landingStore',table:'landing_change_keys',columns:['target_table','row_key','last_sequence','event_hash','tombstone'],key:['target_table','row_key'],order:'target_table,row_key',optional:true},
@@ -201,6 +208,23 @@ export function validateDataState(payload, project) {
       throw fail("云端业务状态包含损坏的 JSON 数据");
     }
   }
+  const archives = new Map((payload.tables.landingRunSnapshots ?? []).map(row => [row.run_id, row]));
+  const currentCommits = new Map((payload.tables.landingCommits ?? []).map(row => [row.run_id, row]));
+  try {
+    for (const row of payload.tables.landingRunReceipts ?? []) {
+      const receipt = checkedStandardSyncReceipt(row, project);
+      const archive = archives.get(receipt.runId), current = currentCommits.get(receipt.runId);
+      if (Boolean(archive) !== (receipt.snapshotStatus === 'RETAINED') ||
+          (current && (current.target_table !== receipt.targetTable || current.target_hash !== receipt.targetHash)))
+        throw fail('云端同步提交与原批次归档或当前提交不一致');
+      if (archive) checkedSyncSnapshot(archive, {
+        runId: receipt.runId, targetTable: receipt.targetTable, binding: receipt.binding,
+        targetHash: receipt.targetHash, rowCount: receipt.finalCount, snapshotHash: receipt.landingSnapshotHash,
+      });
+    }
+  } catch {
+    throw fail('云端标准同步落地回执与归档不一致');
+  }
   for(const row of payload.tables.serviceDistributions??[]){if(!snapshotIds.has(row.snapshot_id))throw fail('分布数据引用不存在的快照');try{if(!Array.isArray(JSON.parse(row.rows_json)))throw Error('not rows');}catch{throw fail('分布快照包含损坏JSON');}}
   for (const row of payload.tables.reportSnapshots) {
     try {
@@ -234,6 +258,7 @@ const deleteOrder = [
   "landingRows",
   "landingCommits",
   "landingRunSnapshots",
+  "landingRunReceipts",
   "landingChangeKeys",
   "landingChangeTargets",
   "reportSnapshots",

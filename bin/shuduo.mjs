@@ -10,6 +10,7 @@ import {readFrozenSchedule} from '../src/v2/frozen-schedule-client.mjs';
 import {readTradingCalendars,readTradingCalendarVersion,readTradingDay} from '../src/v2/trading-calendar-client.mjs';
 import {readQualityVersionRequest,qualityVersionRequestPath} from '../src/v2/quality-version-request.mjs';
 import {syncRunSnapshotPath} from '../src/v2/sync-run-snapshot-client.mjs';
+import { readSyncRunRequest, settleSyncRunRequest } from "../src/v2/sync-run-request.mjs";
 import {readSyncSqlArchives,readArchivedSyncedPositions,readMaterializedSyncSqlArchives,readMaterializedSyncedPositions} from '../src/v2/sync-sql-output-schema-client.mjs';
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "../src/v2/delivery-preparation-request.mjs";
 import { submitFundPreparation, readFundPreparation, executeFundPreparation, readFundExecutionPreflight } from "../src/v2/fund-preparation-client.mjs";
@@ -221,6 +222,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo sync list
   shuduo sync create --name 名称 --source-id ID --target-table raw_positions --mode full|incremental|changelog --mapping from:to,... --keys position_id [--watermark trade_date] [--source-revision-id ID --metadata-version-id ID] [--change-epoch UUID --operation-field op --sequence-field seq] [--request-id UUID]
   shuduo sync run --id ID [--request-id UUID]
+  shuduo sync run-request --id TASK_UUID --request-id KEY
+  shuduo sync settle-request --id TASK_UUID --request-id KEY --run-id RUN_UUID --receipt-hash SHA256 --confirm
   shuduo sync recovery-preview --id OLD_TASK_ID
   shuduo sync recovery-save --id OLD_TASK_ID --basis-digest SHA256 --mapping SOURCE:TARGET,SOURCE:TARGET --confirm
   shuduo sync rows --table raw_positions
@@ -1208,6 +1211,21 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: { fileName: required(parsed.options, "file") },
         },
       );
+    else if (resource === "sync" && ["run-request", "settle-request"].includes(action)) {
+      const settling = action === "settle-request";
+      const allowed = ["id", "request_id", "base_url", ...(settling ? ["run_id", "receipt_hash", "confirm"] : [])];
+      const flags = argv.filter(value => value.startsWith("--")).map(flag => flag.slice(2).replaceAll("-", "_"));
+      if (parsed.positionals.length !== 2 || new Set(flags).size !== flags.length ||
+          flags.some(flag => !allowed.includes(flag)))
+        throw Error("原同步请求命令含未知或重复参数");
+      const selected = { taskId: parsed.options.id, requestKey: parsed.options.request_id };
+      if (settling) {
+        if (parsed.options.confirm !== true) throw Error("请核对原落地回执后显式传入 --confirm");
+        result = await settleSyncRunRequest(client, selected, {
+          runId: parsed.options.run_id, receiptHash: parsed.options.receipt_hash,
+        });
+      } else result = await readSyncRunRequest(client, selected);
+    }
     else if (resource === 'sync' && action === 'snapshot')
       result=await client.request(syncRunSnapshotPath({taskId:required(parsed.options,'id'),runId:required(parsed.options,'run_id'),
         page:parsed.options.page===undefined?1:Number(parsed.options.page),pageSize:parsed.options.page_size===undefined?50:Number(parsed.options.page_size)}));
