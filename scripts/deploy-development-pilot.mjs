@@ -133,7 +133,9 @@ export function validateServicePilotReserve(plan, preStaged = validatePilotPacka
 function servicePilotBaseline(before, plan, now) {
   const e = before?.environmentVariables;
   const preStaged = validatePilotPackageTransport(plan);
-  check(plan?.scope === 'INVITED_SERVICE_CONSUMPTION_PILOT_V1' && plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 &&
+  const liveService = plan?.scope === firstCloudConsumptionScope;
+  check(liveService ? firstCloudConsumptionBudget(plan) :
+    plan?.scope === 'INVITED_SERVICE_CONSUMPTION_PILOT_V1' && plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 &&
     plan.maxIncrementCny === 2 && plan.monthlyCny === 200 && validateServicePilotReserve(plan, preStaged), 'SERVICE_PILOT_SCOPE_INVALID');
   check(!['triggerNames', 'timerRecords', 'timerPreparedAt', 'schedulerSecret', 'permissionProbe', 'releaseId', 'stageCheckpoint'].some(key => Object.hasOwn(plan, key)), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
   check(Number.isSafeInteger(now) && Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) &&
@@ -151,7 +153,8 @@ function servicePilotBaseline(before, plan, now) {
   check([plan.previous, plan.candidate].every(pkg => pkg && typeof pkg.sha256 === 'string' && /^[a-f0-9]{64}$/.test(pkg.sha256) &&
     Number.isSafeInteger(pkg.bytes) && pkg.bytes > 0 && pkg.bytes <= 67108864 &&
     (pkg.crc64 === undefined || (typeof pkg.crc64 === 'string' && /^\d+$/.test(pkg.crc64)))) &&
-    plan.previous.sha256 !== plan.candidate.sha256, 'SERVICE_EXACT_CODE_OBJECTS_REQUIRED');
+    (liveService ? isDeepStrictEqual(plan.previous, plan.candidate) :
+      plan.previous.sha256 !== plan.candidate.sha256), 'SERVICE_EXACT_CODE_OBJECTS_REQUIRED');
   const target = plan.target;
   check(target && typeof target === 'object' && !Array.isArray(target) && Object.keys(target).length === 3 &&
     ['taskId', 'sourceReleaseRunId'].every(key => typeof target[key] === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(target[key])) &&
@@ -159,7 +162,8 @@ function servicePilotBaseline(before, plan, now) {
     ['taskId', 'packageDigest', 'sourceReleaseRunId'].every(key => target[key] === plan.servicePlan?.[key]), 'SERVICE_TARGET_INVALID');
   const next = { ...e, V2_FC_PUBLIC_READ_ONLY: 'false', V2_FC_PUBLIC_WRITE_SCOPE: 'SERVICE_CONSUMPTION_ONLY',
     V2_PUBLIC_SERVICE_PLAN: JSON.stringify(plan.servicePlan), V2_PUBLIC_SERVICE_STARTS_AT: new Date(now).toISOString(),
-    V2_PUBLIC_SERVICE_EXPIRES_AT: new Date(now + 2 * 3600000).toISOString(), V2_ACCOUNT_MONTHLY_SPEND_CNY: String(plan.billCny) };
+    V2_PUBLIC_SERVICE_EXPIRES_AT: new Date(liveService ? plan.activeDeadline : now + 2 * 3600000).toISOString(),
+    V2_ACCOUNT_MONTHLY_SPEND_CNY: String(plan.billCny) };
   try { check(publicServiceConfig(next)?.scope === 'SERVICE_CONSUMPTION_ONLY', 'SERVICE_PLAN_INVALID'); }
   catch { check(false, 'SERVICE_PLAN_INVALID'); }
   return next;
@@ -301,6 +305,8 @@ function readonlyCodeBaseline(before, plan, now) {
 const publicationScope = 'INVITED_PUBLICATION_PILOT_V1';
 export const firstCloudPublicationScope = 'INVITED_FIRST_V3_PUBLICATION_WINDOW_V1';
 const firstCloudPublicationModes = ['activate', 'timers', 'cleanup-timers', 'close'];
+export const firstCloudConsumptionScope = 'INVITED_FIRST_V3_SERVICE_WINDOW_V1';
+const firstCloudConsumptionModes = ['activate', 'close'];
 const firstCloudPublicationCleanupMs = 5 * 60 * 1000;
 const publicationUuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 const publicationDigest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -371,6 +377,74 @@ function validateFirstCloudPublicationPlan(plan, now) {
     'FIRST_V3_PUBLICATION_TIMER_BINDING_INVALID');
 }
 
+function firstCloudConsumptionBudget(plan) {
+  return [1, 2].includes(plan.sequence) && plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 &&
+    plan.monthlyCny === 200 && Number.isFinite(plan.maxIncrementCny) &&
+    plan.maxIncrementCny > 0 && plan.maxIncrementCny <= 1 &&
+    Number.isFinite(plan.priorReserveCny) && plan.priorReserveCny >= 80 + plan.sequence &&
+    plan.priorReserveCny + plan.maxIncrementCny < plan.monthlyCny;
+}
+
+function validateFirstCloudConsumptionPlan(plan, now) {
+  check(firstCloudConsumptionModes.includes(plan.mode) && firstCloudConsumptionBudget(plan) &&
+    Number.isSafeInteger(plan.activeDeadline) && Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) &&
+    plan.issuedAt <= now && plan.issuedAt < plan.activeDeadline &&
+    plan.activeDeadline + firstCloudPublicationCleanupMs <= plan.deadline &&
+    plan.deadline - plan.issuedAt <= 3600000 && now < plan.deadline &&
+    (plan.mode === 'close' || now < plan.activeDeadline), 'FIRST_V3_SERVICE_WINDOW_INVALID');
+  const app = firstCloudApplicationBinding(plan.applicationInspection, plan.firstCase);
+  const baseline = plan.baseline, code = plan.previous;
+  check(app && plan.firstCase.origin === formalOrigin && baseline && code && Object.keys(code).length === 3 &&
+    code.sha256 === app.sha256 && code.bytes === app.bytes &&
+    typeof code.crc64 === 'string' && /^\d+$/.test(code.crc64) &&
+    baseline.codeSize === code.bytes && String(baseline.codeChecksum) === code.crc64 &&
+    functionDigest(baseline) === plan.baselineDigest && isDeepStrictEqual(plan.candidate, code) &&
+    !['buildRunId','artifactId','packageTransport','preStagedObject','preStagedObjectDigest','stageCheckpoint','stagedDigest',
+      'cloudTransferContinuation','triggerNames','timerRecords','timerPreparedAt','schedulerSecret','permissionProbe','releaseId']
+      .some(key => Object.hasOwn(plan, key)), 'FIRST_V3_SERVICE_LIVE_APPLICATION_UNCONFIRMED');
+  const release = plan.releaseBinding, batch = plan.target?.sourceReleaseRunId;
+  check(release && Object.keys(release).length === 12 &&
+    ['taskId','packageId','verificationId','releaseId'].every(key => publicationUuid(release[key])) &&
+    ['packageDigest','reviewDigest','closeReportDigest'].every(key => publicationDigest(release[key])) &&
+    release.baselineDigest === plan.baselineDigest && release.applicationSha256 === app.sha256 &&
+    release.monitoringStatus === 'VERIFIED' && release.closureStatus === 'CLOSED_READONLY' &&
+    Array.isArray(release.batchIds) && release.batchIds.length === 2 && release.batchIds.every(publicationUuid) &&
+    release.batchIds[0] !== release.batchIds[1] && release.batchIds[plan.sequence - 1] === batch &&
+    plan.target.taskId === release.taskId && plan.target.packageDigest === release.packageDigest &&
+    publicationDigest(plan.approvalDigest) && publicationDigest(plan.servicePlanDigest) &&
+    plan.servicePlanDigest === timerHash(plan.servicePlan), 'FIRST_V3_SERVICE_RELEASE_BINDING_INVALID');
+  const prior = plan.previousServiceClose;
+  if (plan.sequence === 1) {
+    check(prior === undefined, 'FIRST_V3_SERVICE_WRONG_BATCH_ORDER');
+  } else {
+    check(prior && Object.keys(prior).length === 13 &&
+      prior.scope === firstCloudConsumptionScope && prior.sequence === 1 &&
+      prior.sourceReleaseRunId === release.batchIds[0] && prior.releaseId === release.releaseId &&
+      prior.baselineDigest === plan.baselineDigest && prior.applicationSha256 === app.sha256 &&
+      prior.approvalDigest === plan.approvalDigest && publicationDigest(prior.reportDigest) &&
+      prior.phase === 'CLOSED_READONLY' && prior.applicationRevoked === true &&
+      Number.isFinite(Date.parse(prior.closedAt)) && Date.parse(prior.closedAt) <= plan.issuedAt &&
+      Number.isFinite(prior.priorReserveCny) && prior.priorReserveCny >= 81 &&
+      Number.isFinite(prior.maxIncrementCny) && prior.maxIncrementCny > 0 && prior.maxIncrementCny <= 1 &&
+      plan.priorReserveCny >= prior.priorReserveCny + prior.maxIncrementCny, 'FIRST_V3_SERVICE_FIRST_BATCH_CLOSE_UNCONFIRMED');
+  }
+  const boundary = plan.applicationBoundary;
+  if (plan.mode === 'activate') {
+    check(plan.phase === 'READONLY_VERIFIED' && plan.activated === undefined && boundary === undefined &&
+      plan.priorUsage?.configWrites === 0, 'FIRST_V3_SERVICE_WINDOW_ALREADY_REQUESTED');
+  } else {
+    check(boundary && Object.keys(boundary).length === 2 && ['REVOKED','NOT_ISSUED'].includes(boundary.state) &&
+      publicationDigest(boundary.evidenceDigest), 'FIRST_V3_SERVICE_APPLICATION_CLEANUP_UNCONFIRMED');
+    const e = plan.activated, startsAt = Date.parse(e?.V2_PUBLIC_SERVICE_STARTS_AT);
+    const bill = e?.V2_ACCOUNT_MONTHLY_SPEND_CNY;
+    check(Number.isFinite(startsAt) && plan.issuedAt <= startsAt && startsAt <= now &&
+      startsAt < plan.activeDeadline && typeof bill === 'string' && bill.trim() !== '' &&
+      Number.isFinite(Number(bill)), 'SERVICE_ACTIVE_SNAPSHOT_MISMATCH');
+    const expected = serviceConsumptionPilotEnvironment(plan.baseline, { ...plan, billCny:Number(bill) }, startsAt);
+    check(isDeepStrictEqual(e,expected), 'SERVICE_ACTIVE_SNAPSHOT_MISMATCH');
+  }
+}
+
 const serviceConsumptionScope = 'INVITED_SERVICE_CONSUMPTION_PILOT_V1';
 const publicationModes = ['stage', 'resume-stage', 'activate', 'timers', 'cleanup-timers', 'close', 'rollback'];
 const serviceConsumptionModes = ['stage', 'activate', 'close', 'rollback'];
@@ -399,9 +473,12 @@ function assertPilotTimer(actual, record) {
 // tests use synthetic IO only. Service mode never enters timer operations.
 export async function runPublicationPilotOperation(plan, before, report, io) {
   const now = io.now ?? Date.now, wait = io.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
-  const serviceOnly = plan.scope === serviceConsumptionScope;
+  const liveService = plan.scope === firstCloudConsumptionScope;
+  const serviceOnly = plan.scope === serviceConsumptionScope || liveService;
   const livePublication = plan.scope === firstCloudPublicationScope;
+  const reuseLive = livePublication || liveService;
   if (livePublication) validateFirstCloudPublicationPlan(plan, now());
+  if (liveService) validateFirstCloudConsumptionPlan(plan, now());
   const codeOnly = plan.scope === readonlyCodeRefreshScope, noTimers = serviceOnly || codeOnly;
   const web = codeOnly ? plan.readonlyWeb : undefined;
   const extendedCode = codeOnly && (plan.budgetFixContinuation !== undefined || plan.targetTaskCodeContinuation !== undefined);
@@ -411,9 +488,12 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const preStagedObjectDigest = preStaged ? sha(canonical(plan.preStagedObject)) : undefined;
   if (preStaged && (plan.mode !== 'stage' || Object.hasOwn(plan, 'preStagedObjectDigest')))
     check(plan.preStagedObjectDigest === preStagedObjectDigest, 'PILOT_PRESTAGED_CHECKPOINT_CHANGED');
-  check((codeOnly ? readonlyCodeModes : serviceOnly ? serviceConsumptionModes : livePublication ? firstCloudPublicationModes : publicationModes).includes(plan.mode) &&
-    (codeOnly ? validateReadonlyCodeRefreshPlan(plan) : serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && validateServicePilotReserve(plan, preStaged)
-      : publicationBudgetScope(plan)) && plan.monthlyCny === 200 &&
+  const allowedModes = codeOnly ? readonlyCodeModes : liveService ? firstCloudConsumptionModes :
+    serviceOnly ? serviceConsumptionModes : livePublication ? firstCloudPublicationModes : publicationModes;
+  const budgetVerified = codeOnly ? validateReadonlyCodeRefreshPlan(plan) : liveService ? firstCloudConsumptionBudget(plan) :
+    serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && validateServicePilotReserve(plan, preStaged) :
+      publicationBudgetScope(plan);
+  check(allowedModes.includes(plan.mode) && budgetVerified && plan.monthlyCny === 200 &&
     plan.maxReads === (securityCode ? 100 : extendedCode ? 102 : 120) && plan.maxProbes === (securityCode ? 20 : 40) &&
     plan.normalReadLimit === (securityCode ? 64 : extendedCode ? 72 : 84) &&
     (codeOnly ? Number.isSafeInteger(plan.ownerCleanupReadReserve) && plan.ownerCleanupReadReserve >= 18 && plan.ownerCleanupReadReserve <= 32 &&
@@ -431,8 +511,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     check(['triggerCreates', 'triggerDeletes', 'permissionProbes'].every(key => plan.priorUsage[key] === 0), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
   }
   const usage = { ...plan.priorUsage };
-  if (livePublication) check(usage.configWrites <= 2 && usage.objectGets === 0 && usage.objectPuts === 0,
-    'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
+  if (reuseLive) check(usage.configWrites <= 2 && usage.objectGets === 0 && usage.objectPuts === 0,
+    liveService ? 'FIRST_V3_SERVICE_CODE_IO_FORBIDDEN' : 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
   let cleanupReading = ['cleanup-timers', 'close', 'rollback'].includes(plan.mode);
   // GetCallerIdentity and the function GET needed to open the plan are already
   // recorded before their calls by main; include them in the inherited total.
@@ -443,6 +523,10 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     priorUsage: structuredClone(plan.priorUsage), cumulativeUsage: usage, target: plan.target, releaseId: plan.releaseId, previous: plan.previous,
     baseline: ['stage', 'resume-stage'].includes(plan.mode) ? before : plan.baseline, candidate: plan.candidate,
     activated: plan.activated,
+    ...(liveService ? { approvalDigest:plan.approvalDigest, sequence:plan.sequence, activeDeadline:plan.activeDeadline,
+      priorReserveCny:plan.priorReserveCny, maxIncrementCny:plan.maxIncrementCny,
+      releaseBinding:structuredClone(plan.releaseBinding), previousServiceClose:plan.previousServiceClose,
+      applicationBoundary:plan.applicationBoundary, applicationReused:true } : {}),
     ...(livePublication ? { publicationApproval: structuredClone(plan.publicationApproval),
       releaseBinding: plan.releaseBinding, activeDeadline: plan.activeDeadline, applicationReused: true } : {}),
     ...(preStaged ? { packageTransport: plan.packageTransport, preStagedObject: structuredClone(plan.preStagedObject), preStagedObjectDigest } : {}),
@@ -460,11 +544,12 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     io.save(report);
   };
   const spend = kind => {
-    check(now() < (livePublication && !cleanupReading ? plan.activeDeadline : plan.deadline), 'PLAN_EXPIRED');
-    if (livePublication) check(!['objectGets', 'objectPuts'].includes(kind), 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
+    check(now() < (reuseLive && !cleanupReading ? plan.activeDeadline : plan.deadline), 'PLAN_EXPIRED');
+    if (reuseLive) check(!['objectGets', 'objectPuts'].includes(kind),
+      liveService ? 'FIRST_V3_SERVICE_CODE_IO_FORBIDDEN' : 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
     if (preStaged) check(kind !== 'objectPuts', 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
     if (noTimers) check(!['triggerCreates', 'triggerDeletes', 'permissionProbes'].includes(kind), codeOnly ? 'READONLY_CODE_EXTRA_AUTHORITY_FORBIDDEN' : 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
-    const limit = { configReads: cleanupReading ? plan.readLimit : plan.normalReadLimit, activeHttp: plan.maxProbes, configWrites: codeOnly || livePublication ? 2 : 4, objectPuts: 1, triggerCreates: 4, triggerDeletes: 4, permissionProbes: 1 }[kind];
+    const limit = { configReads: cleanupReading ? plan.readLimit : plan.normalReadLimit, activeHttp: plan.maxProbes, configWrites: codeOnly || reuseLive ? 2 : 4, objectPuts: 1, triggerCreates: 4, triggerDeletes: 4, permissionProbes: 1 }[kind];
     check(limit === undefined || usage[kind] < limit, 'PUBLICATION_USAGE_LIMIT');
     usage[kind]++; report[kind] = (report[kind] ?? 0) + 1; save();
   };
@@ -474,8 +559,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   };
   const read = () => call('configReads', ['fc', 'GET', path]);
   const put = body => {
-    if (livePublication) check(body && Object.keys(body).length === 1 && Object.hasOwn(body, 'environmentVariables'),
-      'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
+    if (reuseLive) check(body && Object.keys(body).length === 1 && Object.hasOwn(body, 'environmentVariables'),
+      liveService ? 'FIRST_V3_SERVICE_CODE_IO_FORBIDDEN' : 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
     if (codeOnly) check(body && Object.keys(body).length === 1 && Object.hasOwn(body, 'code'), 'READONLY_CODE_ENVIRONMENT_WRITE_FORBIDDEN');
     return call('configWrites', ['fc', 'PUT', path], body);
   };
@@ -554,7 +639,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
         const error = readFailure;
         const transport = ['TypeError', 'AbortError', 'TimeoutError'].includes(error.name);
         const format = error.name === 'SyntaxError' || error.safeCode === 'PUBLICATION_HTTP_RESPONSE_INVALID';
-        if ((!codeOnly && !livePublication) || (!transport && !format)) throw error;
+        if ((!codeOnly && !reuseLive) || (!transport && !format)) throw error;
         report.runtimeReadFailures = [...(report.runtimeReadFailures ?? []), { attempt: n + 1, endpoint: failureEndpoint,
           kind: transport ? 'TRANSPORT' : 'RESPONSE', code: transport ? 'READONLY_RUNTIME_TRANSPORT_UNCONFIRMED' : 'READONLY_RUNTIME_RESPONSE_INVALID' }];
         report.runtime = { ready: false }; save();
@@ -599,7 +684,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     return { ...pkg, crc64 };
   };
   const packageBody = pkg => ({ ossBucketName: report.baseline.environmentVariables.OSS_BUCKET, ossObjectName: controlPackageObject(pkg.sha256), checksum: pkg.crc64 });
-  const stagedSnapshot = () => livePublication
+  const stagedSnapshot = () => reuseLive
     ? report.baseline
     : { ...report.baseline, codeChecksum: report.candidate.crc64, codeSize: report.candidate.bytes };
   const openedSnapshot = () => ({ ...stagedSnapshot(), environmentVariables: report.activated });
@@ -609,7 +694,11 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     if (serviceOnly) {
       // Fresh usage/privacy is required before new staging or opening. Closing
       // an exact known snapshot must not depend on a stale billing observation.
-      (['close', 'rollback'].includes(plan.mode) ? servicePilotBaseline : serviceConsumptionPilotEnvironment)(b, plan, now());
+      if (liveService && plan.mode === 'close') {
+        servicePilotBaseline(b, plan, Date.parse(plan.activated.V2_PUBLIC_SERVICE_STARTS_AT));
+      } else {
+        (['close', 'rollback'].includes(plan.mode) ? servicePilotBaseline : serviceConsumptionPilotEnvironment)(b, plan, now());
+      }
       if (plan.mode !== 'stage') check(plan.servicePlanDigest === report.servicePlanDigest, 'SERVICE_PLAN_CHECKPOINT_MISMATCH');
       return;
     }
@@ -620,8 +709,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   };
   const assertOpened = current => {
     const e = report.activated;
-    if (livePublication) {
-      check(same(current, openedSnapshot()), 'PUBLICATION_ACTIVE_SNAPSHOT_MISMATCH');
+    if (reuseLive) {
+      check(same(current, openedSnapshot()), liveService ? 'SERVICE_ACTIVE_SNAPSHOT_MISMATCH' : 'PUBLICATION_ACTIVE_SNAPSHOT_MISMATCH');
       return;
     }
     if (serviceOnly) {
@@ -707,7 +796,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   save(); assertBaseline();
   try {
     if (!['stage', 'resume-stage'].includes(plan.mode)) {
-      if (!livePublication) {
+      if (!reuseLive) {
         check(plan.stagedDigest === functionDigest(stagedSnapshot()), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
         report.staged = stagedSnapshot();
       }
@@ -753,8 +842,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       if (web) await verifyWeb(web,expectedScript);
       await runtime(false); report.phase = 'STAGED';
     } else if (plan.mode === 'activate') {
-      check(plan.phase === (livePublication ? 'READONLY_VERIFIED' : 'STAGED') &&
-        same(before, stagedSnapshot()) && (!livePublication || stableFunction(before)), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
+      check(plan.phase === (reuseLive ? 'READONLY_VERIFIED' : 'STAGED') &&
+        same(before, stagedSnapshot()) && (!reuseLive || stableFunction(before)), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
       await bill();
       if (livePublication) {
         await runtime(false);
@@ -824,6 +913,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
         report.timersAbsenceVerified = true;
       }
       report.phase = plan.mode === 'rollback' ? 'ROLLED_BACK' : 'CLOSED_READONLY';
+      if (liveService) report.closedAt = new Date(now()).toISOString();
     }
     save(); return report;
   } catch (error) {
@@ -838,7 +928,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     if ((staging && report.phase === 'STAGE_REQUESTED') || (plan.mode === 'activate' && report.phase === 'ACTIVATION_REQUESTED') || plan.mode === 'timers') {
       try {
         let current = await read(); const restore = staging ? report.baseline : stagedSnapshot();
-        report.rollbackTarget = staging || livePublication ? 'ORIGINAL_READONLY' : 'STAGED_READONLY';
+        report.rollbackTarget = staging || reuseLive ? 'ORIGINAL_READONLY' : 'STAGED_READONLY';
         if (!stableFunction(current)) {
           const pendingTarget = staging ? stagedSnapshot() : openedSnapshot();
           current = await settle(pendingTarget); // Never call a pending old snapshot a completed rollback.
@@ -903,10 +993,10 @@ async function main(env = process.env) {
       check(env.V2_PILOT_BUILD_RUN === plan.buildRunId && env.V2_PILOT_ARTIFACT_ID === plan.artifactId, 'ARTIFACT_BINDING_INVALID');
     const boundCase = cloudV3DevelopmentScope(plan.scope);
     const environmentOnly=boundCase || plan.scope===developmentRecoveryScope;
-    check((environmentOnly || ['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, firstCloudPublicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) &&
+    check((environmentOnly || ['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, firstCloudPublicationScope, serviceConsumptionScope, firstCloudConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) &&
       plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
       (!boundCase || (plan.scope===nextCloudDevelopmentScope?plan.nextCase:plan.firstCase)?.origin==='https://shuduoai.cn') &&
-      (boundCase ? firstCloudDevelopmentModes : plan.scope === developmentRecoveryScope ? developmentRecoveryModes : plan.scope === publicationScope ? publicationModes : plan.scope === firstCloudPublicationScope ? firstCloudPublicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
+      (boundCase ? firstCloudDevelopmentModes : plan.scope === developmentRecoveryScope ? developmentRecoveryModes : plan.scope === publicationScope ? publicationModes : plan.scope === firstCloudPublicationScope ? firstCloudPublicationModes : plan.scope === firstCloudConsumptionScope ? firstCloudConsumptionModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
     check(plan.issuedAt <= Date.now() && (plan.deadline > Date.now() || (environmentOnly && ['close', 'rollback'].includes(plan.mode))) &&
       plan.deadline - plan.issuedAt <= (environmentOnly ? 7200000 : 3600000), 'PLAN_EXPIRED');
     report.scope = plan.scope; report.planVerified = true; save();
@@ -930,7 +1020,7 @@ async function main(env = process.env) {
     }
     const credentials = { accessKeyId: env.ALIBABA_CLOUD_ACCESS_KEY_ID, accessKeySecret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET, securityToken: env.ALIBABA_CLOUD_SECURITY_TOKEN };
     const bucket = before.environmentVariables.OSS_BUCKET;
-    if ([publicationScope, firstCloudPublicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) {
+    if ([publicationScope, firstCloudPublicationScope, serviceConsumptionScope, firstCloudConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) {
       await runPublicationPilotOperation(plan, before, report, {
         save,
         command: (args, body) => {
@@ -939,13 +1029,15 @@ async function main(env = process.env) {
           return command([...args, '--body-file', file]);
         },
         readCandidate: () => {
-          check(plan.scope !== firstCloudPublicationScope, 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
+          check(plan.scope !== firstCloudPublicationScope && plan.scope !== firstCloudConsumptionScope,
+            plan.scope === firstCloudConsumptionScope ? 'FIRST_V3_SERVICE_CODE_IO_FORBIDDEN' : 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
           check(!preStaged, 'PILOT_PRESTAGED_CANDIDATE_READ_FORBIDDEN');
           check(env.V2_PILOT_BUILD_RUN === plan.buildRunId && env.V2_PILOT_ARTIFACT_ID === plan.artifactId, 'ARTIFACT_BINDING_INVALID');
           return readFileSync('.candidate/v2-function.zip');
         },
         object: (pkg, method, bytes, query) => {
-          check(plan.scope !== firstCloudPublicationScope, 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
+          check(plan.scope !== firstCloudPublicationScope && plan.scope !== firstCloudConsumptionScope,
+            plan.scope === firstCloudConsumptionScope ? 'FIRST_V3_SERVICE_CODE_IO_FORBIDDEN' : 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
           if (preStaged) check(method === 'GET' && bytes === undefined, 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
           const request = privateOssRequest({ bucket, region: config.region, credentials, key: controlPackageObject(pkg.sha256), method, body: bytes, query });
           return fetch(request.url, { ...request.options, signal: AbortSignal.timeout(method === 'PUT' ? 300000 : 120000) });

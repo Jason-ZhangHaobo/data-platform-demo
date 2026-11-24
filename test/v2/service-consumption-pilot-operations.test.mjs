@@ -8,10 +8,12 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runPublicationPilotOperation, serviceConsumptionPilotEnvironment, validatePilotPackageTransport, validateServicePilotReserve,
-  readonlyCodeRefreshScope, validateReadonlyCodeRefreshPlan } from '../../scripts/deploy-development-pilot.mjs';
+  readonlyCodeRefreshScope, validateReadonlyCodeRefreshPlan, firstCloudConsumptionScope } from '../../scripts/deploy-development-pilot.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
 import { runServiceCodePrestage } from '../../scripts/service-code-prestage.mjs';
 import { readReadonlyRuntimeProbe } from '../../scripts/readonly-runtime-verification.mjs';
+import { currentLiveLifecycleContract, liveLifecyclePlan } from '../../src/v2/live-lifecycle-evaluation.mjs';
+import { recoveryDigest } from '../../scripts/development-recovery-window.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const failure = safeCode => Object.assign(new Error(safeCode), { safeCode });
@@ -121,7 +123,9 @@ function fixture(options = {}) {
     const plan = { ...structuredClone(lastPlan ?? basePlan), mode,
       ...(lastReport ? { phase: lastReport.phase, baseline: lastReport.baseline,
         ...(lastReport.servicePlanDigest ? { servicePlanDigest: lastReport.servicePlanDigest } : {}),
-        stagedDigest: lastReport.staged && functionDigest(lastReport.staged), candidate: lastReport.candidate,
+        ...(lastPlan.scope === firstCloudConsumptionScope ? {} : {
+          stagedDigest: lastReport.staged && functionDigest(lastReport.staged),
+        }), candidate: lastReport.candidate,
         ...(lastReport.activated ? { activated: lastReport.activated } : {}), priorUsage: lastReport.cumulativeUsage,
         ...(lastReport.preStagedObjectDigest ? { preStagedObjectDigest: lastReport.preStagedObjectDigest } : {}) } : {}), ...changes };
     const report = { phase: 'STARTED', configReads: 1, identityReads: 1, configWrites: 0, objectGets: 0, objectPuts: 0,
@@ -1075,4 +1079,138 @@ test('actual local pre-stage receipt carries its upload into cloud verification 
   assert.equal(closed.phase,'CLOSED_READONLY');assert.equal(closed.cumulativeUsage.objectPuts,1);
   assert.equal(closed.runUsage.objectPuts,0);assert.deepEqual(closed.historyUsage,history);
   assert.ok(!f.calls.some(call=>call.candidateRead||call.object&&call.method!=='GET'));
+});
+
+
+function existingLiveServiceFixture(f, sequence = 1, previousServiceClose) {
+  const { selectedCases: [definition], caseSetDigest } = liveLifecyclePlan(1, { contractId: currentLiveLifecycleContract.id });
+  const sourceRevision = 'b'.repeat(40), applicationTree = 'c'.repeat(40);
+  const firstCase = {
+    protocol:'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1', evaluationRunId:'00000000-0000-4000-8000-000000000021',
+    caseId:definition.id, contextId:definition.contextId, caseSetDigest, projectId:'synthetic-securities',
+    origin:'https://shuduoai.cn', sourceRevision, applicationTree, checkpointDigest:sha('synthetic first checkpoint'),
+    requestBodyHash:sha(JSON.stringify({message:definition.request,sql:definition.seedSql,contextId:definition.contextId})),
+    requestKeyHash:sha('synthetic original key'),
+  };
+  const applicationInspection = {
+    protocol:'shuduo-control-artifact-inspection/v1', applicationSource:sourceRevision, applicationTree,
+    operatorSource:'d'.repeat(40), buildWorkflowSource:'e'.repeat(40), sha256:f.previous.sha256,
+    bytes:f.previous.bytes, webIndexSha256:sha('synthetic index'), webIndexBytes:1024,
+    zipValid:true, sensitivePaths:0, sourceChecks:8, buildRunId:'1', inspectionRunId:'2',
+    artifactId:'3', buildAttempt:'1', artifactDigest:'sha256:'+sha('synthetic artifact'),
+  };
+  const releaseBinding = {
+    taskId:f.basePlan.target.taskId, packageId:'00000000-0000-4000-8000-000000000022',
+    packageDigest:f.basePlan.target.packageDigest, verificationId:'00000000-0000-4000-8000-000000000023',
+    reviewDigest:sha('synthetic reviewed package'), releaseId:'00000000-0000-4000-8000-000000000024',
+    batchIds:[f.basePlan.target.sourceReleaseRunId,'00000000-0000-4000-8000-000000000025'],
+    closeReportDigest:sha('synthetic sealed publication close'), baselineDigest:f.basePlan.baselineDigest,
+    applicationSha256:f.previous.sha256, closureStatus:'CLOSED_READONLY', monitoringStatus:'VERIFIED',
+  };
+  const target={...f.basePlan.target,sourceReleaseRunId:releaseBinding.batchIds[sequence - 1]};
+  const servicePlan={...f.basePlan.servicePlan,...target,applicationName:'合成验收应用 '+sequence};
+  return {
+    scope:firstCloudConsumptionScope, phase:'READONLY_VERIFIED', sequence, target, servicePlan, releaseBinding,
+    servicePlanDigest:recoveryDigest(servicePlan), approvalDigest:sha('synthetic combined consumption approval'),
+    baseline:f.baseline, previous:f.previous, candidate:f.previous, firstCase, applicationInspection,
+    activeDeadline:f.basePlan.deadline - 5*60*1000,
+    maxIncrementCny:1, priorReserveCny:80 + sequence,
+    ...(previousServiceClose ? {previousServiceClose} : {}),
+  };
+}
+const appRevoked = () => ({state:'REVOKED',evidenceDigest:sha('synthetic app revocation proof')});
+
+test('live first-case services reuse exact original code and restore read-only after active expiry', async () => {
+  const f=fixture(), first=existingLiveServiceFixture(f);
+  const opened=await f.step('activate',first);
+  assert.equal(opened.phase,'OPENED');
+  assert.equal(opened.sequence,1);
+  assert.equal(opened.applicationReused,true);
+  assert.equal(opened.staged,undefined);
+  assert.equal(opened.servicePlanDigest,first.servicePlanDigest);
+  assert.deepEqual(JSON.parse(f.current.environmentVariables.V2_PUBLIC_SERVICE_PLAN),first.servicePlan);
+  assert.equal(f.current.environmentVariables.V2_PUBLIC_SERVICE_EXPIRES_AT,new Date(first.activeDeadline).toISOString());
+  assert.equal(f.current.environmentVariables.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT,'0');
+  assert.equal(f.current.environmentVariables.V2_MODEL_MONTHLY_BUDGET_CNY,'0');
+  f.advance(first.activeDeadline-f.now+1000);
+  const boundary=appRevoked(), closed=await f.step('close',{applicationBoundary:boundary});
+  assert.equal(closed.phase,'CLOSED_READONLY');
+  assert.equal(closed.closedAt,new Date(f.now).toISOString());
+  assert.deepEqual(closed.applicationBoundary,boundary);
+  assert.deepEqual(f.current,f.baseline);
+  assert.equal(closed.cumulativeUsage.configWrites,2);
+  for(const k of ['objectGets','objectPuts','triggerCreates','triggerDeletes','permissionProbes'])
+    assert.equal(closed.cumulativeUsage[k],0);
+  assert.equal(f.calls.filter(call=>call.args?.[1]==='PUT').length,2);
+  assert.ok(f.calls.filter(call=>call.args?.[1]==='PUT').every(call=>Object.keys(call.body).join()==='environmentVariables'));
+});
+
+test('live first-case services bind the second window to the original first batch close and reserve', async () => {
+  const f=fixture(), first=existingLiveServiceFixture(f);
+  await f.step('activate',first);
+  const closed=await f.step('close',{applicationBoundary:appRevoked()});
+  const proof={
+    scope:firstCloudConsumptionScope,phase:closed.phase,sequence:1,sourceReleaseRunId:first.target.sourceReleaseRunId,
+    releaseId:first.releaseBinding.releaseId, baselineDigest:first.releaseBinding.baselineDigest,
+    applicationSha256:first.previous.sha256, approvalDigest:first.approvalDigest,
+    reportDigest:sha('synthetic sealed first service close'),applicationRevoked:true,
+    priorReserveCny:closed.priorReserveCny,maxIncrementCny:closed.maxIncrementCny,closedAt:closed.closedAt,
+  };
+  const second=fixture();
+  second.advance(1000);
+  const next=existingLiveServiceFixture(second,2,proof);
+  const result=await second.step('activate',{...next,issuedAt:second.now});
+  assert.equal(result.phase,'OPENED');
+  assert.equal(result.sequence,2);
+  assert.equal(JSON.parse(second.current.environmentVariables.V2_PUBLIC_SERVICE_PLAN).sourceReleaseRunId,first.releaseBinding.batchIds[1]);
+  assert.deepEqual(result.previousServiceClose,proof);
+  await second.step('close',{applicationBoundary:appRevoked()});
+  assert.deepEqual(second.current,second.baseline);
+  for(const {name,mutate,error} of [
+    {name:'missing close',mutate:p=>{delete p.previousServiceClose;},error:'FIRST_V3_SERVICE_FIRST_BATCH_CLOSE_UNCONFIRMED'},
+    {name:'not revoked',mutate:p=>{p.previousServiceClose.applicationRevoked=false;},error:'FIRST_V3_SERVICE_FIRST_BATCH_CLOSE_UNCONFIRMED'},
+    {name:'future close',mutate:p=>{p.previousServiceClose.closedAt=new Date(second.now+60000).toISOString();},error:'FIRST_V3_SERVICE_FIRST_BATCH_CLOSE_UNCONFIRMED'},
+    {name:'lower inherited reserve',mutate:p=>{p.previousServiceClose.priorReserveCny=82;},error:'FIRST_V3_SERVICE_FIRST_BATCH_CLOSE_UNCONFIRMED'},
+    {name:'wrong selected batch',mutate:p=>{p.target.sourceReleaseRunId=p.releaseBinding.batchIds[0];},error:'FIRST_V3_SERVICE_RELEASE_BINDING_INVALID'},
+  ]) {
+    const g=fixture();
+    g.advance(2000);
+    const bad={...existingLiveServiceFixture(g,2,structuredClone(proof)),issuedAt:g.now};
+    mutate(bad);
+    await assert.rejects(g.step('activate',bad),{safeCode:error},name);
+    assert.equal(g.calls.length,0);
+  }
+});
+
+test('live first-case service authority rejects compute, foreign release, code staging and timer inputs', async () => {
+  for(const [mode,key,value,safeCode] of [
+    ['stage','mode','stage','FIRST_V3_SERVICE_WINDOW_INVALID'],
+    ['rollback','mode','rollback','FIRST_V3_SERVICE_WINDOW_INVALID'],
+    ['activate','maxSparkRuns',1,'FIRST_V3_SERVICE_WINDOW_INVALID'],
+    ['activate','maxModelCalls',1,'FIRST_V3_SERVICE_WINDOW_INVALID'],
+    ['activate','priorReserveCny',80,'FIRST_V3_SERVICE_WINDOW_INVALID'],
+    ['activate','maxIncrementCny',1.01,'FIRST_V3_SERVICE_WINDOW_INVALID'],
+    ['activate','triggerNames',[],'FIRST_V3_SERVICE_LIVE_APPLICATION_UNCONFIRMED'],
+    ['activate','preStagedObject',{},'FIRST_V3_SERVICE_LIVE_APPLICATION_UNCONFIRMED'],
+    ['activate','servicePlanDigest','0'.repeat(64),'FIRST_V3_SERVICE_RELEASE_BINDING_INVALID'],
+  ]) {
+    const f=fixture(), plan=existingLiveServiceFixture(f);
+    await assert.rejects(f.step(mode,{...plan,[key]:value}),{safeCode});
+    assert.equal(f.calls.length,0);
+  }
+});
+
+test('live first-case service closes only after application evidence and preserves foreign environment', async () => {
+  const f=fixture(), first=existingLiveServiceFixture(f);
+  await f.step('activate',first);
+  await assert.rejects(f.step('close'),{safeCode:'FIRST_V3_SERVICE_APPLICATION_CLEANUP_UNCONFIRMED'});
+  assert.equal(f.calls.filter(call=>call.args?.[1]==='PUT').length,1);
+  const g=fixture(), next=existingLiveServiceFixture(g);
+  const activated=await g.step('activate',next);
+  const foreign={...activated.activated,UNRELATED_ENV:'foreign'};
+  g.current.environmentVariables=structuredClone(foreign);
+  await assert.rejects(g.step('close',{activated:foreign,applicationBoundary:appRevoked()}),
+    {safeCode:'SERVICE_ACTIVE_SNAPSHOT_MISMATCH'});
+  assert.equal(g.calls.filter(call=>call.args?.[1]==='PUT').length,1);
+  assert.deepEqual(g.current.environmentVariables,foreign);
 });
