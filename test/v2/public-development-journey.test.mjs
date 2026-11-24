@@ -1132,6 +1132,14 @@ test('cloud v3 startup saves the original key before one POST and reconciles a l
 });
 
 async function developWorkbenchInBackground(t,f,taskPath,created,definition,measure) {
+  const before=f.counts();
+  const packageCount=f.store.list('delivery_package',PROJECT).length;
+  const packageWrites=f.packageWrites();
+  const releaseCount=f.store.list('release',PROJECT).length;
+  const originalDeliveries=()=>f.store.list('agent_delivery_task',PROJECT)
+    .filter(delivery=>delivery.sourceAgentTaskId===created.id);
+  let wakeIndex=f.wakes.length, failedRun;
+  assert.equal(originalDeliveries().length,0);
   const delegated=await f.call(taskPath+'/background',{expectedVersion:created.version,prepareFiles:true,maxEvents:12});
   assert.equal(delegated.status,202,delegated.body.message);
   assert.equal(delegated.body.status,'ACTIVE');
@@ -1140,7 +1148,6 @@ async function developWorkbenchInBackground(t,f,taskPath,created,definition,meas
   await f.restart();
   assert.notEqual(f.store,initialStore);
   const attempts=[];
-  let wakeIndex=0, failedRun;
   const takeWake=()=>{
     const event=f.wakes[wakeIndex++];
     assert.ok(event,`Missing signed wake ${wakeIndex}`);
@@ -1155,7 +1162,7 @@ async function developWorkbenchInBackground(t,f,taskPath,created,definition,meas
     const modelWake=takeWake();
     await fire(modelWake);
     await fire(modelWake);
-    assert.equal(f.counts().modelCalls,attempt);
+    assert.equal(f.counts().modelCalls,before.modelCalls+attempt);
     await fire(takeWake());
     const waiting=f.store.get('agent',created.id,PROJECT);
     assert.equal(waiting.stage,'WAITING_FOR_RUN');
@@ -1176,15 +1183,16 @@ async function developWorkbenchInBackground(t,f,taskPath,created,definition,meas
       assert.equal(failedRun.status,'VALIDATION_FAILED');
       assert.equal(failedRun.validation.passed,false);
       assert.equal(f.store.get('agent',created.id,PROJECT).stage,'READY_FOR_MODEL');
-      assert.equal(f.store.list('delivery_package',PROJECT).length,0);
+      assert.equal(f.store.list('delivery_package',PROJECT).length,packageCount);
       continue;
     }
     f.loseArtifact();
     assert.equal((await f.privateCall(finishWake)).status,500);
-    const [pending]=f.store.list('agent_delivery_task',PROJECT);
+    const [pending]=originalDeliveries();
+    assert.ok(pending);
     assert.equal(pending.stage,'PACKAGE_PERSISTING');
     assert.equal(pending.sourceRunId,waiting.runId);
-    assert.equal(f.packageWrites(),1);
+    assert.equal(f.packageWrites(),packageWrites+1);
     const counts=f.counts();
     await f.restart();
     const restored=await fire(finishWake);
@@ -1195,13 +1203,14 @@ async function developWorkbenchInBackground(t,f,taskPath,created,definition,meas
     assert.deepEqual(f.counts(),counts);
     assert.deepEqual(f.store.get('run',failedRun.id,PROJECT),failedRun);
   }
-  const current=(await f.call(taskPath)).body,[delivery]=f.store.list('agent_delivery_task',PROJECT);
+  const current=(await f.call(taskPath)).body, [delivery]=originalDeliveries();
   assert.equal(current.status,'SUCCEEDED');
   assert.equal(current.attempts[0].status,'VALIDATION_FAILED');
   assert.notEqual(attempts[0].spark.runId,current.runId);
-  assert.deepEqual(f.counts(),{modelCalls:2,jobCreates:2});
-  assert.equal(f.store.list('delivery_package',PROJECT).length,1);
-  assert.equal(f.store.list('release',PROJECT).length,0);
+  assert.deepEqual(f.counts(),{modelCalls:before.modelCalls+2,jobCreates:before.jobCreates+2});
+  assert.equal(originalDeliveries().length,1);
+  assert.equal(f.store.list('delivery_package',PROJECT).length,packageCount+1);
+  assert.equal(f.store.list('release',PROJECT).length,releaseCount);
   assert.equal(delivery.stage,'PACKAGE_READY');
   const deliveryRequestId=delivery.preparationRequestId;
   const preparedFiles=await f.call(taskPath+'/delivery-requests/'+deliveryRequestId);
@@ -1895,7 +1904,10 @@ test('the signed cash-change case reaches both exact consumers with its own inde
 
 test('a killed publication CLI recovers both original batches through signed scheduling and authorized consumption',async t=>{
   // Local HTTP, real local artifact I/O, synthetic provider and Worker receipts.
-  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,queueTimeoutMs:30000});
+  let cashChangeAttempts=0;
+  const f=await fixture(t,{eventsEnabled:true,startupPreflight:true,structuredRequirement:true,stableOrigin:true,queueTimeoutMs:30000,
+    sqlForAttempt:(_attempt,input)=>input.context.id==='cash-change'&&++cashChangeAttempts===1
+      ?'SELECT 1 AS wrong_metric':referenceSqlForContext(input.context.id)});
   const checkpoint=join(f.directory,'exact-delivery.json'),billPath=join(f.directory,'current-bill.json'),requests=[];
   const month=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(Date.now());
   const writeBill=unsettledReserveCny=>writeFileSync(billPath,JSON.stringify({checkedAt:new Date().toISOString(),unsettledReserveCny,maxIncrementCny:2,
@@ -1909,7 +1921,7 @@ test('a killed publication CLI recovers both original batches through signed sch
     publicationAccepted.resolve({request,response});
     return false;
   });
-  let loseNextReceipt=false;
+  let loseNextReceipt=false, acceptedNextTaskId;
   const client=new V2Client({baseUrl:publicationCli.base,fetchImpl:async(url,options)=>{
     const target=new URL(url), path=target.pathname.slice('/api/v2'.length)+target.search;
     if(target.pathname==='/v2/'){
@@ -1927,6 +1939,7 @@ test('a killed publication CLI recovers both original batches through signed sch
     const response=await f.call(path,body,key);
     if(loseNextReceipt&&options.method==='POST'&&path==='/agent/tasks'){
       assert.equal(response.status,202);
+      acceptedNextTaskId=response.body.id;
       loseNextReceipt=false;
       throw Error('SYNTHETIC_NEXT_RECEIPT_LOST');
     }
@@ -2641,6 +2654,7 @@ test('a killed publication CLI recovers both original batches through signed sch
   {
     const nextPath=join(f.directory,'next-case.json'), inspectionPath=join(f.directory,'next-inspection.json'),
       windowPath=join(f.directory,'next-window.json');
+    const firstCompletionBytes=readFileSync(completionFile);
     const nextCli=async(action,flags=[],exit=0,path=nextPath)=>{
       requests.length=0;
       let value,message;
@@ -2686,7 +2700,7 @@ test('a killed publication CLI recovers both original batches through signed sch
     const requestKey=preparedState.outcomes[0].actions.agent.key;
     assert.equal((await f.call('/agent/tasks',{...taskInput,contextId:'cash-change'},requestKey)).body.code,'PUBLIC_DEVELOPMENT_REQUEST_ONLY');
     assert.equal(readFileSync(nextPath,'utf8'),nextPreparedBytes);
-    const beforeNext=f.counts();
+    const beforeNext=f.counts(), beforeNextQueues=f.queueCounts();
     await nextCli('v3-start',approve,1);
     assert.deepEqual(requests,[{path:'/status?include=session',method:'GET'}]);
     assert.equal(readFileSync(nextPath,'utf8'),nextPreparedBytes);
@@ -2699,20 +2713,57 @@ test('a killed publication CLI recovers both original batches through signed sch
     assert.deepEqual(requests,[{path:'/status?include=session',method:'GET'},{path:'/v2/',method:'GET'},{path:'/agent/tasks',method:'POST'}]);
     assert.equal((await nextCli('v3-start',approve)).reason,'RECONCILE_ORIGINAL_CREATION');
     assert.deepEqual(requests,[]);
+    const uncertainPath=join(f.directory,'next-case-uncertain-creation.json');
+    writeFileSync(uncertainPath,readFileSync(nextPath),{mode:0o600});
+    await f.restart();
+    const recovered=await nextCli('v3-start',['--reconcile']);
+    assert.equal(recovered.status,'CREATION_CONFIRMED');
+    assert.equal(recovered.taskId,acceptedNextTaskId);
+    assert.deepEqual(requests,[{path:'/auth/session',method:'GET'},{path:'/agent/requests/'+requestKey,method:'GET'}]);
+    assert.equal(f.store.list('agent',PROJECT).filter(item=>item.contextId==='cash-change').length,1);
+    assert.deepEqual(f.counts(),beforeNext);
+
+    const nextTaskPath='/agent/tasks/'+recovered.taskId;
+    const original=(await f.call(nextTaskPath)).body;
+    assert.equal(original.id,recovered.taskId);
+    assert.equal(original.contextId,'cash-change');
+    const nextDefinition=liveLifecyclePlan(2,{contractId:currentLiveLifecycleContract.id}).selectedCases[1];
+    const measure=process.env.SHUDUO_TEST_LOCAL_SPARK_WORKBENCH==='true';
+    const signed=await developWorkbenchInBackground(t,f,nextTaskPath,original,nextDefinition,measure);
+    const nextRun=f.store.get('run',signed.current.runId,PROJECT);
+    const nextPackage=f.store.get('delivery_package',signed.preparedFiles.body.packageId,PROJECT);
+    assert.deepEqual(nextRun.rows,cashChangeConsumerRows);
+    assert.equal(nextPackage.manifest.source.runId,nextRun.id);
+    assert.equal(nextPackage.manifest.source.revisionId,signed.current.revisionId);
+    assert.equal(Object.keys(nextPackage.files).length,8);
+    assert.equal((await f.call(nextTaskPath+'/publication',{})).body.code,'PUBLIC_DEVELOPMENT_SCOPE_DENIED');
+
     f.env.V2_FC_PUBLIC_READ_ONLY='true';
     delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
     delete f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST;
     await f.restart();
-    const recovered=await nextCli('v3-start',['--reconcile']);
-    assert.equal(recovered.status,'CREATION_CONFIRMED');
+    assert.equal((await f.call(nextTaskPath+'/advance',{expectedVersion:signed.current.version})).status,403);
+    const recoveredReadOnly=await nextCli('v3-start',['--reconcile'],0,uncertainPath);
+    assert.equal(recoveredReadOnly.status,'CREATION_CONFIRMED');
+    assert.equal(recoveredReadOnly.taskId,recovered.taskId);
     assert.deepEqual(requests,[{path:'/auth/session',method:'GET'},{path:'/agent/requests/'+requestKey,method:'GET'}]);
+    const delivery=await nextCli('v3-inspect',['--workbench','--delivery-request-id',signed.deliveryRequestId]);
+    assert.equal(delivery.delivery.id,signed.preparedFiles.body.id);
+    assert.equal(delivery.delivery.packageDigest,nextPackage.digest);
+    assert.ok(requests.every(request=>request.method==='GET'));
     assert.equal(f.store.list('agent',PROJECT).filter(item=>item.contextId==='cash-change').length,1);
-    assert.deepEqual(f.counts(),beforeNext);
+    assert.deepEqual(f.counts(),{modelCalls:beforeNext.modelCalls+2,jobCreates:beforeNext.jobCreates+2});
+    assert.equal(f.queueCounts().jobWriteAttempts,beforeNextQueues.jobWriteAttempts+2);
+    assert.equal(f.queueCounts().cancellationWrites,beforeNextQueues.cancellationWrites);
     const joined=await cli('v3-run',['--completion-file',completionFile,'--next-checkpoint',nextPath]);
     assert.equal(joined.cases[1].creationStatus,'CONFIRMED');
+    assert.equal(joined.cases[1].developmentDriverEvidence.developmentRunId,nextRun.id);
+    assert.deepEqual(joined.cases[1].developmentDriverEvidence.attempts,signed.drivers);
+    assert.equal(joined.cases[1].deliveryPreparationEvidence.trigger,'SIGNED_BACKGROUND_EVENT');
     assert.equal(joined.verifiedCloudCaseCount,0);
     assert.equal(JSON.parse(readFileSync(nextPath,'utf8')).startedAt,preparedState.startedAt);
     assert.equal(readFileSync(checkpoint,'utf8'),checkpointBytes);
+    assert.deepEqual(readFileSync(completionFile),firstCompletionBytes);
   }
 });
 
