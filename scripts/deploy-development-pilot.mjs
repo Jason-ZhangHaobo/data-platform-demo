@@ -12,12 +12,13 @@ import { recipientKey, sealReport, auditConfig, auditErrorDetails } from './audi
 import { privateOssRequest, boundedBytes, safeOssFailure } from './control-code-transport.mjs';
 import { controlPackageObject } from './render-v2-control-package-policy.mjs';
 import { verifyV2MonthlyBillPages } from './verify-v2-monthly-bill-pages.mjs';
-import { publicationPilotTimers, publicationPilotTimerNames } from './publication-pilot-timers.mjs';
+import { publicationPilotTimers, publicationPilotTimerNames, publicationPilotTimerOffsetsSeconds,
+  publicationPilotTimerPayloadLifetimeMs, publicationPilotTimerCleanupReserveMs } from './publication-pilot-timers.mjs';
 import { publicServiceConfig } from '../src/v2/public-service-access.mjs';
 import { developmentRecoveryScope, developmentRecoveryModes, runDevelopmentRecoveryOperation } from './development-recovery-window.mjs';
 import { inspectedControlEntryScriptBytes, readInspectedWebIndex, readInspectedWebScript, WEB_INDEX_LIMIT } from './control-web-entry.mjs';
 import { readReadonlyRuntimeProbe, verifyReadonlyRuntime } from './readonly-runtime-verification.mjs';
-import { cloudV3DevelopmentScope, nextCloudDevelopmentScope, firstCloudDevelopmentModes } from './first-cloud-v3-window.mjs';
+import { cloudV3DevelopmentScope, nextCloudDevelopmentScope, firstCloudDevelopmentModes, firstCloudApplicationBinding } from './first-cloud-v3-window.mjs';
 
 const check = (v, code) => { if (!v) throw Object.assign(new Error(code), { safeCode: code }); };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -72,7 +73,7 @@ export function publicationPilotEnvironment(before, plan, now = Date.now()) {
   validatePilotPackageTransport(plan);
   const e = before?.environmentVariables, usage = plan?.usage;
   const expectedTriggerNames = Array.from({ length: 4 }, (_, i) => `shuduo-release-pilot-20261027-${i + 1}`);
-  check(plan?.scope === 'INVITED_PUBLICATION_PILOT_V1' && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.monthlyCny === 200 && plan.priorReserveCny === 32, 'PUBLICATION_PILOT_SCOPE_INVALID');
+  check(publicationBudgetScope(plan), 'PUBLICATION_PILOT_SCOPE_INVALID');
   check(Number.isSafeInteger(now) && Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) && plan.issuedAt <= now && plan.deadline > now && plan.deadline - plan.issuedAt <= 3600000, 'DEPLOYMENT_WINDOW_INVALID');
   check(before?.runtime === 'custom.debian12' && before.cpu === 0.25 && before.memorySize === 512 && before.instanceConcurrency === 8 &&
     typeof before.functionName === 'string' && /^dataplatform-v2-[a-z0-9-]{1,60}$/.test(before.functionName) && plan.controlName === before.functionName &&
@@ -100,7 +101,8 @@ export function publicationPilotEnvironment(before, plan, now = Date.now()) {
   'PILOT_EXISTING_QUOTA_INSUFFICIENT');
   return { ...e, V2_FC_PUBLIC_READ_ONLY: 'false', V2_FC_PUBLIC_WRITE_SCOPE: 'PUBLICATION_ONLY',
     V2_PUBLIC_PUBLICATION_TASK_ID: target.taskId, V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST: target.packageDigest, V2_PUBLIC_PUBLICATION_VERIFICATION_ID: target.verificationId,
-    V2_PUBLIC_PUBLICATION_STARTS_AT: new Date(now).toISOString(), V2_PUBLIC_PUBLICATION_EXPIRES_AT: new Date(now + 2 * 3600000).toISOString(),
+    V2_PUBLIC_PUBLICATION_STARTS_AT: new Date(now).toISOString(),
+    V2_PUBLIC_PUBLICATION_EXPIRES_AT: new Date(plan.scope === firstCloudPublicationScope ? plan.activeDeadline : now + 2 * 3600000).toISOString(),
     V2_PRIVATE_RELEASE_ENABLED: 'true', V2_PRIVATE_RELEASE_TRIGGER_NAMES: plan.triggerNames.join(','), V2_SCHEDULER_TICK_SECRET: plan.schedulerSecret,
     V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT: String(runLimit), V2_ACCOUNT_MONTHLY_SPEND_CNY: String(plan.billCny) };
 }
@@ -297,6 +299,78 @@ function readonlyCodeBaseline(before, plan, now) {
 }
 
 const publicationScope = 'INVITED_PUBLICATION_PILOT_V1';
+export const firstCloudPublicationScope = 'INVITED_FIRST_V3_PUBLICATION_WINDOW_V1';
+const firstCloudPublicationModes = ['activate', 'timers', 'cleanup-timers', 'close'];
+const firstCloudPublicationCleanupMs = 5 * 60 * 1000;
+const publicationUuid = value => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+const publicationDigest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+function publicationBudgetScope(plan) {
+  if (plan?.maxModelCalls !== 0 || plan.maxSparkRuns !== 2 || plan.monthlyCny !== 200) return false;
+  if (plan.scope === firstCloudPublicationScope) {
+    return Number.isFinite(plan.maxIncrementCny) && plan.maxIncrementCny > 0 && plan.maxIncrementCny <= 5 &&
+      Number.isFinite(plan.priorReserveCny) && plan.priorReserveCny >= 76 &&
+      plan.priorReserveCny + plan.maxIncrementCny < plan.monthlyCny;
+  }
+  return plan.scope === publicationScope && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32;
+}
+
+function assertFirstCloudPublicationActivation(plan, now) {
+  const environment = plan.activated;
+  const startsAt = Date.parse(environment?.V2_PUBLIC_PUBLICATION_STARTS_AT);
+  const billedAtOpen = environment?.V2_ACCOUNT_MONTHLY_SPEND_CNY;
+  check(Number.isFinite(startsAt) && startsAt >= plan.issuedAt && startsAt <= now &&
+    startsAt < plan.activeDeadline && typeof billedAtOpen === 'string' && billedAtOpen.trim() !== '' &&
+    Number.isFinite(Number(billedAtOpen)), 'PUBLICATION_ACTIVE_SNAPSHOT_MISMATCH');
+  const expected = publicationPilotEnvironment(plan.baseline, { ...plan, billCny: Number(billedAtOpen) }, startsAt);
+  check(isDeepStrictEqual(environment, expected), 'PUBLICATION_ACTIVE_SNAPSHOT_MISMATCH');
+}
+
+function validateFirstCloudPublicationPlan(plan, now) {
+  check(firstCloudPublicationModes.includes(plan.mode) && publicationBudgetScope(plan) &&
+    Number.isSafeInteger(plan.activeDeadline) && Number.isSafeInteger(plan.issuedAt) && Number.isSafeInteger(plan.deadline) &&
+    plan.issuedAt <= now && plan.issuedAt < plan.activeDeadline &&
+    plan.activeDeadline + firstCloudPublicationCleanupMs <= plan.deadline &&
+    plan.deadline - plan.issuedAt <= 3600000 && now < plan.deadline &&
+    (['cleanup-timers', 'close'].includes(plan.mode) || now < plan.activeDeadline),
+  'FIRST_V3_PUBLICATION_WINDOW_INVALID');
+  const app = firstCloudApplicationBinding(plan.applicationInspection, plan.firstCase);
+  const baseline = plan.baseline, code = plan.previous;
+  check(app && plan.firstCase.origin === formalOrigin && baseline && code && Object.keys(code).length === 3 &&
+    code.sha256 === app.sha256 && code.bytes === app.bytes &&
+    typeof code.crc64 === 'string' && /^\d+$/.test(code.crc64) &&
+    baseline.codeSize === code.bytes && String(baseline.codeChecksum) === code.crc64 &&
+    functionDigest(baseline) === plan.baselineDigest && isDeepStrictEqual(plan.candidate, code) &&
+    !['buildRunId', 'artifactId', 'packageTransport', 'preStagedObject', 'preStagedObjectDigest', 'stageCheckpoint', 'stagedDigest']
+      .some(key => Object.hasOwn(plan, key)),
+  'FIRST_V3_LIVE_APPLICATION_UNCONFIRMED');
+  const approval = plan.publicationApproval, target = plan.target;
+  check(approval && target && Object.keys(approval).length === 6 && Object.keys(target).length === 3 &&
+    ['taskId', 'packageId', 'verificationId'].every(key => publicationUuid(approval[key])) &&
+    ['packageDigest', 'reviewDigest', 'approvalDigest'].every(key => publicationDigest(approval[key])) &&
+    ['taskId', 'packageDigest', 'verificationId'].every(key => target[key] === approval[key]),
+  'FIRST_V3_PUBLICATION_APPROVAL_INVALID');
+  if (plan.mode === 'activate') {
+    check(plan.phase === 'READONLY_VERIFIED' && plan.activated === undefined && plan.releaseId === undefined &&
+      plan.permissionProbe === undefined && plan.timerRecords === undefined && plan.timerPreparedAt === undefined &&
+      ['configWrites', 'triggerCreates', 'triggerDeletes', 'permissionProbes'].every(key => plan.priorUsage?.[key] === 0),
+    'FIRST_V3_PUBLICATION_ALREADY_STARTED');
+  } else if (plan.activated !== undefined) {
+    assertFirstCloudPublicationActivation(plan, now);
+  } else {
+    check(plan.mode === 'close' && plan.priorUsage?.configWrites === 0,
+      'PUBLICATION_ACTIVE_SNAPSHOT_MISMATCH');
+  }
+  if (plan.mode === 'timers' || plan.releaseId !== undefined || plan.releaseBinding !== undefined) {
+    const release = plan.releaseBinding;
+    check(release && Object.keys(release).length === 7 && publicationUuid(plan.releaseId) &&
+      release.releaseId === plan.releaseId && release.batchCount === 2 &&
+      ['taskId', 'packageId', 'packageDigest', 'verificationId', 'reviewDigest'].every(key => release[key] === approval[key]),
+    'FIRST_V3_PUBLICATION_RELEASE_BINDING_INVALID');
+  }
+  check((plan.timerRecords?.length || plan.priorUsage?.triggerCreates) ? publicationUuid(plan.releaseId) : true,
+    'FIRST_V3_PUBLICATION_TIMER_BINDING_INVALID');
+}
+
 const serviceConsumptionScope = 'INVITED_SERVICE_CONSUMPTION_PILOT_V1';
 const publicationModes = ['stage', 'resume-stage', 'activate', 'timers', 'cleanup-timers', 'close', 'rollback'];
 const serviceConsumptionModes = ['stage', 'activate', 'close', 'rollback'];
@@ -326,6 +400,8 @@ function assertPilotTimer(actual, record) {
 export async function runPublicationPilotOperation(plan, before, report, io) {
   const now = io.now ?? Date.now, wait = io.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const serviceOnly = plan.scope === serviceConsumptionScope;
+  const livePublication = plan.scope === firstCloudPublicationScope;
+  if (livePublication) validateFirstCloudPublicationPlan(plan, now());
   const codeOnly = plan.scope === readonlyCodeRefreshScope, noTimers = serviceOnly || codeOnly;
   const web = codeOnly ? plan.readonlyWeb : undefined;
   const extendedCode = codeOnly && (plan.budgetFixContinuation !== undefined || plan.targetTaskCodeContinuation !== undefined);
@@ -335,9 +411,9 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   const preStagedObjectDigest = preStaged ? sha(canonical(plan.preStagedObject)) : undefined;
   if (preStaged && (plan.mode !== 'stage' || Object.hasOwn(plan, 'preStagedObjectDigest')))
     check(plan.preStagedObjectDigest === preStagedObjectDigest, 'PILOT_PRESTAGED_CHECKPOINT_CHANGED');
-  check((codeOnly ? readonlyCodeModes : serviceOnly ? serviceConsumptionModes : publicationModes).includes(plan.mode) &&
+  check((codeOnly ? readonlyCodeModes : serviceOnly ? serviceConsumptionModes : livePublication ? firstCloudPublicationModes : publicationModes).includes(plan.mode) &&
     (codeOnly ? validateReadonlyCodeRefreshPlan(plan) : serviceOnly ? plan.maxModelCalls === 0 && plan.maxSparkRuns === 0 && plan.maxIncrementCny === 2 && validateServicePilotReserve(plan, preStaged)
-      : plan.scope === publicationScope && plan.maxModelCalls === 0 && plan.maxSparkRuns === 2 && plan.maxIncrementCny === 5 && plan.priorReserveCny === 32) && plan.monthlyCny === 200 &&
+      : publicationBudgetScope(plan)) && plan.monthlyCny === 200 &&
     plan.maxReads === (securityCode ? 100 : extendedCode ? 102 : 120) && plan.maxProbes === (securityCode ? 20 : 40) &&
     plan.normalReadLimit === (securityCode ? 64 : extendedCode ? 72 : 84) &&
     (codeOnly ? Number.isSafeInteger(plan.ownerCleanupReadReserve) && plan.ownerCleanupReadReserve >= 18 && plan.ownerCleanupReadReserve <= 32 &&
@@ -355,6 +431,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     check(['triggerCreates', 'triggerDeletes', 'permissionProbes'].every(key => plan.priorUsage[key] === 0), 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
   }
   const usage = { ...plan.priorUsage };
+  if (livePublication) check(usage.configWrites <= 2 && usage.objectGets === 0 && usage.objectPuts === 0,
+    'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
   let cleanupReading = ['cleanup-timers', 'close', 'rollback'].includes(plan.mode);
   // GetCallerIdentity and the function GET needed to open the plan are already
   // recorded before their calls by main; include them in the inherited total.
@@ -365,6 +443,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     priorUsage: structuredClone(plan.priorUsage), cumulativeUsage: usage, target: plan.target, releaseId: plan.releaseId, previous: plan.previous,
     baseline: ['stage', 'resume-stage'].includes(plan.mode) ? before : plan.baseline, candidate: plan.candidate,
     activated: plan.activated,
+    ...(livePublication ? { publicationApproval: structuredClone(plan.publicationApproval),
+      releaseBinding: plan.releaseBinding, activeDeadline: plan.activeDeadline, applicationReused: true } : {}),
     ...(preStaged ? { packageTransport: plan.packageTransport, preStagedObject: structuredClone(plan.preStagedObject), preStagedObjectDigest } : {}),
     ...(noTimers && ['close', 'rollback'].includes(plan.mode) && plan.phase === 'RESTORE_REQUESTED' ? { phase: 'RESTORE_REQUESTED' } : {}),
     ...(codeOnly ? { readonlyCodeRefresh: structuredClone(plan.readonlyCodeRefresh), historyUsage: structuredClone(plan.historyUsage),
@@ -380,10 +460,11 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     io.save(report);
   };
   const spend = kind => {
-    check(now() < plan.deadline, 'PLAN_EXPIRED');
+    check(now() < (livePublication && !cleanupReading ? plan.activeDeadline : plan.deadline), 'PLAN_EXPIRED');
+    if (livePublication) check(!['objectGets', 'objectPuts'].includes(kind), 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
     if (preStaged) check(kind !== 'objectPuts', 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
     if (noTimers) check(!['triggerCreates', 'triggerDeletes', 'permissionProbes'].includes(kind), codeOnly ? 'READONLY_CODE_EXTRA_AUTHORITY_FORBIDDEN' : 'SERVICE_TIMER_AUTHORITY_FORBIDDEN');
-    const limit = { configReads: cleanupReading ? plan.readLimit : plan.normalReadLimit, activeHttp: plan.maxProbes, configWrites: codeOnly ? 2 : 4, objectPuts: 1, triggerCreates: 4, triggerDeletes: 4, permissionProbes: 1 }[kind];
+    const limit = { configReads: cleanupReading ? plan.readLimit : plan.normalReadLimit, activeHttp: plan.maxProbes, configWrites: codeOnly || livePublication ? 2 : 4, objectPuts: 1, triggerCreates: 4, triggerDeletes: 4, permissionProbes: 1 }[kind];
     check(limit === undefined || usage[kind] < limit, 'PUBLICATION_USAGE_LIMIT');
     usage[kind]++; report[kind] = (report[kind] ?? 0) + 1; save();
   };
@@ -393,6 +474,8 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   };
   const read = () => call('configReads', ['fc', 'GET', path]);
   const put = body => {
+    if (livePublication) check(body && Object.keys(body).length === 1 && Object.hasOwn(body, 'environmentVariables'),
+      'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
     if (codeOnly) check(body && Object.keys(body).length === 1 && Object.hasOwn(body, 'code'), 'READONLY_CODE_ENVIRONMENT_WRITE_FORBIDDEN');
     return call('configWrites', ['fc', 'PUT', path], body);
   };
@@ -471,7 +554,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
         const error = readFailure;
         const transport = ['TypeError', 'AbortError', 'TimeoutError'].includes(error.name);
         const format = error.name === 'SyntaxError' || error.safeCode === 'PUBLICATION_HTTP_RESPONSE_INVALID';
-        if (!codeOnly || (!transport && !format)) throw error;
+        if ((!codeOnly && !livePublication) || (!transport && !format)) throw error;
         report.runtimeReadFailures = [...(report.runtimeReadFailures ?? []), { attempt: n + 1, endpoint: failureEndpoint,
           kind: transport ? 'TRANSPORT' : 'RESPONSE', code: transport ? 'READONLY_RUNTIME_TRANSPORT_UNCONFIRMED' : 'READONLY_RUNTIME_RESPONSE_INVALID' }];
         report.runtime = { ready: false }; save();
@@ -516,7 +599,9 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     return { ...pkg, crc64 };
   };
   const packageBody = pkg => ({ ossBucketName: report.baseline.environmentVariables.OSS_BUCKET, ossObjectName: controlPackageObject(pkg.sha256), checksum: pkg.crc64 });
-  const stagedSnapshot = () => ({ ...report.baseline, codeChecksum: report.candidate.crc64, codeSize: report.candidate.bytes });
+  const stagedSnapshot = () => livePublication
+    ? report.baseline
+    : { ...report.baseline, codeChecksum: report.candidate.crc64, codeSize: report.candidate.bytes };
   const openedSnapshot = () => ({ ...stagedSnapshot(), environmentVariables: report.activated });
   const assertBaseline = () => {
     const b = report.baseline, e = b?.environmentVariables;
@@ -535,6 +620,10 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   };
   const assertOpened = current => {
     const e = report.activated;
+    if (livePublication) {
+      check(same(current, openedSnapshot()), 'PUBLICATION_ACTIVE_SNAPSHOT_MISMATCH');
+      return;
+    }
     if (serviceOnly) {
       const startsAt = Date.parse(e?.V2_PUBLIC_SERVICE_STARTS_AT);
       check(typeof e?.V2_ACCOUNT_MONTHLY_SPEND_CNY === 'string' && e.V2_ACCOUNT_MONTHLY_SPEND_CNY.trim() !== '' &&
@@ -576,10 +665,17 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       check(error.safeCode === 'TRIGGER_NOT_FOUND', 'PUBLICATION_DELETE_PERMISSION_NOT_CONFIRMED');
     }
   };
+  const computeTimers = at => publicationPilotTimers({
+    // The signer has one format. Its output retains its existing signed domain
+    // and includes this exact release and trigger time.
+    plan: livePublication ? { ...plan, scope: publicationScope } : plan,
+    target: { controlName: plan.controlName },
+    releaseId: plan.releaseId, secret: plan.schedulerSecret, now: at,
+    deadline: Math.min(plan.deadline, Date.parse(report.activated.V2_PUBLIC_PUBLICATION_EXPIRES_AT)),
+  });
   const validateRecords = () => {
     check(Number.isSafeInteger(report.timerPreparedAt) && report.timerRecords.length === 4 && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(plan.releaseId ?? ''), 'PUBLICATION_TIMER_CHECKPOINT_REQUIRED');
-    const expected = publicationPilotTimers({ plan, target: { controlName: plan.controlName }, releaseId: plan.releaseId,
-      secret: plan.schedulerSecret, now: report.timerPreparedAt, deadline: Math.min(plan.deadline, Date.parse(report.activated.V2_PUBLIC_PUBLICATION_EXPIRES_AT)) });
+    const expected = computeTimers(report.timerPreparedAt);
     expected.forEach((entry, index) => {
       const saved = report.timerRecords[index];
       check(saved.name === entry.name && isDeepStrictEqual(saved.body, entry.body) && saved.bodyHash === timerHash(entry.body) &&
@@ -611,9 +707,11 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
   save(); assertBaseline();
   try {
     if (!['stage', 'resume-stage'].includes(plan.mode)) {
-      check(plan.stagedDigest === functionDigest(stagedSnapshot()), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
-      report.staged = stagedSnapshot();
-      if (!noTimers) check(usage.permissionProbes === 1 && plan.permissionProbe?.name === plan.triggerNames[0] &&
+      if (!livePublication) {
+        check(plan.stagedDigest === functionDigest(stagedSnapshot()), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
+        report.staged = stagedSnapshot();
+      }
+      if (!noTimers && !(livePublication && plan.mode === 'activate')) check(usage.permissionProbes === 1 && plan.permissionProbe?.name === plan.triggerNames[0] &&
         plan.permissionProbe.outcome === 'TRIGGER_NOT_FOUND' && plan.permissionProbe.confirmedAbsent === true && plan.permissionProbe.provesExistingDeletion === false,
       'PUBLICATION_DELETE_PERMISSION_NOT_CONFIRMED');
     }
@@ -655,8 +753,17 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       if (web) await verifyWeb(web,expectedScript);
       await runtime(false); report.phase = 'STAGED';
     } else if (plan.mode === 'activate') {
-      check(plan.phase === 'STAGED' && same(before, stagedSnapshot()), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
+      check(plan.phase === (livePublication ? 'READONLY_VERIFIED' : 'STAGED') &&
+        same(before, stagedSnapshot()) && (!livePublication || stableFunction(before)), 'PUBLICATION_STAGED_SNAPSHOT_REQUIRED');
       await bill();
+      if (livePublication) {
+        await runtime(false);
+        check(report.runtime.sparkReady === true, 'FIRST_V3_PUBLICATION_SPARK_UNCONFIRMED');
+        await probeMissingTimerDeletion();
+        const scheduleMs = publicationPilotTimerOffsetsSeconds.at(-1) * 1000 +
+          publicationPilotTimerPayloadLifetimeMs + publicationPilotTimerCleanupReserveMs;
+        check(now() + scheduleMs < plan.activeDeadline, 'PUBLICATION_TIMER_CLEANUP_WINDOW_INSUFFICIENT');
+      }
       report.activated = (serviceOnly ? serviceConsumptionPilotEnvironment : publicationPilotEnvironment)(report.baseline, plan, now());
       await settle(stagedSnapshot());
       report.phase = 'ACTIVATION_REQUESTED'; save();
@@ -669,8 +776,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
       if (!report.timerRecords.length) {
         check(usage.triggerCreates === 0 && !listed.some(t => plan.triggerNames.includes(t.triggerName)), 'PUBLICATION_TIMERS_ALREADY_EXIST');
         report.timerPreparedAt = now();
-        report.timerRecords = publicationPilotTimers({ plan, target: { controlName: plan.controlName }, releaseId: plan.releaseId,
-          secret: plan.schedulerSecret, now: report.timerPreparedAt, deadline: Math.min(plan.deadline, Date.parse(report.activated.V2_PUBLIC_PUBLICATION_EXPIRES_AT)) })
+        report.timerRecords = computeTimers(report.timerPreparedAt)
           .map(entry => ({ ...entry, bodyHash: timerHash(entry.body), state: 'PREPARED' }));
         report.phase = 'TIMERS_PREPARED'; save();
       }
@@ -732,7 +838,7 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     if ((staging && report.phase === 'STAGE_REQUESTED') || (plan.mode === 'activate' && report.phase === 'ACTIVATION_REQUESTED') || plan.mode === 'timers') {
       try {
         let current = await read(); const restore = staging ? report.baseline : stagedSnapshot();
-        report.rollbackTarget = staging ? 'ORIGINAL_READONLY' : 'STAGED_READONLY';
+        report.rollbackTarget = staging || livePublication ? 'ORIGINAL_READONLY' : 'STAGED_READONLY';
         if (!stableFunction(current)) {
           const pendingTarget = staging ? stagedSnapshot() : openedSnapshot();
           current = await settle(pendingTarget); // Never call a pending old snapshot a completed rollback.
@@ -797,10 +903,10 @@ async function main(env = process.env) {
       check(env.V2_PILOT_BUILD_RUN === plan.buildRunId && env.V2_PILOT_ARTIFACT_ID === plan.artifactId, 'ARTIFACT_BINDING_INVALID');
     const boundCase = cloudV3DevelopmentScope(plan.scope);
     const environmentOnly=boundCase || plan.scope===developmentRecoveryScope;
-    check((environmentOnly || ['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) &&
+    check((environmentOnly || ['INVITED_DEVELOPMENT_PILOT_V1', publicationScope, firstCloudPublicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) &&
       plan.controlName === config.functionName && plan.operatorSource === env.GITHUB_SHA && plan.mode === env.V2_PILOT_MODE &&
       (!boundCase || (plan.scope===nextCloudDevelopmentScope?plan.nextCase:plan.firstCase)?.origin==='https://shuduoai.cn') &&
-      (boundCase ? firstCloudDevelopmentModes : plan.scope === developmentRecoveryScope ? developmentRecoveryModes : plan.scope === publicationScope ? publicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
+      (boundCase ? firstCloudDevelopmentModes : plan.scope === developmentRecoveryScope ? developmentRecoveryModes : plan.scope === publicationScope ? publicationModes : plan.scope === firstCloudPublicationScope ? firstCloudPublicationModes : plan.scope === serviceConsumptionScope ? serviceConsumptionModes : plan.scope === readonlyCodeRefreshScope ? readonlyCodeModes : ['deploy', 'close', 'rollback']).includes(plan.mode), 'PLAN_IDENTITY_MISMATCH');
     check(plan.issuedAt <= Date.now() && (plan.deadline > Date.now() || (environmentOnly && ['close', 'rollback'].includes(plan.mode))) &&
       plan.deadline - plan.issuedAt <= (environmentOnly ? 7200000 : 3600000), 'PLAN_EXPIRED');
     report.scope = plan.scope; report.planVerified = true; save();
@@ -824,7 +930,7 @@ async function main(env = process.env) {
     }
     const credentials = { accessKeyId: env.ALIBABA_CLOUD_ACCESS_KEY_ID, accessKeySecret: env.ALIBABA_CLOUD_ACCESS_KEY_SECRET, securityToken: env.ALIBABA_CLOUD_SECURITY_TOKEN };
     const bucket = before.environmentVariables.OSS_BUCKET;
-    if ([publicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) {
+    if ([publicationScope, firstCloudPublicationScope, serviceConsumptionScope, readonlyCodeRefreshScope].includes(plan.scope)) {
       await runPublicationPilotOperation(plan, before, report, {
         save,
         command: (args, body) => {
@@ -833,11 +939,13 @@ async function main(env = process.env) {
           return command([...args, '--body-file', file]);
         },
         readCandidate: () => {
+          check(plan.scope !== firstCloudPublicationScope, 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
           check(!preStaged, 'PILOT_PRESTAGED_CANDIDATE_READ_FORBIDDEN');
           check(env.V2_PILOT_BUILD_RUN === plan.buildRunId && env.V2_PILOT_ARTIFACT_ID === plan.artifactId, 'ARTIFACT_BINDING_INVALID');
           return readFileSync('.candidate/v2-function.zip');
         },
         object: (pkg, method, bytes, query) => {
+          check(plan.scope !== firstCloudPublicationScope, 'FIRST_V3_PUBLICATION_CODE_IO_FORBIDDEN');
           if (preStaged) check(method === 'GET' && bytes === undefined, 'PILOT_PRESTAGED_OBJECT_PUT_FORBIDDEN');
           const request = privateOssRequest({ bucket, region: config.region, credentials, key: controlPackageObject(pkg.sha256), method, body: bytes, query });
           return fetch(request.url, { ...request.options, signal: AbortSignal.timeout(method === 'PUT' ? 300000 : 120000) });

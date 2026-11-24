@@ -3,9 +3,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { runPublicationPilotOperation, markUnacceptedPilotFailure } from '../../scripts/deploy-development-pilot.mjs';
+import { runPublicationPilotOperation, markUnacceptedPilotFailure, firstCloudPublicationScope } from '../../scripts/deploy-development-pilot.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
 import { publicationPilotTimerNames } from '../../scripts/publication-pilot-timers.mjs';
+import { currentLiveLifecycleContract, liveLifecyclePlan } from '../../src/v2/live-lifecycle-evaluation.mjs';
 const sha = value => createHash('sha256').update(value).digest('hex');
 const failure = safeCode => Object.assign(new Error(safeCode), { safeCode });
 function fixture() {
@@ -112,7 +113,9 @@ function fixture() {
   async function step(mode, changes = {}) {
     const plan = { ...structuredClone(lastPlan ?? basePlan), mode,
       ...(lastReport ? { phase: lastReport.phase, baseline: lastReport.baseline,
-        stagedDigest: lastReport.staged && functionDigest(lastReport.staged), permissionProbe: lastReport.permissionProbe,
+        ...(lastPlan.scope === firstCloudPublicationScope ? {} : {
+          stagedDigest: lastReport.staged && functionDigest(lastReport.staged),
+        }), permissionProbe: lastReport.permissionProbe,
         candidate: lastReport.candidate, activated: lastReport.activated, timerRecords: lastReport.timerRecords,
         timerPreparedAt: lastReport.timerPreparedAt, priorUsage: lastReport.cumulativeUsage } : {}), ...changes };
     const report = { phase: 'STARTED', configReads: 1, identityReads: 1, configWrites: 0, objectGets: 0, objectPuts: 0 };
@@ -375,4 +378,127 @@ test('workflow downloads frozen code only for deploy or stage and preserves encr
   assert.match(workflow, /if: github\.ref == 'refs\/heads\/main'/);
   assert.match(workflow, /path: v2-development-pilot\.sealed\.json/);
   assert.match(workflow, /cancel-in-progress: false/);
+});
+
+
+function firstCloudPublicationFixture(f) {
+  const { selectedCases: [definition], caseSetDigest } = liveLifecyclePlan(1, { contractId: currentLiveLifecycleContract.id });
+  const sourceRevision = 'b'.repeat(40), applicationTree = 'c'.repeat(40);
+  const firstCase = {
+    protocol: 'SHUDUO_V3_FIRST_CHECKPOINT_BINDING_V1',
+    evaluationRunId: '00000000-0000-4000-8000-000000000012',
+    caseId: definition.id, contextId: definition.contextId, caseSetDigest, projectId: 'synthetic-securities',
+    origin: 'https://shuduoai.cn', sourceRevision, applicationTree, checkpointDigest: sha('first checkpoint'),
+    requestBodyHash: sha(JSON.stringify({ message: definition.request, sql: definition.seedSql, contextId: definition.contextId })),
+    requestKeyHash: sha('synthetic original key'),
+  };
+  const applicationInspection = {
+    protocol: 'shuduo-control-artifact-inspection/v1', applicationSource: sourceRevision, applicationTree,
+    operatorSource: 'd'.repeat(40), buildWorkflowSource: 'e'.repeat(40), sha256: f.previous.sha256,
+    bytes: f.previous.bytes, webIndexSha256: sha('synthetic index'), webIndexBytes: 1024,
+    zipValid: true, sensitivePaths: 0, sourceChecks: 8, buildRunId: '1', inspectionRunId: '2',
+    artifactId: '3', buildAttempt: '1', artifactDigest: 'sha256:' + sha('synthetic artifact'),
+  };
+  const target = { ...f.basePlan.target, verificationId: '00000000-0000-4000-8000-000000000002' };
+  const publicationApproval = { ...target, packageId: '00000000-0000-4000-8000-000000000013',
+    approvalDigest: sha('scope and human approval'), reviewDigest: sha('exact review') };
+  const { approvalDigest, ...releaseTarget } = publicationApproval;
+  const releaseId = '00000000-0000-4000-8000-000000000003';
+  return {
+    activate: { scope: firstCloudPublicationScope, phase: 'READONLY_VERIFIED', baseline: f.baseline,
+      previous: f.previous, candidate: f.previous, priorReserveCny: 76, maxIncrementCny: 5,
+      activeDeadline: f.basePlan.deadline - 5 * 60 * 1000, firstCase, applicationInspection, target, publicationApproval },
+    timers: { releaseId, releaseBinding: { ...releaseTarget, releaseId, batchCount: 2 } },
+  };
+}
+
+test('first V3 publication reuses the live application and closes during reserved cleanup time', async () => {
+  const f = fixture(), plan = firstCloudPublicationFixture(f);
+  const activated = await f.step('activate', plan.activate);
+  assert.equal(activated.phase, 'OPENED');
+  assert.equal(activated.applicationReused, true);
+  assert.deepEqual(activated.publicationApproval, plan.activate.publicationApproval);
+  assert.equal(activated.permissionProbe.outcome, 'TRIGGER_NOT_FOUND');
+  assert.equal(f.current.environmentVariables.V2_PUBLIC_PUBLICATION_EXPIRES_AT, new Date(plan.activate.activeDeadline).toISOString());
+  assert.equal(f.current.environmentVariables.V2_MONTHLY_REMOTE_SPARK_RUN_LIMIT, '22');
+  assert.equal(f.current.environmentVariables.V2_MODEL_MONTHLY_BUDGET_CNY, '50');
+  const timed = await f.step('timers', plan.timers);
+  assert.equal(timed.phase, 'TIMERS_CREATED');
+  assert.equal(timed.cumulativeUsage.triggerCreates, 4);
+  assert.equal(timed.timerRecords.length, 4);
+  f.advance(plan.activate.activeDeadline - Date.parse('2026-10-27T08:00:00Z') + 1000);
+  const closed = await f.step('close');
+  assert.equal(closed.phase, 'CLOSED_READONLY');
+  assert.equal(closed.cumulativeUsage.configWrites, 2);
+  assert.equal(closed.cumulativeUsage.objectGets, 0);
+  assert.equal(closed.cumulativeUsage.objectPuts, 0);
+  assert.equal(closed.cumulativeUsage.triggerDeletes, 4);
+  assert.equal(closed.cumulativeUsage.permissionProbes, 1);
+  assert.equal(closed.timersAbsenceVerified, true);
+  assert.deepEqual([...f.timers.values()], [f.unrelated]);
+  assert.deepEqual(f.current, f.baseline);
+  assert.ok(f.calls.filter(call => call.args?.[1] === 'PUT').every(call => Object.keys(call.body).join() === 'environmentVariables'));
+  assert.equal(f.calls.filter(call => Object.hasOwn(call, 'object')).length, 0);
+});
+
+test('first V3 publication rejects legacy staging, mismatched code, active deadline, and approval changes before IO', async () => {
+  for (const [mode, adjust, code] of [
+    ['stage', v => v, 'FIRST_V3_PUBLICATION_WINDOW_INVALID'],
+    ['rollback', v => v, 'FIRST_V3_PUBLICATION_WINDOW_INVALID'],
+    ['activate', v => ({ ...v, activeDeadline: v.deadline }), 'FIRST_V3_PUBLICATION_WINDOW_INVALID'],
+    ['activate', v => ({ ...v, candidate: { ...v.candidate, crc64: '9999' } }), 'FIRST_V3_LIVE_APPLICATION_UNCONFIRMED'],
+    ['activate', v => ({ ...v, priorReserveCny: 75 }), 'FIRST_V3_PUBLICATION_WINDOW_INVALID'],
+    ['activate', v => ({ ...v, maxModelCalls: 1 }), 'FIRST_V3_PUBLICATION_WINDOW_INVALID'],
+    ['activate', v => ({ ...v, maxSparkRuns: 3 }), 'FIRST_V3_PUBLICATION_WINDOW_INVALID'],
+    ['activate', v => ({ ...v, publicationApproval: { ...v.publicationApproval, reviewDigest: 'missing' } }),
+      'FIRST_V3_PUBLICATION_APPROVAL_INVALID'],
+  ]) {
+    const f = fixture(), plan = firstCloudPublicationFixture(f);
+    await assert.rejects(f.step(mode, adjust(plan.activate)), { safeCode: code });
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test('first V3 publication denies a timer request for a different review', async () => {
+  const f = fixture(), plan = firstCloudPublicationFixture(f);
+  await f.step('activate', plan.activate);
+  await assert.rejects(f.step('timers', {
+    ...plan.timers, releaseBinding: { ...plan.timers.releaseBinding, reviewDigest: sha('different review') },
+  }), { safeCode: 'FIRST_V3_PUBLICATION_RELEASE_BINDING_INVALID' });
+  assert.equal(f.calls.filter(call => call.args?.[1] === 'POST').length, 0);
+});
+
+test('first V3 publication blocks an unproven delete permission and retains read-only configuration', async () => {
+  const f = fixture(), plan = firstCloudPublicationFixture(f);
+  f.controls.denyMissingDelete = true;
+  await assert.rejects(f.step('activate', plan.activate), { safeCode: 'PUBLICATION_DELETE_PERMISSION_NOT_CONFIRMED' });
+  assert.equal(f.calls.filter(call => call.args?.[1] === 'PUT').length, 0);
+  assert.equal(f.calls.filter(call => call.args?.[1] === 'POST').length, 0);
+  assert.deepEqual(f.current, f.baseline);
+});
+
+
+test('first V3 publication never accepts a forged open snapshot or restores a foreign environment', async () => {
+  const f = fixture(), plan = firstCloudPublicationFixture(f);
+  const activated = await f.step('activate', plan.activate);
+  const forged = { ...activated.activated, UNRELATED_ENV: 'foreign' };
+  f.current.environmentVariables = structuredClone(forged);
+  await assert.rejects(f.step('close', { activated: forged }), { safeCode: 'PUBLICATION_ACTIVE_SNAPSHOT_MISMATCH' });
+  assert.equal(f.calls.filter(call => call.args?.[1] === 'PUT').length, 1);
+  assert.deepEqual(f.current.environmentVariables, forged);
+});
+
+test('first V3 publication reconciles uncertain activation and restores the same application once', async () => {
+  const f = fixture(), plan = firstCloudPublicationFixture(f);
+  f.controls.lostUpdate = true;
+  const activated = await f.step('activate', plan.activate);
+  assert.equal(activated.updateResponseUnknown, true);
+  assert.equal(activated.phase, 'OPENED');
+  assert.equal(activated.cumulativeUsage.configWrites, 1);
+  f.controls.lostUpdate = false;
+  const closed = await f.step('close');
+  assert.equal(closed.phase, 'CLOSED_READONLY');
+  assert.deepEqual(f.current, f.baseline);
+  assert.equal(closed.cumulativeUsage.configWrites, 2);
+  assert.equal(closed.cumulativeUsage.objectPuts, 0);
 });
