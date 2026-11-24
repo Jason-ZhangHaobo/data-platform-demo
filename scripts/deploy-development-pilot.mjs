@@ -771,25 +771,41 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
         ['PREPARED', 'CREATE_REQUESTED', 'CREATED', 'DELETE_REQUESTED', 'DELETED', 'ABSENT'].includes(saved.state), 'PUBLICATION_TIMER_OWNERSHIP_MISMATCH');
     });
   };
-  const cleanupTimers = async () => {
+  const checkTimerOwnership = async record => {
+    const actual = await getTimer(record.name);
+    if (actual) assertPilotTimer(actual, record);
+    return actual;
+  };
+  const deleteCheckedTimer = async (record, actual) => {
+    if (!actual) { record.state = 'ABSENT'; save(); return; }
+    check(['CREATE_REQUESTED', 'CREATED'].includes(record.state), 'PUBLICATION_TIMER_DELETE_ALREADY_ATTEMPTED');
+    record.state = 'DELETE_REQUESTED'; save();
+    try { await call('triggerDeletes', ['fc', 'DELETE', triggerPath(record.name)]); }
+    catch (error) { record.deleteResponseUnknown = true; record.deleteDiagnostic = error.safeCode ?? 'DELETE_UNCONFIRMED'; save(); }
+    const remains = await getTimer(record.name);
+    if (remains) { assertPilotTimer(remains, record); check(false, 'PUBLICATION_TIMER_DELETE_UNCONFIRMED'); }
+    record.state = 'DELETED'; save();
+  };
+  const cleanupTimers = async ({ independent = false } = {}) => {
     validateRecords();
-    // Validate every extant candidate before deleting any timer; never touch an
-    // unrelated trigger or retry an uncertain DeleteTrigger invocation.
-    const current = [];
-    for (const record of report.timerRecords) {
-      const actual = await getTimer(record.name);
-      if (actual) assertPilotTimer(actual, record);
-      current.push(actual);
-    }
-    for (const [index, record] of report.timerRecords.entries()) {
-      if (!current[index]) { record.state = 'ABSENT'; save(); continue; }
-      check(['CREATE_REQUESTED', 'CREATED'].includes(record.state), 'PUBLICATION_TIMER_DELETE_ALREADY_ATTEMPTED');
-      record.state = 'DELETE_REQUESTED'; save();
-      try { await call('triggerDeletes', ['fc', 'DELETE', triggerPath(record.name)]); }
-      catch (error) { record.deleteResponseUnknown = true; record.deleteDiagnostic = error.safeCode ?? 'DELETE_UNCONFIRMED'; save(); }
-      const remains = await getTimer(record.name);
-      if (remains) { assertPilotTimer(remains, record); check(false, 'PUBLICATION_TIMER_DELETE_UNCONFIRMED'); }
-      record.state = 'DELETED'; save();
+    if (independent) {
+      // Each owned timer can be cleaned up even if another timer is unresolved.
+      // A prior uncertain delete stays recorded and is never retried.
+      let unresolved;
+      for (const record of report.timerRecords) {
+        try { await deleteCheckedTimer(record, await checkTimerOwnership(record)); }
+        catch (error) {
+          record.cleanupDiagnostic = error.safeCode ?? 'TIMER_CLEANUP_UNCONFIRMED';
+          unresolved ??= error;
+          save();
+        }
+      }
+      if (unresolved) throw unresolved;
+    } else {
+      // Keep the legacy rule of checking all timer identities before any delete.
+      const current = [];
+      for (const record of report.timerRecords) current.push(await checkTimerOwnership(record));
+      for (const [index, record] of report.timerRecords.entries()) await deleteCheckedTimer(record, current[index]);
     }
     report.timersCleaned = true; save();
   };
@@ -885,6 +901,26 @@ export async function runPublicationPilotOperation(plan, before, report, io) {
     } else if (plan.mode === 'cleanup-timers') {
       if (!same(before, stagedSnapshot())) assertOpened(before);
       await cleanupTimers(); report.phase = 'TIMERS_CLEANED';
+    } else if (livePublication && plan.mode === 'close') {
+      const alreadyReadonly = same(before, report.baseline);
+      if (!alreadyReadonly) assertOpened(before);
+      report.phase = 'RESTORE_REQUESTED'; save();
+      if (alreadyReadonly) { report.readOnlyAlreadyRestored = true; save(); }
+      else {
+        try { await put({ environmentVariables: report.baseline.environmentVariables }); }
+        catch { report.restoreResponseUnknown = true; save(); }
+      }
+      await settle(report.baseline);
+      report.controlBaselineVerified = true; save();
+
+      if (report.timerRecords.length) await cleanupTimers({ independent: true });
+      else check(usage.triggerCreates === 0, 'PUBLICATION_TIMER_CHECKPOINT_REQUIRED');
+      check(!(await listTimers()).some(timer => plan.triggerNames.includes(timer.triggerName)), 'PUBLICATION_TIMERS_NOT_CLEANED');
+      report.timersAbsenceVerified = true; save();
+
+      // Independent physical cleanup proof must survive an unavailable HTTP view.
+      await runtime(false);
+      report.phase = 'CLOSED_READONLY';
     } else {
       const staged = stagedSnapshot();
       const restoredAfterUnknown = noTimers && plan.phase === 'RESTORE_REQUESTED' &&

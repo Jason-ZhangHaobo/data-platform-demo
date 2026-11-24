@@ -64,8 +64,9 @@ function fixture() {
         if (method === 'GET') { if (!timers.has(name)) throw failure('TRIGGER_NOT_FOUND'); return structuredClone(timers.get(name)); }
         assert.equal(method, 'DELETE');
         if (!timers.has(name)) throw failure(controls.denyMissingDelete ? 'ACCESS_DENIED' : 'TRIGGER_NOT_FOUND');
-        if (!controls.stuckDelete) timers.delete(name);
-        if (controls.lostDelete === name || controls.stuckDelete) throw failure('CLOUD_REQUEST_UNCONFIRMED');
+        const stuck = controls.stuckDelete === true || controls.stuckDelete === name;
+        if (!stuck) timers.delete(name);
+        if (controls.lostDelete === name || stuck) throw failure('CLOUD_REQUEST_UNCONFIRMED');
         return {};
       }
       assert.equal(path, `/2023-03-30/functions/${baseline.functionName}`);
@@ -103,6 +104,7 @@ function fixture() {
     http: async path => {
       assert.deepEqual(saved.cumulativeUsage, activeReport.cumulativeUsage);
       calls.push({ http: path });
+      controls.inspectRuntime?.(saved);
       if (controls.badRuntime) return { status: 503, body: {} };
       const e = current.environmentVariables;
       if (path.endsWith('/status')) return { status: 200, body: { spark: { healthVerified: true }, agentDevelopment: { durableEnabled: true } } };
@@ -434,11 +436,53 @@ test('first V3 publication reuses the live application and closes during reserve
   assert.equal(closed.cumulativeUsage.objectPuts, 0);
   assert.equal(closed.cumulativeUsage.triggerDeletes, 4);
   assert.equal(closed.cumulativeUsage.permissionProbes, 1);
+  assert.equal(closed.controlBaselineVerified, true);
   assert.equal(closed.timersAbsenceVerified, true);
   assert.deepEqual([...f.timers.values()], [f.unrelated]);
   assert.deepEqual(f.current, f.baseline);
   assert.ok(f.calls.filter(call => call.args?.[1] === 'PUT').every(call => Object.keys(call.body).join() === 'environmentVariables'));
   assert.equal(f.calls.filter(call => Object.hasOwn(call, 'object')).length, 0);
+});
+
+test('first V3 close seals physical restore and timer absence before HTTP verification', async () => {
+  const f = fixture(), plan = firstCloudPublicationFixture(f);
+  await f.step('activate', plan.activate);
+  await f.step('timers', plan.timers);
+  f.controls.badRuntime = true;
+  f.controls.inspectRuntime = report => {
+    assert.equal(report.controlBaselineVerified, true);
+    assert.equal(report.timersAbsenceVerified, true);
+  };
+  await assert.rejects(f.step('close'), { safeCode: 'READONLY_RESTORE_NOT_VERIFIED' });
+  assert.equal(f.report.phase, 'RESTORE_REQUESTED');
+  assert.equal(f.report.controlBaselineVerified, true);
+  assert.equal(f.report.timersAbsenceVerified, true);
+  assert.equal(f.report.cumulativeUsage.configWrites, 2);
+  assert.deepEqual(f.current, f.baseline);
+  assert.deepEqual([...f.timers.values()], [f.unrelated]);
+});
+
+test('first V3 close restores before deletion and cleans remaining owned timers once after one unresolved delete', async () => {
+  const f = fixture(), plan = firstCloudPublicationFixture(f);
+  await f.step('activate', plan.activate);
+  await f.step('timers', plan.timers);
+  const stuck = publicationPilotTimerNames[1];
+  f.controls.stuckDelete = stuck;
+  const start = f.calls.length;
+  await assert.rejects(f.step('close'), { safeCode: 'PUBLICATION_TIMER_DELETE_UNCONFIRMED' });
+  const closure = f.calls.slice(start);
+  assert.equal(f.report.phase, 'RESTORE_REQUESTED');
+  assert.equal(f.report.controlBaselineVerified, true);
+  assert.notEqual(f.report.timersAbsenceVerified, true);
+  assert.equal(f.report.cumulativeUsage.configWrites, 2);
+  assert.equal(f.report.cumulativeUsage.triggerDeletes, 4);
+  assert.equal(f.report.timerRecords[1].state, 'DELETE_REQUESTED');
+  assert.equal(f.report.timerRecords[1].deleteResponseUnknown, true);
+  assert.ok(f.report.timerRecords.filter(record => record.name !== stuck).every(record => record.state === 'DELETED'));
+  assert.deepEqual([...f.timers.keys()].sort(), [f.unrelated.triggerName, stuck].sort());
+  assert.deepEqual(f.current, f.baseline);
+  assert.ok(closure.findIndex(call => call.args?.[1] === 'PUT') < closure.findIndex(call => call.args?.[1] === 'DELETE'));
+  assert.deepEqual(closure.filter(call => call.args?.[1] === 'DELETE').map(call => call.args[2].split('/').at(-1)), publicationPilotTimerNames);
 });
 
 test('first V3 publication rejects legacy staging, mismatched code, active deadline, and approval changes before IO', async () => {
