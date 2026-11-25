@@ -172,6 +172,16 @@ export function verifyQueuedSparkResult(value, expectedJobId, config) {
   return value.result;
 }
 
+function readOriginalJobResult(rawResult, jobId, config, serializedJob) {
+  let envelope;
+  try { envelope = JSON.parse(rawResult); }
+  catch { throw fail(502, "Spark队列结果不是JSON", "SPARK_QUEUE_RESULT_INVALID"); }
+  const result = verifyQueuedSparkResult(envelope, jobId, config);
+  if (result?.queueJobDigest !== undefined && result.queueJobDigest !== bodyHash(serializedJob))
+    throw fail(502, "Spark队列结果与原任务正文不一致", "SPARK_QUEUE_RESULT_INVALID");
+  return result;
+}
+
 export class RemoteSparkQueueClient {
   constructor(config, transport, options = {}) {
     this.config = config;
@@ -238,14 +248,8 @@ export class RemoteSparkQueueClient {
   async readPreparedResult(queued, {cancelOnTimeout=true} = {}) {
     this.validatePrepared(queued, true);
     const raw = await this.transport.read(queued.resultKey);
-    if (raw !== undefined) {
-      let envelope;
-      try { envelope = JSON.parse(raw); } catch { throw fail(502, "Spark队列结果不是JSON", "SPARK_QUEUE_RESULT_INVALID"); }
-      const result = verifyQueuedSparkResult(envelope, queued.job.jobId, this.config);
-      if (result?.queueJobDigest !== undefined && result.queueJobDigest !== bodyHash(queued.serialized))
-        throw fail(502, "Spark队列结果与原任务正文不一致", "SPARK_QUEUE_RESULT_INVALID");
-      return result;
-    }
+    if (raw !== undefined)
+      return readOriginalJobResult(raw, queued.job.jobId, this.config, queued.serialized);
     if (cancelOnTimeout && Date.parse(queued.job.expiresAt) <= this.now()) {
       await this.cancelPrepared(queued, "DEADLINE");
       throw fail(504, "云端任务已超时", "REMOTE_SPARK_TIMEOUT");
@@ -266,8 +270,8 @@ export class RemoteSparkQueueClient {
 
   async execute(input) {
     if (input.signal?.aborted) throw fail(499, "远程Spark队列任务已取消", "REMOTE_SPARK_CANCELLED");
-    const queued = createQueuedSparkJob(input, this.config, { now: this.now() });
-    await this.transport.create(queued.jobKey, JSON.stringify(queued.job));
+    const queued = this.prepare(input);
+    await this.transport.create(queued.jobKey, queued.serialized);
     const deadline = this.now() + Math.min(input.timeoutMs ?? this.config.timeoutMs, this.config.timeoutMs);
     while (this.now() < deadline) {
       if (input.signal?.aborted) {
@@ -276,11 +280,8 @@ export class RemoteSparkQueueClient {
         throw fail(499, "远程Spark队列任务已取消", "REMOTE_SPARK_CANCELLED");
       }
       const raw = await this.transport.read(queued.resultKey);
-      if (raw !== undefined) {
-        let result;
-        try { result = JSON.parse(raw); } catch { throw fail(502, "Spark队列结果不是JSON", "SPARK_QUEUE_RESULT_INVALID"); }
-        return verifyQueuedSparkResult(result, queued.job.jobId, this.config);
-      }
+      if (raw !== undefined)
+        return readOriginalJobResult(raw, queued.job.jobId, this.config, queued.serialized);
       await this.wait(this.config.pollMs);
     }
     await this.transport.create(queued.cancelKey,
@@ -357,11 +358,8 @@ const queueKeys = (config, jobId) => ({
   cancelKey: `${config.cancellationPrefix}/${jobId}.cancel.json`,
 });
 
-function storedQueueResult(raw, jobId, resultKey, config) {
-  let envelope;
-  try { envelope = JSON.parse(raw); }
-  catch { throw fail(502, "Spark队列结果不是JSON", "SPARK_QUEUE_RESULT_INVALID"); }
-  const trusted = verifyQueuedSparkResult(envelope, jobId, config);
+function storedQueueResult(raw, jobId, resultKey, config, serializedJob) {
+  const trusted = readOriginalJobResult(raw, jobId, config, serializedJob);
   return {jobId,resultKey,status:trusted.status,containsSecret:false,replayed:true};
 }
 
@@ -389,7 +387,7 @@ export async function consumeQueuedSparkJob({ jobKey, config, transport, runner,
     throw fail(422, "Spark队列任务对象键与任务不符", "SPARK_QUEUE_JOB_KEY_INVALID");
   const previous = await transport.read(keys.resultKey);
   const payload = verifyQueuedSparkJob(job, config, now(), { allowExpired: previous !== undefined });
-  if (previous !== undefined) return storedQueueResult(previous,job.jobId,keys.resultKey,config);
+  if (previous !== undefined) return storedQueueResult(previous,job.jobId,keys.resultKey,config,raw);
 
   const cancellationBeforeClaim = await queuedCancellationReason(transport, keys.cancelKey, job.jobId, config, now());
   // A claim binds the immutable signed job, has no expiry or takeover, and
@@ -401,7 +399,7 @@ export async function consumeQueuedSparkJob({ jobKey, config, transport, runner,
     const settled = await transport.read(keys.resultKey);
     return settled === undefined
       ? {jobId:job.jobId,resultKey:keys.resultKey,status:"RESULT_PENDING",containsSecret:false,replayed:true}
-      : storedQueueResult(settled,job.jobId,keys.resultKey,config);
+      : storedQueueResult(settled,job.jobId,keys.resultKey,config,raw);
   }
   if (acquired?.created !== true)
     throw fail(503,"Spark任务占用结果待核对，执行尚未开始","SPARK_QUEUE_CLAIM_UNCONFIRMED");

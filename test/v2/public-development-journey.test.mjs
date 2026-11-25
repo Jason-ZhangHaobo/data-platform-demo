@@ -17,7 +17,8 @@ import { MemoryDataStateBackend } from '../../src/v2/data-state-replica.mjs';
 import { LocalArtifactStore } from '../../src/v2/artifact-store.mjs';
 import { BusinessQueryStore } from '../../src/v2/data-services.mjs';
 import { createFcIngress } from '../../src/v2/fc-ingress.mjs';
-import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult } from '../../src/v2/remote-spark-queue.mjs';
+import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult, verifyQueuedSparkResult } from '../../src/v2/remote-spark-queue.mjs';
+import { createRemoteSparkWorker } from '../../src/v2/remote-spark-worker.mjs';
 import { referenceSql, referenceSqlForContext, contextIds, getContext, validationFamilyForContext } from '../../src/v2/context.mjs';
 import { V2Client } from '../../src/v2/client.mjs';
 import { runV2Cli } from '../../bin/shuduo.mjs';
@@ -190,17 +191,20 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   const objects = new Map();
   const wakes=[];
   const config = { projectId: PROJECT, sharedSecret: 'synthetic-journey-signing-key-only-123456789', jobPrefix: SPARK_QUEUE_PREFIXES.jobs, resultPrefix: SPARK_QUEUE_PREFIXES.results, cancellationPrefix: SPARK_QUEUE_PREFIXES.cancellations, timeoutMs: queueTimeoutMs };
-  const queue = new RemoteSparkQueueClient(config, {
+  const queueEvents=[];
+  const queueTransport={
     read: async key => { if(key.startsWith(config.resultPrefix+'/'))resultReads++;return objects.get(key); },
     create: async (key, body) => {
       if(key.startsWith(config.jobPrefix+'/'))jobWriteAttempts++;
       if(key.startsWith(config.cancellationPrefix+'/'))cancellationWrites++;
       if (objects.has(key)) { assert.equal(objects.get(key), body); return { created: false }; }
       objects.set(key, body); if (key.startsWith(config.jobPrefix + '/')) jobCreates++;
+      if (eventsEnabled && key.endsWith('.json')) queueEvents.push(resultEvent(key));
       if (loseSubmission) { loseSubmission = false; throw Error('SYNTHETIC_LOST_RESPONSE'); }
       return { created: true };
     },
-  }, { now: () => now });
+  };
+  const queue = new RemoteSparkQueueClient(config,queueTransport,{ now: () => now });
   const runner = async () => { throw Error('BLOCKING_RUNNER_FORBIDDEN_IN_THIS_TEST'); };
   runner.descriptor = { engine: 'Apache Spark', isolation: 'REMOTE_FUNCTION', transport: 'PRIVATE_OSS_QUEUE', healthVerified: true, publicWriteEnabled: true };
   runner.assertWriteReady=()=>{
@@ -215,7 +219,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     objects.set(key,body);wakes.push({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',eventTime:new Date(now).toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key}}}]});
     if(loseWakeAcknowledgement){loseWakeAcknowledgement=false;throw Error('SYNTHETIC_WAKE_ACK_LOST');}
   }};
-  const resultEvent=key=>({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',
+  const resultEvent=key=>({events:[{eventName:'ObjectCreated:PutObject',eventSource:'acs:oss',eventVersion:'1.0',region:'cn-hangzhou',
     eventTime:new Date(now).toISOString(),oss:{bucket:{name:env.OSS_BUCKET,ownerIdentity:env.V2_AGENT_EVENT_ACCOUNT_ID},object:{key}}}]});
   const close = async () => {
     if (!app) return;
@@ -277,18 +281,69 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     const r = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json', 'x-shuduo-client': 'workbench', origin: env.V2_PUBLIC_ORIGIN, 'idempotency-key': key, ...(stableOrigin ? {connection:'close'} : {}), ...(cookie ? { cookie, 'x-csrf-token': csrf } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: r.status, body: await r.json(), cookies: r.headers.getSetCookie(), headers: r.headers };
   };
-  const complete = (prepared, measuredResult, queueJobDigest=sha256(prepared.serialized)) => {
-    const payload = JSON.parse(prepared.job.body);
-    const result=measuredResult ?? {
+  const fixtureSparkResult = payload => ({
       status: 'SUCCEEDED', engine: 'Apache Spark', engineVersion: '3.5.9', mainSqlExecuted: true,
       rows: getContext(payload.context.id).expected, durationMs: 100,
       validation: { passed: true, regressions: contextIds.map(contextId => ({ contextId, passed: true })) },
       ...(payload.testSql ? { testSqlValidation: { passed: true, sqlHash: createHash('sha256').update(payload.testSql).digest('hex') } } : {}),
       log: 'Synthetic queue receipt. No real Spark was run.',
-    };
+  });
+  const complete = (prepared, measuredResult, queueJobDigest=sha256(prepared.serialized)) => {
+    const result=measuredResult ?? fixtureSparkResult(JSON.parse(prepared.job.body));
     objects.set(prepared.resultKey, JSON.stringify(createQueuedSparkResult(prepared.job,
       {...result,queueJobDigest},config,now)));
   };
+  async function rehearseWithWorker(prepared, useLocalSpark) {
+    const eventsFor = key => queueEvents.filter(v => v.events[0].oss.object.key === key);
+    const [jobEvent] = eventsFor(prepared.jobKey);
+    assert.equal(eventsFor(prepared.jobKey).length,1);
+    assert.equal(objects.get(prepared.jobKey),prepared.serialized);
+    assert.equal(objects.has(prepared.resultKey),false);
+    let runs = 0;
+    const worker = createRemoteSparkWorker({
+      env:{V2_SPARK_WORKER_SECRET:config.sharedSecret,V2_SPARK_QUEUE_CONSUMER_ENABLED:'true'},
+      queueConfig:{...config,pollMs:100},queueTransport:{...queueTransport,config:{bucket:env.OSS_BUCKET}}, now:()=>now,
+      runner: async input => {
+        runs++;
+        assert.equal(input.context.id,'cash-change');
+        assert.ok(input.testSql);
+        return useLocalSpark ? runSpark(input,{...runtimeConfig({}),artifactRoot:directory,retainArtifacts:false}) : fixtureSparkResult(input);
+      },
+    });
+    await new Promise((ready,reject)=>{worker.server.once('error',reject);worker.server.listen(0,'127.0.0.1',ready);});
+    const invoke=async()=>{
+      const response=await fetch('http://127.0.0.1:'+worker.server.address().port+'/invoke',{
+        method:'POST',headers:{'content-type':'application/octet-stream'},body:JSON.stringify(jobEvent),signal:AbortSignal.timeout(queueTimeoutMs+5000),
+      });
+      assert.equal(response.status,202);
+      const receipt=await response.json();
+      assert.equal(receipt.jobId,prepared.job.jobId);
+      assert.equal(receipt.status,'SUCCEEDED');
+    };
+    try {
+      await invoke();
+      const rawResult=objects.get(prepared.resultKey);
+      await invoke();
+      assert.equal(runs,1);
+      assert.equal(objects.get(prepared.resultKey),rawResult);
+      const result=verifyQueuedSparkResult(JSON.parse(rawResult),prepared.job.jobId,config);
+      assert.equal(result.queueJobDigest,sha256(objects.get(prepared.jobKey)));
+      assert.equal(result.engineVersion,'3.5.9');
+      assert.equal(result.mainSqlExecuted,true);
+      assert.equal(result.testSqlValidation?.passed,true);
+      assert.equal(result.validation?.passed,true);
+      assert.equal(result.validation.regressions.length,5);
+      assert.ok(result.validation.regressions.every(row=>row.passed));
+      assert.deepEqual(result.rows.toSorted((a,b)=>a.client_id.localeCompare(b.client_id)),cashChangeConsumerRows);
+      assert.equal(eventsFor(prepared.resultKey).length,1);
+      t.diagnostic(JSON.stringify({rehearsalWorker:'PROJECT_OSS_EVENT_HANDLER',queueTransport:'LOCAL_IN_MEMORY',
+        spark:useLocalSpark?'ACTUAL_LOCAL_SPARK':'SYNTHETIC_RUNNER',jobDeliveries:2,executions:runs,resultObjects:1}));
+      return {event:eventsFor(prepared.resultKey)[0],workerResultDigest:sha256(JSON.stringify(result))};
+    } finally {
+      worker.server.closeAllConnections();
+      await new Promise(resolve=>worker.server.close(resolve));
+    }
+  }
   const restartWithExpiredReadiness=async()=>{
     assert.equal(cloudState,undefined);
     const metadata=new MemorySnapshotBackend(), data=new MemoryDataStateBackend();
@@ -320,7 +375,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   const login = await call('/auth/login', { email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026' });
   assert.equal(login.status, 200); cookie = login.cookies.map(c => c.split(';')[0]).join('; '); csrf = login.body.csrfToken;
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
-  return { call, complete, removeResult:prepared=>objects.delete(prepared.resultKey), resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, restartWithExpiredReadiness, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, expireWarmWorker:()=>{
+  return { call, complete, rehearseWithWorker, removeResult:prepared=>objects.delete(prepared.resultKey), resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, restartWithExpiredReadiness, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, expireWarmWorker:()=>{
     warmWorkerReady=false;
     runner.descriptor.healthVerified=false;
     runner.descriptor.publicWriteEnabled=false;
@@ -1390,16 +1445,22 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal(stored.stage,'FILE_REHEARSAL_SUBMITTING');
   assert.equal(stored.remoteSubmission.submitted,false);
   assert.equal((await f.call(taskPath+'/workflow')).body.eventDrivenRehearsal,true);
-  const event=f.resultEvent(stored.remoteSubmission.prepared.resultKey);
+  let event=f.resultEvent(stored.remoteSubmission.prepared.resultKey);
   const controls=f.queueCounts();
   assert.equal((await f.privateCall(f.resultEvent(stored.remoteSubmission.prepared.resultKey.replace(verificationId,randomUUID())))).body.state,'IGNORED_UNREGISTERED');
   assert.deepEqual(f.queueCounts(),controls);
   assert.equal((await f.privateCall(event)).status,503);
   assert.equal(f.store.get('agent_delivery_task',stored.id,PROJECT).version,stored.version);
-  f.complete(stored.remoteSubmission.prepared,undefined,'0'.repeat(64));
-  assert.equal((await f.privateCall(event)).body.code,'SPARK_QUEUE_RESULT_INVALID');
-  assert.equal(f.store.get('agent_delivery_task',stored.id,PROJECT).version,stored.version);
-  f.complete(stored.remoteSubmission.prepared,measure?await measuredSpark(t,f,stored.remoteSubmission.prepared,'workbench rehearsal'):undefined);
+  let workerReceipt;
+  if (cashChange) {
+    workerReceipt=await f.rehearseWithWorker(stored.remoteSubmission.prepared,measure || process.env.SHUDUO_TEST_LOCAL_SPARK_WORKER_REHEARSAL==='true');
+    event=workerReceipt.event;
+  } else {
+    f.complete(stored.remoteSubmission.prepared,undefined,'0'.repeat(64));
+    assert.equal((await f.privateCall(event)).body.code,'SPARK_QUEUE_RESULT_INVALID');
+    assert.equal(f.store.get('agent_delivery_task',stored.id,PROJECT).version,stored.version);
+    f.complete(stored.remoteSubmission.prepared,measure?await measuredSpark(t,f,stored.remoteSubmission.prepared,'workbench rehearsal'):undefined);
+  }
   // The original HTTP client is gone. Reopen the persisted controller with
   // writes closed and settle solely through the original private result event.
   f.expire();
@@ -1420,8 +1481,15 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   const settled=await f.privateCall(event);
   assert.equal(settled.status,200,settled.body.message);
   assert.equal(settled.body.state,'REHEARSAL_SETTLED');
+  const firstSettlement=f.store.get('delivery_verification',verificationId,PROJECT).settlementEvidence;
+  if (workerReceipt) {
+    assert.equal(firstSettlement.trigger,'SIGNED_RESULT_EVENT');
+    assert.equal(firstSettlement.workerResultDigest,workerReceipt.workerResultDigest);
+    assert.equal(firstSettlement.verificationId,verificationId);
+  }
   const duplicate=await f.privateCall(event);
   assert.equal(duplicate.body.state,'REHEARSAL_ALREADY_SETTLED');
+  assert.deepEqual(f.store.get('delivery_verification',verificationId,PROJECT).settlementEvidence,firstSettlement);
   assert.deepEqual(f.queueCounts(),{...beforeSettlement,resultReads:beforeSettlement.resultReads+1});
   assert.equal(f.store.list('delivery_verification',PROJECT).length,1);
   assert.equal(f.store.list('release_approval',PROJECT).length,0);
@@ -1808,7 +1876,8 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
     assert.ok(savedApplications.every(app=>app.status==='REVOKED'));
     assert.deepEqual(f.queueCounts(),queueBeforeReadback);
     t.diagnostic(JSON.stringify({case:receipt.caseId,scope:receipt.scope,modelSource:'DETERMINISTIC_TEST_FIXTURE',
-      cloudEventTransport:'LOCAL_TEST_FIXTURE',spark:measure?'ACTUAL_LOCAL_SPARK':'SYNTHETIC_WORKER_RECEIPTS',
+      cloudEventTransport:'LOCAL_TEST_FIXTURE',spark:measure?'ACTUAL_LOCAL_SPARK':
+        process.env.SHUDUO_TEST_LOCAL_SPARK_WORKER_REHEARSAL==='true'?'ACTUAL_LOCAL_REHEARSAL_ONLY':'SYNTHETIC_WORKER_RECEIPTS',
       phases:phaseAttribution.phases,verifiedCloudCases:0}));
     return;
   }
