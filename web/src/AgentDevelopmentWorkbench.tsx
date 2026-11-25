@@ -1,4 +1,4 @@
-import {syncSqlSelectionFromBinding,materializedSyncInputKind} from '../../src/v2/sync-sql-selection.mjs';
+import {syncSqlSelectionFromBinding,archivedSyncInputKind,materializedSyncInputKind} from '../../src/v2/sync-sql-selection.mjs';
 import {MaterializedSyncInputPicker,materializedModeLabels} from './MaterializedSyncInputPicker';
 import {syncLandingEvidenceMessage} from './sync-landing-evidence';
 import {recoverManualRun} from './manual-run-confirmation';
@@ -179,7 +179,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const displayedRunStatus = schemaBlocksDelivery
     ? syncSchema?.status === "MISMATCH" ? "输出结构不符合约定" : "输出结构未确认"
     : run && (stageText[run.status] ?? run.status);
-  const maySelectSync = localManualDelivery && !readOnly && !publicationTarget && !taskOnly && !derivationActive &&
+  const maySelectSync = localManualDelivery && originalCanWrite && !readOnly && !publicationTarget && !taskOnly && !derivationActive &&
     contextId === "holdings-t1" && !task && !baselineRevisionId;
   const selectedSync = maySelectSync ? syncOffer?.selection : undefined;
   const syncSelectionPending = maySelectSync && syncRequested && !selectedSync;
@@ -187,6 +187,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     syncChoiceSequence.current++;
     setSyncRequested(false);setSyncOffer(undefined);setSyncOfferState("");
   }
+  useEffect(()=>{if(!maySelectSync)useRegisteredPositions();},[maySelectSync]);
   const syncOfferError = (cause: unknown) =>
     syncLandingEvidenceMessage((cause as { code?: unknown } | undefined)?.code) ??
     (cause instanceof Error ? cause.message : "同步持仓批次尚未确认。");
@@ -206,7 +207,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     const token=epoch.current,sequence=++syncChoiceSequence.current;
     setSyncRequested(true);setSyncOffer(undefined);setSyncOfferState('正在核对原持仓批次…');
     try{const offer=await readArchivedSyncedPositions({request:path=>api(path)},candidate);
-      if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current){setSyncOffer(offer);setSyncOfferState('原批次已核对。提交开发时将再次核对并冻结，不会替换为当前表。');}}
+      if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current){setSyncOffer(offer);setSyncOfferState('原批次已核对。提交开发时将再次核对并冻结。');}}
     catch(cause){if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current)setSyncOfferState(syncOfferError(cause));}
   }
   async function selectMaterializedSync(candidate:MaterializedSyncSqlCandidate){
@@ -824,24 +825,28 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       </aside>
       <section id="agent-requirement" className="agent-dev-dialogue"><header><Bot size={17} /><strong>开发助手</strong><span>需求与执行</span></header>
         <div className="agent-dev-conversation">
-          {frozenInput && <div className="agent-dev-notice agent-dev-sync-input" role="status"><strong>原同步输入已冻结</strong><p>批次 {frozenInput.runId.slice(0,8)} · 元数据 {frozenInput.metadataVersionId.slice(0,8)} · {frozenInput.rowCount} 行 · 快照 {frozenInput.snapshotHash.slice(0,12)}。账户与现金使用登记样例。</p>{frozenInput.kind!==undefined&&<p>来源为原归档 · 同步任务 {frozenInput.taskId.slice(0,8)} · 落地快照 {frozenInput.landingSnapshotHash.slice(0,12)}，不会随当前表变化。</p>}{frozenInput.kind===materializedSyncInputKind&&<p>目标 {frozenInput.targetTable} · {materializedModeLabels[frozenInput.mode]}。{frozenInput.mode==='INCREMENTAL_CHANGELOG'&&<>变更代号 {frozenInput.changeEpochId.slice(0,8)} · 控制摘要 {frozenInput.changeStateHash.slice(0,12)}。</>}{frozenInput.rowCount===0&&'此批持仓为空，登记账户与现金继续参与计算。'}</p>}</div>}
+          {frozenInput && <div className="agent-dev-notice agent-dev-sync-input" role="status"><strong>原同步输入已冻结{syncSchema?.inputMetadata?.sourceType==="SERVER_MYSQL"&&" · MySQL 持仓"}</strong><p>批次 {frozenInput.runId.slice(0,8)} · 元数据 {frozenInput.metadataVersionId.slice(0,8)} · {frozenInput.rowCount} 行 · 快照 {frozenInput.snapshotHash.slice(0,12)}。账户与现金使用登记样例。</p>{frozenInput.kind!==undefined&&<p>来源为原归档 · 同步任务 {frozenInput.taskId.slice(0,8)} · 落地快照 {frozenInput.landingSnapshotHash.slice(0,12)}，不会随当前表变化。</p>}{frozenInput.kind===materializedSyncInputKind&&<p>目标 {frozenInput.targetTable} · {materializedModeLabels[frozenInput.mode]}。{frozenInput.mode==='INCREMENTAL_CHANGELOG'&&<>变更代号 {frozenInput.changeEpochId.slice(0,8)} · 控制摘要 {frozenInput.changeStateHash.slice(0,12)}。</>}{frozenInput.rowCount===0&&'此批持仓为空，登记账户与现金继续参与计算。'}</p>}</div>}
           <details className="agent-dev-context" open={!task}><summary>本次数据与业务口径 <ChevronDown size={14} /></summary>
             {derivationActive && <p>目标口径在上方变更草稿中选择；下方展示其已登记定义与数据结构。</p>}
             {context?.validationFamily&&<small>已登记口径 · {context.validationFamily.name} · V{context.validationFamily.definitionVersion}</small>}
             {maySelectSync && <div className="agent-dev-notice agent-dev-sync-input">
-              <strong>{selectedSync ? "已选择同步持仓" : syncRequested ? "同步持仓待确认" : "持仓输入 · 登记样例"}</strong>
+              <strong>{selectedSync?.kind===archivedSyncInputKind ? `已选择 ${syncOffer?.sourceType==="SERVER_MYSQL"?"MySQL":"CSV"} 全量持仓快照` : selectedSync ? "已选择同步持仓" : syncRequested ? "同步持仓待确认" : "持仓输入 · 登记样例"}</strong>
               {selectedSync && <p>同步批次 {selectedSync.runId.slice(0,8)} · 元数据 {syncOffer?.metadataVersionId.slice(0,8)} · {syncOffer?.rowCount} 行。账户与现金使用登记样例。</p>}
               {selectedSync && syncOffer?.verifiedCurrency==="CNY" && <p>币种逐行核验为 CNY。SQL 使用七个已登记的持仓字段。</p>}
-              {selectedSync?.kind!==undefined&&<p>使用原归档快照，不要求当前表仍属于此批次。</p>}
+              {selectedSync?.kind===archivedSyncInputKind&&syncOffer&&<details className="agent-sync-origin"><summary>查看批次来源</summary><dl>
+                <div><dt>同步任务</dt><dd><code>{syncOffer.taskId}</code></dd></div>
+                <div><dt>原同步运行</dt><dd><code>{selectedSync.runId}</code></dd></div>
+                <div><dt>数据源版本</dt><dd><code>{syncOffer.sourceRevisionId}</code></dd></div>
+                <div><dt>元数据版本</dt><dd><code>{syncOffer.metadataVersionId}</code></dd></div>
+              </dl></details>}
               <div className="agent-dev-sync-input-actions">
                 <button type="button" className="button" disabled={!canWrite||working||syncOfferState.startsWith("正在")} onClick={()=>void selectLatestSync()}>{selectedSync?"核对最新同步批次":"使用已核对的同步持仓"}</button>
                 {syncRequested && <button type="button" className="button" disabled={working||Boolean(pendingAgentKey)||syncOfferState.startsWith("正在")} onClick={useRegisteredPositions}>改用登记样例</button>}
               </div>
               {syncOfferState && <p role="status">{syncOfferState}</p>}
               {selectedSync?.kind===materializedSyncInputKind&&<p>目标 {selectedSync.targetTable} · {materializedModeLabels[selectedSync.mode]}。{syncOffer?.rowCount===0?'此批持仓为空；登记账户与现金继续参与资产计算。':'使用完整物化状态，控制列不进入SQL持仓字段。'}</p>}
+              <ArchivedSyncInputPicker api={api} disabled={!canWrite||working||Boolean(pendingAgentKey)} onChoose={candidate=>void selectArchivedSync(candidate)}/>
               <MaterializedSyncInputPicker api={api} disabled={!canWrite||working||Boolean(pendingAgentKey)} onChoose={candidate=>void selectMaterializedSync(candidate)}/>
-              <details className="agent-sync-legacy-options"><summary>兼容旧全量归档入口</summary>
-              <ArchivedSyncInputPicker api={api} disabled={!canWrite||working||Boolean(pendingAgentKey)} onChoose={candidate=>void selectArchivedSync(candidate)}/></details>
             </div>}
             <p>{context?.definition ?? "正在加载数据上下文…"}</p><div className="agent-dev-tables">{context?.tables.map(t => <details key={t.name}><summary>{t.name} · {t.columns.length}字段</summary><dl>{t.columns.map(([name,type]) => <div key={name}><dt>{name}</dt><dd>{type}</dd></div>)}</dl></details>)}</div>
             <small>输出：{scopedLabels?(context?.outputContract?.fields.map(f=>f.name)??["client_id","holding_market_value","available_cash","total_assets","security_count"]).map(resultLabel).join("、"):"客户、持仓市值、可用现金、总资产、证券数量"}。其他指标请先补充并审阅口径，不默认纳入。</small>

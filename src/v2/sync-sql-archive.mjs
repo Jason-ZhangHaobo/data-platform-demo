@@ -1,17 +1,21 @@
 import {ingestionSchemaHash} from './ingestion.mjs';
 import {currentSyncSqlInput,syncSqlLandingContext} from './sync-sql-input.mjs';
 import {archivedSyncInputKind,materializedSyncInputKind,parseSyncSqlSelection} from './sync-sql-selection.mjs';
+import {mysqlArchiveRunMatches} from './mysql-holdings-archive.mjs';
 
 const unavailable=()=>Object.assign(Error('所选原批次不符合已登记的全量虚构持仓输入，未使用当前表替代'),{status:409,code:'SYNC_SQL_ARCHIVE_UNAVAILABLE'});
-const supported=(task,run)=>task?.sourceType==='LOCAL_CSV'&&task.mode==='FULL'&&task.targetTable==='raw_positions'&&
+const supported=(task,run)=>Boolean(task) && task.mode==='FULL'&&task.targetTable==='raw_positions'&&
   run?.taskId===task.id&&run.status==='SUCCEEDED'&&run.actualExecution===true&&run.snapshotStatus==='RETAINED'&&
-  Number.isInteger(run.finalCount)&&run.finalCount>0&&run.finalCount<=500;
+  Number.isInteger(run.finalCount)&&run.finalCount>0&&run.finalCount<=500&&
+  (task.sourceType==='LOCAL_CSV'&&(run.sourceType===undefined||run.sourceType===task.sourceType)||task.sourceType==='SERVER_MYSQL'&&run.sourceType===task.sourceType&&
+    run.standardReceiptVersion===1&&typeof run.landingReceiptHash==='string'&&supportedFields(task));
 
 // Listing is a receipt inventory, not a claim that each archive has been read.
 export function syncSqlArchiveCandidates({store,project}) {
   const tasks=new Map(store.list('offline_sync_task',project).map(task=>[task.id,task]));
   return store.list('offline_sync_run',project).filter(run=>supported(tasks.get(run.taskId),run)).slice(0,100).map(run=>({
     taskId:run.taskId,runId:run.id,taskName:tasks.get(run.taskId).name,rowCount:run.finalCount,finishedAt:run.finishedAt,
+    ...(run.sourceType==='SERVER_MYSQL'?{sourceType:'SERVER_MYSQL'}:{}),
     verification:'REQUIRES_CHECK',targetHash:run.targetHash,landingSnapshotHash:run.landingSnapshotHash,
   }));
 }
@@ -20,7 +24,9 @@ export function archivedSyncSqlInput({store,project,ingestion},taskId,runId) {
   const task=store.get('offline_sync_task',taskId,project),run=store.get('offline_sync_run',runId,project);
   if(!supported(task,run))throw unavailable();
   const metadata=store.get('source_metadata',task.metadataVersionId,project);
-  if(metadata?.sourceId!==task.sourceId||metadata.revisionId!==task.sourceRevisionId||metadata.contentHash!==run.sourceHash||
+  const mysql=task.sourceType==='SERVER_MYSQL';
+  if(mysql ? !mysqlArchiveRunMatches({store,project},task,run,metadata) :
+    metadata?.sourceId!==task.sourceId||metadata.revisionId!==task.sourceRevisionId||metadata.contentHash!==run.sourceHash||
     !Array.isArray(metadata.columns)||metadata.schemaHash!==ingestionSchemaHash(metadata.columns)||
     !Object.keys(task.mapping??{}).every(field=>metadata.columns.some(column=>column.name===field)))throw unavailable();
   const archived=ingestion.retainedRunSnapshot(taskId,runId);
@@ -29,6 +35,7 @@ export function archivedSyncSqlInput({store,project,ingestion},taskId,runId) {
   return {selection:parseSyncSqlSelection({kind:archivedSyncInputKind,targetTable:'raw_positions',taskId,runId,
       targetHash:archived.targetHash,landingSnapshotHash:archived.snapshotHash}),
     source:{taskId,sourceRevisionId:task.sourceRevisionId,metadataVersionId:task.metadataVersionId,rowCount:archived.rowCount},
+    ...(mysql?{sourceType:'SERVER_MYSQL'}:{}),
     context:syncSqlLandingContext(archived.rows,fields),
     ...(fields.includes('currency')?{verifiedCurrency:'CNY'}:{})};
 }

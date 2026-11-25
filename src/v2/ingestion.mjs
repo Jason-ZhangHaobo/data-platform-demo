@@ -39,6 +39,11 @@ const canonical = (value) =>
   );
 const stableHash = (value) => hash(canonical(value));
 export const ingestionSchemaHash = columns => stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable })));
+export function ingestionTaskConfigHash({sourceRevisionId,sourceType,metadataVersionId,targetTable,mode,mapping,keyFields,
+    watermarkField,changeConfig,changeSpecHash}) {
+  return stableHash({sourceRevisionId,sourceType,metadataVersionId,targetTable,mode,mapping,keyFields,watermarkField,
+    ...(changeConfig ? {changeConfig,changeSpecHash} : {})});
+}
 
 // Legacy MySQL scans recorded only DECIMAL. Compare those frozen columns at
 // their recorded granularity until the user collects a new metadata version.
@@ -977,17 +982,7 @@ export class IngestionManager {
     };
     return {
       ...config,
-      configHash: stableHash({
-        sourceRevisionId: revision.id,
-        sourceType: source.sourceType,
-        metadataVersionId: metadata.id,
-        targetTable: input.targetTable,
-        mode,
-        mapping,
-        keyFields,
-        watermarkField,
-        ...(changeConfig?{changeConfig,changeSpecHash:changeSpec}:{}),
-      }),
+      configHash: ingestionTaskConfigHash({...config,targetTable:input.targetTable}),
     };
   }
 

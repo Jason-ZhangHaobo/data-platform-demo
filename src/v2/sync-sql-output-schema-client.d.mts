@@ -4,6 +4,7 @@ type InputColumn = Column & {nullable:boolean};
 type InputVersion = {metadataVersionId:string;sourceRevisionId:string;schemaHash:string;columns:InputColumn[]};
 type InputMetadata = {
   syncRunId:string;
+  sourceType?:"SERVER_MYSQL";
   frozen:InputVersion;
   current:InputVersion|null;
   differences:{name:string;before:InputColumn|null;after:InputColumn|null}[];
@@ -37,11 +38,11 @@ export function checkedSyncSqlRehearsalSchema(value:unknown, expected:SyncSqlReh
 export function checkedSyncSqlScheduledSchema(value:unknown, expected:SyncSqlScheduledSource):SyncSqlScheduledSchema;
 export function readSyncSqlOutputSchema(client:{request:(path:string)=>Promise<unknown>},input:{runId:string}):Promise<SyncSqlOutputSchema>;
 export type SyncedPositionsOffer = {contextId:"holdings-t1";selection:import('./sync-sql-selection.mjs').SyncSqlSelection;
-  taskId:string;sourceRevisionId:string;metadataVersionId:string;rowCount:number;verifiedCurrency?:"CNY"};
+  taskId:string;sourceRevisionId:string;metadataVersionId:string;rowCount:number;verifiedCurrency?:"CNY";sourceType?:"SERVER_MYSQL"};
 export function readSyncedPositions(client:{request:(path:string)=>Promise<unknown>}):Promise<SyncedPositionsOffer>;
-export type SyncSqlArchiveCandidate={taskId:string;runId:string;targetHash:string;landingSnapshotHash:string;taskName:string;rowCount:number;finishedAt:string;verification:'REQUIRES_CHECK'};
+export type SyncSqlArchiveCandidate={taskId:string;runId:string;targetHash:string;landingSnapshotHash:string;taskName:string;rowCount:number;finishedAt:string;verification:'REQUIRES_CHECK';sourceType?:"SERVER_MYSQL"};
 export function readSyncSqlArchives(client:{request:(path:string)=>Promise<unknown>}):Promise<SyncSqlArchiveCandidate[]>;
-export function readArchivedSyncedPositions(client:{request:(path:string)=>Promise<unknown>},expected:{taskId:string;runId:string;targetHash?:string;landingSnapshotHash?:string}):Promise<SyncedPositionsOffer>;
+export function readArchivedSyncedPositions(client:{request:(path:string)=>Promise<unknown>},expected:{taskId:string;runId:string;targetHash?:string;landingSnapshotHash?:string;sourceType?:"SERVER_MYSQL"|"LOCAL_CSV";rowCount?:number;verification?:'REQUIRES_CHECK'}):Promise<SyncedPositionsOffer>;
 export function readSyncReviewEvidence(client:{request:(path:string)=>Promise<unknown>},expected:{
   verificationId:string;packageId?:string;packageDigest?:string;syncRehearsalDigest?:string;snapshotHash?:string;
 }):Promise<Record<string,unknown>>;

@@ -509,7 +509,7 @@ export function createV2Server(options = {}) {
     return item;
   };
   const exposeDevelopmentRun = (run, includeSource = false) => publicDevelopmentRun(run,
-    store.get("revision", run?.revisionId ?? "", PROJECT), includeSource ? { store, project: PROJECT } : undefined);
+    store.get("revision", run?.revisionId ?? "", PROJECT), includeSource ? syncSqlResources : undefined);
   function validationFamilyForRun(run) {
     // Older persisted runs only carry the context on their immutable revision.
     // Missing duplicate metadata may be read, but conflicting metadata must not
@@ -7346,8 +7346,8 @@ export function createV2Server(options = {}) {
         if(!actor||session&&!session.permissions.some(permission=>['*','DEVELOPMENT','INGESTION'].includes(permission)))throw fail(403,'请使用工程师身份核对原持仓批次');
         if(url.searchParams.size)throw fail(422,'原批次只接受确切任务与运行编号');
         if(!archivedPositions[1])return json(res,200,{protocol:'shuduo-sync-sql-archives/v1',readOnly:true,candidates:syncSqlArchiveCandidates(syncSqlResources)});
-        const {selection,source,verifiedCurrency}=archivedSyncSqlInput(syncSqlResources,archivedPositions[1],archivedPositions[2]);
-        return json(res,200,{selection,...source,contextId:syncSqlContextId,verifiedCurrency});
+        const {selection,source,sourceType,verifiedCurrency}=archivedSyncSqlInput(syncSqlResources,archivedPositions[1],archivedPositions[2]);
+        return json(res,200,{selection,...source,sourceType,contextId:syncSqlContextId,verifiedCurrency});
       }
       if (method === "GET" && path === "/api/v2/development/synced-positions") {
         requireSyncSqlLocal(req);

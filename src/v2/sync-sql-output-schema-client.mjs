@@ -1,4 +1,4 @@
-import {parseSyncSqlSelection,materializedSyncInputKind} from './sync-sql-selection.mjs';
+import {parseSyncSqlSelection,archivedSyncInputKind,materializedSyncInputKind} from './sync-sql-selection.mjs';
 const identifier = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const digest = /^[a-f0-9]{64}$/;
 const token = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
@@ -8,9 +8,14 @@ const issueCodes = ["MISSING", "TYPE", "ORDER", "DUPLICATE", "EXTRA"];
 const invalid = () => new Error("输出结构与原运行、代码或快照未核对一致");
 const record = value => value && typeof value === "object" && !Array.isArray(value);
 const matches = (pattern, value) => typeof value === "string" && pattern.test(value);
-const column = (value, limit, nullable) => record(value) &&
+function mysqlColumnType(value) {
+  if (typeof value !== "string" || !value.startsWith("decimal(")) return matches(type, value);
+  const parts = /^decimal\(([1-9]\d?),(0|[1-9]\d?)\)(?: unsigned(?: zerofill)?)?$/.exec(value);
+  return parts !== null && Number(parts[1]) <= 65 && Number(parts[2]) <= Math.min(30, Number(parts[1]));
+}
+const column = (value, limit, nullable, mysqlMetadata = false) => record(value) &&
   (nullable && value.name === null || matches(token, value.name)) &&
-  (nullable && value.type === null || matches(type, value.type)) &&
+  (nullable && value.type === null || (mysqlMetadata ? mysqlColumnType(value.type) : matches(type, value.type))) &&
   Number.isInteger(value.position) && value.position >= 1 && value.position <= limit;
 
 // The comparison is oriented from the input used by Spark to the latest collected
@@ -30,17 +35,18 @@ export function checkedSyncSqlInputMetadata(value, expected = {}) {
     if (!record(item) || !matches(identifier, item.metadataVersionId) || !matches(identifier, item.sourceRevisionId) ||
         !matches(digest, item.schemaHash) || !Array.isArray(item.columns) || item.columns.length < 1 || item.columns.length > 50 ||
         new Set(item.columns.map(field => field?.name)).size !== item.columns.length ||
-        !item.columns.every((field, index) => column(field, 50, false) && field.position === index + 1 &&
+        !item.columns.every((field, index) => column(field, 50, false, value.sourceType === "SERVER_MYSQL") && field.position === index + 1 &&
           typeof field.nullable === "boolean")) throw invalid();
     return { metadataVersionId:item.metadataVersionId, sourceRevisionId:item.sourceRevisionId, schemaHash:item.schemaHash,
       columns:item.columns.map(({ name, type, position, nullable }) => ({ name, type, position, nullable })) };
   };
-  if (!record(value) || !matches(identifier, value.syncRunId) ||
+  if (!record(value) || value.sourceType !== undefined && value.sourceType !== "SERVER_MYSQL" || !matches(identifier, value.syncRunId) ||
       (expected.syncRunId !== undefined && value.syncRunId !== expected.syncRunId)) throw invalid();
   const frozen = checkedVersion(value.frozen), current = value.current === null ? null : checkedVersion(value.current);
   if (["metadataVersionId", "sourceRevisionId"].some(key => expected[key] !== undefined && frozen[key] !== expected[key]) ||
       current && current.metadataVersionId === frozen.metadataVersionId && JSON.stringify(current) !== JSON.stringify(frozen)) throw invalid();
-  return { syncRunId: value.syncRunId, frozen, current, differences: current === null ? [] : metadataDifferences(frozen, current) };
+  return { syncRunId: value.syncRunId, ...(value.sourceType && {sourceType:value.sourceType}),
+    frozen, current, differences: current === null ? [] : metadataDifferences(frozen, current) };
 }
 
 function checkedSchema(value, expected, protocol) {
@@ -112,6 +118,7 @@ export async function readSyncedPositions(client) {
 function checkedSyncedPositions(value) {
   const selection = parseSyncSqlSelection(value?.selection);
   if (value?.contextId !== "holdings-t1" ||
+      value.sourceType !== undefined && (selection.kind !== archivedSyncInputKind || value.sourceType !== "SERVER_MYSQL") ||
       ![selection.runId, value.taskId, value.sourceRevisionId, value.metadataVersionId].every(id => matches(identifier,id)) ||
       !matches(digest,selection.targetHash) || !Number.isInteger(value.rowCount) || value.rowCount < (selection.kind===materializedSyncInputKind?0:1) || value.rowCount > 500 ||
       value.verifiedCurrency !== undefined && value.verifiedCurrency !== "CNY")
@@ -119,7 +126,7 @@ function checkedSyncedPositions(value) {
   if(selection.kind&&selection.taskId!==value.taskId)throw Error('原持仓批次与任务未核对一致');
   return { contextId:value.contextId, selection,
     taskId:value.taskId,sourceRevisionId:value.sourceRevisionId,metadataVersionId:value.metadataVersionId,rowCount:value.rowCount,
-    ...(value.verifiedCurrency === "CNY" ? {verifiedCurrency:"CNY"} : {}) };
+    ...(value.sourceType && {sourceType:value.sourceType}), ...(value.verifiedCurrency === "CNY" ? {verifiedCurrency:"CNY"} : {}) };
 }
 
 export async function readSyncSqlArchives(client) {
@@ -128,16 +135,21 @@ export async function readSyncSqlArchives(client) {
     throw Error('原同步批次目录未确认');
   const seen=new Set();
   return value.candidates.map(candidate=>{
-    const {taskId,runId,targetHash,landingSnapshotHash,taskName,rowCount,finishedAt,verification}=candidate??{};
+    const {taskId,runId,targetHash,landingSnapshotHash,taskName,rowCount,finishedAt,verification,sourceType}=candidate??{};
     parseSyncSqlSelection({kind:'SYNC_RUN_ARCHIVE_V1',targetTable:'raw_positions',taskId,runId,targetHash,landingSnapshotHash});
     if(seen.has(runId)||typeof taskName!=='string'||taskName.length>100||!taskName.trim()||!Number.isInteger(rowCount)||rowCount<1||rowCount>500||!Number.isFinite(Date.parse(finishedAt))||verification!=='REQUIRES_CHECK')throw Error('原同步批次目录不完整');
-    seen.add(runId);return {taskId,runId,targetHash,landingSnapshotHash,taskName,rowCount,finishedAt,verification};
+    if(sourceType!==undefined && sourceType!=='SERVER_MYSQL') throw Error('原同步批次来源未确认');
+    seen.add(runId);return {taskId,runId,targetHash,landingSnapshotHash,taskName,rowCount,finishedAt,verification,...(sourceType && {sourceType})};
   });
 }
 export async function readArchivedSyncedPositions(client,expected) {
   if(![expected.taskId,expected.runId].every(value=>matches(identifier,value)&&value.length===36))throw Error('原持仓批次须使用确切任务和运行UUID');
+  const expectedType=expected.sourceType ?? (expected.verification==='REQUIRES_CHECK'?'LOCAL_CSV':undefined);
+  if(expectedType!==undefined && !['LOCAL_CSV','SERVER_MYSQL'].includes(expectedType)) throw Error('原持仓批次来源类型不受支持');
   const offer=checkedSyncedPositions(await client.request(`/development/synced-positions/archives/${expected.taskId}/${expected.runId}`));
   if(offer.selection.kind!=='SYNC_RUN_ARCHIVE_V1'||offer.taskId!==expected.taskId||offer.selection.runId!==expected.runId||
+    expectedType!==undefined && expectedType!==(offer.sourceType??'LOCAL_CSV') ||
+    expected.rowCount!==undefined && expected.rowCount!==offer.rowCount ||
     ['targetHash','landingSnapshotHash'].some(field=>expected[field]!==undefined&&expected[field]!==offer.selection[field]))throw Error('原持仓批次或快照摘要已变化，未自动替换');
   return offer;
 }
