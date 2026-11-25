@@ -7,7 +7,7 @@ import {NativeSyncPublication} from './NativeSyncPublication';
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
 const labels={code:'已核对代码、持仓粒度与现金不重复累计',assertions:'已核对独立预期、结果和五场景回归',deliveryFiles:'已核对八文件、调度日期与部署依赖',localScope:'仅记录本机虚构持仓文件审阅；不批准发布'};
 export type NativeReviewTarget={taskId:string;deliveryId:string;verificationId:string;enabled:boolean;mayPublish:boolean};
-export function NativeSyncReview({api,binding,current,enabled,publicationEnabled=false}:{api:Api;binding:NativeSyncReviewBinding;current:boolean;enabled:boolean;publicationEnabled?:boolean}){
+export function NativeSyncReview({api,binding,current,enabled,publicationEnabled=false,mysqlHoldings=false}:{api:Api;binding:NativeSyncReviewBinding;current:boolean;enabled:boolean;publicationEnabled?:boolean;mysqlHoldings?:boolean}){
  const key=JSON.stringify([binding,current,enabled]),active=useRef(key);active.current=key;
  const ticket=useRef(0),request=useRef<string|undefined>(undefined),[value,setValue]=useState<Receipt>(),[checked,setChecked]=useState<Record<string,boolean>>({}),[busy,setBusy]=useState(false),[error,setError]=useState(''),[unknown,setUnknown]=useState(false),[notice,setNotice]=useState('');
  useEffect(()=>{ticket.current++;request.current=undefined;setValue(undefined);setChecked({});setBusy(false);setError('');setUnknown(false);setNotice('');if(pendingNativePublication(location.href,binding))void load();return()=>{ticket.current++;};},[key]);
@@ -41,7 +41,7 @@ export function NativeSyncReview({api,binding,current,enabled,publicationEnabled
    <details><summary>核对八文件与完整摘要</summary><dl>{Object.entries(value.evidence.fileHashes).map(([name,hash])=><div key={name}><dt>{name}</dt><dd>{hash}</dd></div>)}</dl></details>
    {canRecord&&<fieldset disabled={busy}><legend>本人文件审阅</legend>{Object.entries(labels).map(([name,label])=><label key={name}><input type="checkbox" checked={Boolean(checked[name])} onChange={e=>setChecked(v=>({...v,[name]:e.target.checked}))}/>{label}</label>)}<button className="button primary" disabled={!complete||busy} onClick={()=>void record()}>仅记录文件审阅</button></fieldset>}
    {!enabled&&value.review.status!=='REVIEWED'&&<p>当前为只读查看；不会代记本人审阅。</p>}
-   {value.review.status==='REVIEWED'&&<><p>文件审阅已记录；本次核对不批准发布，也不启动上述两批。</p><NativeSyncPublication api={api} binding={binding} review={value} current={current} enabled={enabled&&publicationEnabled}/></>}
+   {value.review.status==='REVIEWED'&&<><p>文件审阅已记录；本次核对不批准发布，也不启动上述两批。</p><NativeSyncPublication mysqlHoldings={mysqlHoldings} api={api} binding={binding} review={value} current={current} enabled={enabled&&publicationEnabled}/></>}
    <button className="button" onClick={save}>下载审阅预检 JSON</button><details><summary>查看审阅材料文本</summary><pre tabIndex={0}>{JSON.stringify(value,null,2)}</pre></details>
   </>}{notice&&<p role="status">{notice}</p>}
  </section>;

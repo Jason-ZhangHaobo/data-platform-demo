@@ -1802,7 +1802,7 @@ function App() {
             ) : nav === "security" ? (
               <SecurityWorkbench api={api} canWrite={Boolean(canWrite)} />
             ) : nav === "reports" ? (
-              <ReportsWorkbench api={api} canWrite={Boolean(canWrite)} handoffMessage={agentHandoff?.destination === "reports" ? agentHandoff.message : undefined} />
+              <ReportsWorkbench local={localWorkbench&&!privatePreview} api={api} canWrite={Boolean(canWrite)} handoffMessage={agentHandoff?.destination === "reports" ? agentHandoff.message : undefined} />
             ) : nav === "ops" ? (
               <OperationsWorkbench api={api} canWrite={Boolean(canWrite)} showLiveEvaluation={status?.mode === "LOCAL_DEVELOPMENT" && !privatePreview} />
             ) : nav === "settings" ? (

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+const CustomerAssetAnalysis=lazy(()=>import("./CustomerAssetAnalysis"));
 import { fundReportContractId } from "../../src/v2/distribution-report-contract.mjs";
 import { FundReportLineage } from "./FundReportLineage";
 import { SyncReportLineage } from "./SyncReportLineage";
@@ -100,6 +101,9 @@ function HistoricalResult({ result, receipt, api, canWrite }: { result: Publishe
     <small>批次 <code title={result.sourceBatchId}>{result.sourceBatchId.slice(0, 8)}</code>
       {" · 运行 "}<code title={result.runId}>{result.runId.slice(0, 8)}</code>
       {" · 结果 "}<code title={result.resultHash}>{result.resultHash.slice(0, 12)}</code></small>
+    {result.customerAnalysisRequestId===receipt.requestId&&<Suspense fallback={<p role="status">正在加载客户资产分析…</p>}><CustomerAssetAnalysis api={api}
+      selection={{requestId:receipt.requestId,source:receipt.source,reportId:result.reportId,reportRunId:result.runId,versionId:result.versionId,
+        resultHash:result.resultHash,reportSnapshotId:result.snapshotId}}/></Suspense>}
     {result.outputContractId === fundReportContractId && <FundReportLineage key={result.key} api={api} receipt={receipt} canWrite={canWrite} />}
     {result.sourceEvidence?.protocol === "shuduo-sync-sql-consumption-source/v1" &&
       <SyncReportLineage key={result.key} api={api} receipt={receipt} />}

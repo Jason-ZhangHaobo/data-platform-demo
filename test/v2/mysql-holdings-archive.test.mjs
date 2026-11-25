@@ -16,6 +16,8 @@ import {freezeSyncSqlInput, readSyncSqlInput, syncSqlContractId, syncSqlOutputCo
 import {checkRegisteredPackageInput} from '../../src/v2/package-input-check.mjs';
 import {checkedPackageInputCheck,readPackageInputCheck} from '../../src/v2/package-input-check-client.mjs';
 import {publishedReportHash} from '../../src/v2/published-report-source.mjs';
+import {customerAssetAnalysis} from '../../src/v2/customer-asset-analysis.mjs';
+import {createPublishedReportWorkflow,publishedReportRequestKey} from '../../src/v2/published-report-workflow.mjs';
 import {syntheticPackage} from './fixtures/input-evidence.mjs';
 
 async function setup(t) {
@@ -212,4 +214,61 @@ test('a delivery package verifies its original MySQL landing receipt and frozen 
   landingStore.db.prepare('DELETE FROM landing_run_receipts WHERE run_id=?').run(f.run.id);
   assert.throws(()=>check(),{code:'SYNC_LANDING_RECEIPT_MISSING'});
   assert.equal(f.reads(),readCount);
+});
+
+
+test('a fixed customer analysis stops if its retained MySQL landing receipt is missing',async t=>{
+  const f=await setup(t), {store,landingStore}=f.resources, actor='local-engineer';
+  const archive=f.read();
+  const binding=freezeSyncSqlInput({store,project:PROJECT,actorId:actor,selection:archive.selection,current:archive});
+  const revision=store.create('revision',PROJECT,{author:actor,syncInput:binding});
+  const batch=store.create('release_run',PROJECT,{sequence:2});
+  // Only the upstream report/publication stage is a domain-test fixture.
+  // The standard landing receipt, original rows and frozen input are persisted by the normal sync path.
+  const src={kind:'AGENT',taskId:randomUUID(),releaseId:randomUUID(),batchId:batch.id,revisionId:revision.id,
+    runId:randomUUID(),packageDigest:'a'.repeat(64)};
+  const rows=archive.context.expected, hash=publishedReportHash(rows);
+  const evidence={protocol:'shuduo-sync-sql-consumption-source/v1',sourceReleaseRunId:src.batchId,releaseId:src.releaseId,
+    sourceRevisionId:src.revisionId,sourceRunId:src.runId,sourceTaskId:src.taskId,packageDigest:src.packageDigest,
+    snapshotHash:binding.snapshotHash,syncRunId:f.run.id,metadataVersionId:f.metadata.id,businessDate:archive.context.businessDate};
+  const record={requestId:randomUUID(),actorId:actor,input:{source:src}};
+  const asset={id:'dataset:sync-holdings:'+batch.id,evidenceHash:hash};
+  const resolved={sourceEvidence:evidence,rows,expected:rows,asset};
+  const artifacts={report:{id:randomUUID()},version:{id:randomUUID()},run:{id:randomUUID(),sourceEvidence:evidence,
+    resultHash:publishedReportHash([]),widgets:[]},snapshot:{id:randomUUID(),sourceEvidence:evidence,assetId:asset.id,
+    assetVersionId:batch.id,contentHash:hash},dataset:{sourceEvidence:evidence},data:{rows}};
+  const datasetId=randomUUID();
+  const saved={...record,status:'SUCCEEDED',reportId:artifacts.report.id,reportRunId:artifacts.run.id,
+    reportVersionId:artifacts.version.id,snapshotId:artifacts.snapshot.id,datasetId,sourceEvidenceHash:hash};
+  store.deduplicate(publishedReportRequestKey(PROJECT,actor,record.requestId),publishedReportHash(record.input),
+    ()=>store.create('published_report_creation',PROJECT,saved));
+  const visible=[{id:artifacts.report.id,runs:[{...artifacts.run,reportId:saved.reportId,
+    reportVersionId:saved.reportVersionId,datasetSnapshotId:saved.snapshotId,datasetId,datasetContentHash:hash,
+    status:'SUCCEEDED',actualExecution:true}]}];
+  const workflow=createPublishedReportWorkflow({store,project:PROJECT});
+  const link=(views,user)=>workflow.withCustomerAnalysisLinks(views,user)[0].runs[0].customerAnalysisRequestId;
+  const before=store.db.prepare('SELECT total_changes() AS n').get().n;
+  assert.equal(link(visible,actor),record.requestId);
+  assert.equal(link(visible,'different-synthetic-owner'),undefined);
+  const changed=structuredClone(visible);
+  changed[0].runs[0].datasetSnapshotId=randomUUID();
+  assert.equal(link(changed,actor),undefined);
+  assert.equal(store.db.prepare('SELECT total_changes() AS n').get().n,before);
+  const read=()=>customerAssetAnalysis({...f.resources,record,artifacts,resolved});
+  const result=read(), {digest,...body}=result;
+  assert.equal(result.source.syncRunId,f.run.id);
+  assert.equal(result.source.sequence,2);
+  assert.equal(digest,publishedReportHash(body));
+  const reads=f.reads();
+  f.rows[0].amount_rmb='999999.99';
+  assert.deepEqual(read(),result);
+  assert.equal(f.reads(),reads);
+  artifacts.snapshot.sourceEvidence={...evidence,sourceReleaseRunId:randomUUID()};
+  assert.throws(read,{code:'CUSTOMER_ANALYSIS_UNPROVEN'});
+  artifacts.snapshot.sourceEvidence=evidence;
+  landingStore.db.prepare('DELETE FROM landing_run_receipts WHERE run_id=?').run(f.run.id);
+  assert.throws(read,{code:'SYNC_LANDING_RECEIPT_MISSING'});
+  assert.equal(f.reads(),reads);
+  store.create('published_report_creation',PROJECT,{...saved,requestId:randomUUID()});
+  assert.equal(link(visible,actor),undefined,'duplicate creators cannot select a different request for the run');
 });

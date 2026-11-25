@@ -4,6 +4,8 @@ import {checkedPublishedReportArtifacts} from './report-provenance.mjs';
 import {fundReportLineage,fundReportDevelopment} from "./fund-report-lineage.mjs";
 import {publishedReportTemplate} from './report-template.mjs';
 import { isSyncReportEvidence, syncReportLineage } from "./sync-sql-report.mjs";
+import { customerAssetAnalysis } from './customer-asset-analysis.mjs';
+import { archivedSyncInputKind } from './sync-sql-selection.mjs';
 const fail=(status,code,message)=>Object.assign(Error(message),{status,code});
 export const publishedReportRequestKey=(project,actor,id)=>`${project}:published-report:v1:${actor}:${id}`;
 export function createPublishedReportWorkflow({store,project,reports,reportStore,resolveSource,provenance,fundSignedExecutionFor,readSyncCalls,afterStep=()=>{}}){
@@ -22,6 +24,23 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
    if(record.requestId!==requestId||ledger?.signature!==publishedReportHash(record.input))
     throw fail(409,"REPORT_CREATION_RECEIPT_CHANGED","报表原请求与已保存的来源不一致");
    return {record,artifacts:checkedPublishedReportArtifacts({store,project,reportStore,record})};
+ };
+ // Navigation only. The analysis GET separately revalidates the report rows,
+ // the published batch and the retained MySQL snapshot before returning money.
+ const analysisLink=(record,reportId,run,actor)=>{
+   const src=record?.input?.source, proof=run.sourceEvidence;
+   if(record?.status!=='SUCCEEDED'||record.actorId!==actor||src?.kind!=='AGENT'||!isSyncReportEvidence(proof)||
+      record.reportId!==reportId||run.reportId!==reportId||record.reportRunId!==run.id||
+      record.reportVersionId!==run.reportVersionId||record.snapshotId!==run.datasetSnapshotId||record.datasetId!==run.datasetId||
+      record.sourceEvidenceHash!==run.datasetContentHash||run.status!=='SUCCEEDED'||run.actualExecution!==true||
+      proof.sourceTaskId!==src.taskId||proof.releaseId!==src.releaseId||proof.sourceReleaseRunId!==src.batchId||
+      proof.packageDigest!==src.packageDigest||proof.sourceRevisionId!==src.revisionId||proof.sourceRunId!==src.runId||
+      store.deduplicatedId(keyFor(actor,record.requestId),publishedReportHash(record.input))!==record.id) return;
+   const revision=store.get('revision',src.revisionId,project), binding=revision?.syncInput;
+   if(revision?.author!==actor||binding?.kind!==archivedSyncInputKind||binding.runId!==proof.syncRunId||
+      binding.snapshotHash!==proof.snapshotHash||binding.metadataVersionId!==proof.metadataVersionId) return;
+   const task=store.get('offline_sync_task',binding.taskId,project);
+   if(task?.sourceType==='SERVER_MYSQL' && task.mode==='FULL' && task.targetTable==='raw_positions') return record.requestId;
  };
  const view=(r,artifacts)=>{
   const result={protocol:'shuduo-published-report-creation/v1',id:r.id,requestId:r.requestId,status:r.status,scope:'LOCAL_TEST_ONLY',source:r.input.source,name:r.input.name,stage:r.stage,error:r.error,
@@ -86,6 +105,18 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
    return advance(d.id,actor);
   },
   lookup(requestId,actor){return view(lookupRecord(requestId,actor));},
+  withCustomerAnalysisLinks(visibleReports,actor){
+   if(!actor||!visibleReports.some(report=>report.runs.some(run=>isSyncReportEvidence(run.sourceEvidence))))return visibleReports;
+   const byRun=new Map();
+   for(const record of store.list(kind,project)){
+    if(record.actorId===actor&&record.status==='SUCCEEDED'&&record.reportRunId)
+      byRun.set(record.reportRunId,byRun.has(record.reportRunId)?null:record);
+   }
+   return visibleReports.map(report=>({...report,runs:report.runs.map(run=>{
+    const requestId=analysisLink(byRun.get(run.id),report.id,run,actor);
+    return requestId?{...run,customerAnalysisRequestId:requestId}:run;
+   })}));
+  },
   readResult(requestId,actor){
    const {record,artifacts:{report,version,run,snapshot,dataset}}=verifiedResult(requestId,actor);
    const receipt=view(record,{report,version,run,snapshot});
@@ -99,6 +130,8 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
     "rowCount","fields","status","actualMaterialization","outputContractId","contextId"]);
    const runView=pick(run,["id","reportId","reportVersionId","reportConfigHash","datasetId","datasetSnapshotId",
     "datasetContentHash","status","outputContractId","resultHash","actualExecution","publicDeployed","fullLifecycleE2E"]);
+   const analysisRequestId=analysisLink(record,report.id,run,actor);
+   if(analysisRequestId)runView.customerAnalysisRequestId=analysisRequestId;
    if(snapshot.sourceEvidence||run.sourceEvidence){
     if(!snapshot.sourceEvidence||!run.sourceEvidence||publishedReportHash(snapshot.sourceEvidence)!==publishedReportHash(run.sourceEvidence))
      throw fail(409,"REPORT_CREATION_RECEIPT_CHANGED","运行与固定快照的来源摘要不一致");
@@ -136,6 +169,11 @@ export function createPublishedReportWorkflow({store,project,reports,reportStore
     });
    }
    return fundReportLineage({store,project,record,artifacts,timeUnitMs,fundSignedExecutionFor});
+  },
+  readCustomerAnalysis(requestId,actor,ingestion) {
+   const {record,artifacts}=verifiedResult(requestId,actor);
+   const resolved=resolveSource(record.input.source,actor);
+   return customerAssetAnalysis({store,project,ingestion,record,artifacts,resolved});
   },
   readDevelopment(requestId,actor,timeUnitMs){
    const {record,artifacts}=verifiedResult(requestId,actor);

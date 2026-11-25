@@ -3,10 +3,11 @@ import {readNativeSyncPublication,submitNativeSyncPublication,nativePublicationL
 import type{NativeSyncPublicationRequest,NativeSyncPublication as Receipt}from'../../src/v2/native-sync-publication-client.mjs';
 import type{NativeSyncReview,NativeSyncReviewBinding}from'../../src/v2/native-sync-review-client.mjs';
 import {nativeBatchServiceHref} from './native-sync-service-handoff';
+import {wealthReportLocation} from './native-report-location';
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
 const labels={version:'明确批准上方包摘要、代码和演练所对应的这个版本',batches:'同意启动同一冻结业务日的两批本机虚构数据测试（5秒、35秒）',scope:'知悉这会实际运行两批Spark；不属于公网或生产部署'};
 const states:Record<string,string>={SCHEDULED:'等待计时',RUNNING:'运行中',SUCCEEDED:'结果及监控已核对',FAILED:'执行失败',INTERRUPTED:'结果未知，待查证',CANCELLED:'已停止'};
-export function NativeSyncPublication({api,binding,review,current,enabled}:{api:Api;binding:NativeSyncReviewBinding;review:NativeSyncReview;current:boolean;enabled:boolean}){
+export function NativeSyncPublication({api,binding,review,current,enabled,mysqlHoldings=false}:{api:Api;binding:NativeSyncReviewBinding;review:NativeSyncReview;current:boolean;enabled:boolean;mysqlHoldings?:boolean}){
  const client={request:(path:string,opts?:{method?:string;body?:unknown;idempotencyKey?:string})=>api(path,opts?.method==='POST'?opts.body:undefined,{idempotencyKey:opts?.idempotencyKey})};
  const key=JSON.stringify([binding,review.evidence.syncRehearsalDigest,review.review.id,current,enabled]),active=useRef(key);active.current=key;const lock=useRef(false),epoch=useRef(0),[request,setRequest]=useState<NativeSyncPublicationRequest>(),[record,setRecord]=useState<Receipt>(),[checked,setChecked]=useState<Record<string,boolean>>({}),[busy,setBusy]=useState(false),[unknown,setUnknown]=useState(false),[error,setError]=useState('');
  const load=async(r=request)=>{if(!r)return;const n=++epoch.current;setBusy(true);setRecord(undefined);setError('');try{const value=await readNativeSyncPublication(client,r);if(active.current===key&&epoch.current===n){setRecord(value);setUnknown(false);}}catch(cause){if(active.current===key&&epoch.current===n)setError((cause as Error).message);}finally{if(active.current===key&&epoch.current===n)setBusy(false);}};
@@ -30,6 +31,7 @@ export function NativeSyncPublication({api,binding,review,current,enabled}:{api:
       <strong>第{run.sequence}批：{states[run.status]}</strong><small>{run.id}</small>
       <p>{run.schedulerTriggered?'已由本机计时器触发':'尚未证明触发'}{run.resultUnknown?' · 原执行结果仍未知':''}{run.status==='SUCCEEDED'?` · ${run.rowCount}行结果 · ${run.regressionCount}场景通过`:''}</p>
       {serviceHref&&<a className="button" href={serviceHref} target="_blank" rel="noopener" aria-label={`用第 ${run.sequence} 批开发接口（新标签页）`}>用第 {run.sequence} 批开发接口</a>}
+      {serviceHref&&mysqlHoldings&&<a className="button" href={wealthReportLocation(serviceHref)} target="_blank" rel="noopener" aria-label={`查看第 ${run.sequence} 批资产分析报表（新标签页）`}>查看第 {run.sequence} 批资产分析报表</a>}
     </li>;
   })}</ol>{record.monitor.status==='ACTIVE_LOCAL'&&<button className="button" disabled={!mayWrite||unknown} onClick={()=>void stop()}>停止此版本后续本机批次</button>}<p>仅本机测试证据，不计正式云端或真实模型完整E2E。查询不会重跑失败或未知批次。</p></div>}
  </section>;

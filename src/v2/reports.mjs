@@ -1,3 +1,4 @@
+import {encodeReportCsv} from './report-csv.mjs';
 import {fundReportContractId} from "./distribution-report-contract.mjs";
 import {normalizeDistributionReportWidgets,executeDistributionReport} from './distribution-reports.mjs';
 import {distributionMetadataById} from './output-contract-metadata.mjs';
@@ -436,7 +437,7 @@ export class ReportManager {
         for (const item of widget.series)
           rows.push(partitioned?[widget.id,widget.title,item.partitionKey,item.clientLabel,item.tradeDate,item.group,item.value]:[widget.id, widget.title, item.group, item.value]);
     }
-    const content = rows.map((row) => row.map(csvCell).join(",")).join("\n") + "\n";
+    const content = encodeReportCsv(rows);
     return {
       fileName: `${report.code}-${run.id.slice(0, 8)}.csv`,
       contentType: "text/csv; charset=utf-8",
@@ -629,9 +630,4 @@ function aggregate(widget, rows) {
   return formatCents(
     rows.reduce((sum, row) => sum + decimalCents(row[widget.field]), 0n),
   );
-}
-
-function csvCell(value) {
-  const input = String(value ?? "");
-  return /[",\n]/.test(input) ? `"${input.replaceAll('"', '""')}"` : input;
 }

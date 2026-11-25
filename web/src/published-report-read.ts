@@ -18,6 +18,7 @@ export type ReportSourceEvidence = {
   protocol?: string; modelClassification?: string; engineClassification?: string; assertionDigest?: string; packageDigest?: string; resultDigest?: string;
 };
 export type PublishedReportResult = {
+  customerAnalysisRequestId?:string;
   key: string; reportId: string; name: string; versionId: string; versionNumber: number;
   runId: string; snapshotId: string; sourceBatchId: string; contentHash: string;
   outputContractId?:string;sourceEvidence?:ReportSourceEvidence;
@@ -105,7 +106,8 @@ export function boundPublishedReports(value: unknown, source: PublishedReportSou
       if (!Array.isArray(version.widgets) || version.widgets.length !== widgets.length ||
         widgets.some((w, i) => !record(version.widgets[i]) || definition(w) !== definition(version.widgets[i]) ||
           w.evaluatedCount !== bound.snapshot.rowCount || w.field !== undefined && !bound.snapshot.fields.includes(w.field) || w.dimension !== undefined && !bound.snapshot.fields.includes(w.dimension))) throw invalid();
-      results.push({ key: `${report.id}:${version.id}:${run.id}`, reportId: report.id, name: report.name, versionId: version.id, versionNumber: version.versionNumber,
+      if(run.customerAnalysisRequestId!==undefined && (!frozen||!id(run.customerAnalysisRequestId)))throw invalid();
+      results.push({ ...(run.customerAnalysisRequestId ? {customerAnalysisRequestId:run.customerAnalysisRequestId} : {}),key: `${report.id}:${version.id}:${run.id}`, reportId: report.id, name: report.name, versionId: version.id, versionNumber: version.versionNumber,
         runId: run.id, snapshotId: run.datasetSnapshotId, sourceBatchId: bound.snapshot.assetVersionId, contentHash: bound.snapshot.contentHash,
         ...(distribution?{outputContractId:distribution,sourceEvidence:run.sourceEvidence}:frozen?{sourceEvidence:run.sourceEvidence}:{}),
         resultHash: run.resultHash, description: version.description, fields: bound.snapshot.fields, widgets,

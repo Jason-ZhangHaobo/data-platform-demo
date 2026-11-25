@@ -24,6 +24,7 @@ import { V2Client, V2_OPERATIONS } from "../src/v2/client.mjs";
 import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-comparison-client.mjs';
 import {readSyncSqlOutputSchema,readSyncedPositions,readSyncReviewEvidence} from "../src/v2/sync-sql-output-schema-client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
+import {readCustomerAssetAnalysis} from '../src/v2/customer-asset-analysis-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
 import { readWealthConsumption } from '../src/v2/wealth-report-consumption-client.mjs';
 import {readReportProvenance} from '../src/v2/report-provenance-client.mjs';
@@ -331,6 +332,8 @@ const tools = [
   { name: "report_published_lineage", description: "按本人原报表请求核对快照、同批次运维或授权调用证据。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, source: publishedReportSourceSchema },
       required: ["requestId"], additionalProperties: false } },
+  { name:"report_customer_asset_analysis",description:"从本人已发布批次的报表读取脱敏客户资产、持仓市值、去重证券数及资产类别和行业分布。按原交易日和顾问范围核对冻结的 MySQL 持仓。",
+    inputSchema:{type:"object",properties:{requestId:{type:"string",format:"uuid"},source:publishedReportSourceSchema},required:["requestId"],additionalProperties:false},annotations:{readOnlyHint:true} },
   { name: "report_published_development", description: "按本账号原基金报表请求读取原 SQL 和已保存的独立核验，只读。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, source: publishedReportSourceSchema },
       required: ["requestId"], additionalProperties: false } },
@@ -1015,6 +1018,7 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==='report_published_request')return lookupPublishedReport(client,args);
   if(name==='report_published_result')return readPublishedReportResult(client,args);
   if(name==='report_published_lineage')return readPublishedReportEvidence(client,args);
+  if(name==='report_customer_asset_analysis')return readCustomerAssetAnalysis(client,args);
   if(name==='report_published_development')return readPublishedReportDevelopment(client,args);
   if(name==='report_published_consumption')return readPublishedReportConsumption(client,args);
   if (name === 'report_published_quality') return readFundReportQuality(client, args);

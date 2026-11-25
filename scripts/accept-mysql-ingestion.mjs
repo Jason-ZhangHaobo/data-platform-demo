@@ -14,6 +14,7 @@ import { readPackageInputCheck } from "../src/v2/package-input-check-client.mjs"
 import { readNativeSyncPublication, submitNativeSyncPublication } from "../src/v2/native-sync-publication-client.mjs";
 import { V2Client } from "../src/v2/client.mjs";
 import { verifyMysqlReleaseServices } from "./accept-mysql-release-services.mjs";
+import { verifyMysqlCustomerReports } from "./accept-mysql-customer-report.mjs";
 
 // An explicitly invoked test against a disposable loopback MySQL 8 instance.
 // The CI job provisions these two fixture users. The service only gets the reader.
@@ -394,6 +395,14 @@ test("Agent develops from a historical MySQL batch and its reviewed package serv
   const consumption = await verifyMysqlReleaseServices({
     base,api,taskId:taskResult.id,releaseId,packageId:bundle.id,packageDigest:bundle.digest,batchIds,expectedRows:expectedAssetRows,
   });
+  const reports=await verifyMysqlCustomerReports({client:publisher,batchIds,
+    source:{kind:"AGENT",taskId:taskResult.id,releaseId,packageDigest:bundle.digest,revisionId:run.revisionId,runId:run.id},
+    originalInput:{syncTaskId:full.id,syncRunId:baseline.id,metadataVersionId:metadata.id,
+      sourceRevisionId:metadata.revisionId,landingReceiptHash:baseline.landingReceiptHash,
+      landingSnapshotHash:baseline.landingSnapshotHash,snapshotHash:run.syncInput.snapshotHash}});
+  assert.deepEqual((await api("/runs",200)).map(item=>item.id),[run.id]);
+  assert.deepEqual((await api("/delivery/verifications",200)).map(item=>item.id),[rehearsal.id]);
+  assert.deepEqual((await api("/release/approvals",200)).map(item=>item.id),[registered.approval.id]);
   const releases=await api("/releases",200);
   assert.deepEqual(releases.map(item=>item.id),[releaseId]);
   assert.deepEqual((await api("/release/runs",200)).map(item=>item.id).sort(),[...batchIds].sort());
@@ -412,5 +421,5 @@ test("Agent develops from a historical MySQL batch and its reviewed package serv
     publicationCount:releases.length, scheduledSparkRuns:batches.length, triggerClock:batches[0].clockMode,
     scheduledCustomerAssets:batches.map(batch=>batch.rows.map(row=>row.total_assets)),
     monitoringEvents:monitor.monitorEventCount, openAlerts:monitor.openAlertCount, originalReleaseRecovered:true,
-    ...consumption}));
+    ...consumption, ...reports}));
 });
