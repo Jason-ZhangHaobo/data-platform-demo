@@ -293,7 +293,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
     objects.set(prepared.resultKey, JSON.stringify(createQueuedSparkResult(prepared.job,
       {...result,queueJobDigest},config,now)));
   };
-  async function rehearseWithWorker(prepared, useLocalSpark) {
+  async function executeCashWorker(prepared, useLocalSpark, stage) {
     const eventsFor = key => queueEvents.filter(v => v.events[0].oss.object.key === key);
     const [jobEvent] = eventsFor(prepared.jobKey);
     assert.equal(eventsFor(prepared.jobKey).length,1);
@@ -336,7 +336,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
       assert.ok(result.validation.regressions.every(row=>row.passed));
       assert.deepEqual(result.rows.toSorted((a,b)=>a.client_id.localeCompare(b.client_id)),cashChangeConsumerRows);
       assert.equal(eventsFor(prepared.resultKey).length,1);
-      t.diagnostic(JSON.stringify({rehearsalWorker:'PROJECT_OSS_EVENT_HANDLER',queueTransport:'LOCAL_IN_MEMORY',
+      t.diagnostic(JSON.stringify({workerStage:stage,worker:'PROJECT_OSS_EVENT_HANDLER',queueTransport:'LOCAL_IN_MEMORY',
         spark:useLocalSpark?'ACTUAL_LOCAL_SPARK':'SYNTHETIC_RUNNER',jobDeliveries:2,executions:runs,resultObjects:1}));
       return {event:eventsFor(prepared.resultKey)[0],workerResultDigest:sha256(JSON.stringify(result))};
     } finally {
@@ -375,7 +375,7 @@ async function fixture(t,{eventsEnabled=false,startupPreflight=false,structuredR
   const login = await call('/auth/login', { email: env.V2_BOOTSTRAP_ADMIN_EMAIL, password: 'SyntheticJourney!2026' });
   assert.equal(login.status, 200); cookie = login.cookies.map(c => c.split(';')[0]).join('; '); csrf = login.body.csrfToken;
   t.after(async () => { await close(); rmSync(directory, { recursive: true, force: true }); });
-  return { call, complete, rehearseWithWorker, removeResult:prepared=>objects.delete(prepared.resultKey), resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, restartWithExpiredReadiness, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, expireWarmWorker:()=>{
+  return { call, complete, executeCashWorker, removeResult:prepared=>objects.delete(prepared.resultKey), resultEvent, env, wakes, directory, get base(){return base;}, restart: async () => { await close(); await open(); }, restartWithExpiredReadiness, expire: () => { now = Date.parse(env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT); }, expireWarmWorker:()=>{
     warmWorkerReady=false;
     runner.descriptor.healthVerified=false;
     runner.descriptor.publicWriteEnabled=false;
@@ -1521,7 +1521,7 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal(f.store.get('agent_delivery_task',stored.id,PROJECT).version,stored.version);
   let workerReceipt;
   if (cashChange) {
-    workerReceipt=await f.rehearseWithWorker(stored.remoteSubmission.prepared,measure || process.env.SHUDUO_TEST_LOCAL_SPARK_WORKER_REHEARSAL==='true');
+    workerReceipt=await f.executeCashWorker(stored.remoteSubmission.prepared,measure || process.env.SHUDUO_TEST_LOCAL_SPARK_WORKER_REHEARSAL==='true','file-rehearsal');
     event=workerReceipt.event;
   } else {
     f.complete(stored.remoteSubmission.prepared,undefined,'0'.repeat(64));
@@ -1573,7 +1573,7 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   f.alignWallClock();
   Object.assign(f.env,{V2_FC_PUBLIC_WRITE_SCOPE:'PUBLICATION_ONLY',
     V2_PUBLIC_PUBLICATION_STARTS_AT:new Date(f.now()-1000).toISOString(),
-    V2_PUBLIC_PUBLICATION_EXPIRES_AT:new Date(f.now()+600000).toISOString(),
+    V2_PUBLIC_PUBLICATION_EXPIRES_AT:new Date(f.now()+(cashChange?10000:600000)).toISOString(),
     V2_PUBLIC_PUBLICATION_TASK_ID:created.body.id,V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST:bundle.digest,
     V2_PUBLIC_PUBLICATION_VERIFICATION_ID:verificationId,V2_PRIVATE_RELEASE_ENABLED:'true',
     V2_PRIVATE_RELEASE_TRIGGER_NAMES:'shuduo-release-fictional-first',V2_SCHEDULER_TICK_SECRET:'fictional-first-release-authorization-1234567890'});
@@ -1766,19 +1766,71 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(f.queueCounts(),queueBeforeImport);
   assert.deepEqual(f.counts(),counts);
 
-  f.later(1000);
-  for (const [index,batchId] of batchIds.entries()) {
-    if (index) f.later(60001);
-    const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=(index?'b':'a').repeat(24);
+  function releaseTimer(mark) {
+    const triggerName=f.env.V2_PRIVATE_RELEASE_TRIGGER_NAMES,timestamp=String(f.now()),nonce=mark.repeat(24);
     const signed=JSON.stringify({releaseId,triggerName,expiresAt:f.now()+300000});
-    const tick={triggerName,triggerTime:new Date(f.now()).toISOString(),payload:JSON.stringify({
+    return {triggerName,triggerTime:new Date(f.now()).toISOString(),payload:JSON.stringify({
       operation:'PRIVATE_RELEASE_TIMER_V1',timestamp,nonce,body:signed,
       signature:signSchedulerTick({sharedSecret:f.env.V2_SCHEDULER_TICK_SECRET,timestamp,nonce,body:signed}),
     })};
+  }
+  function closePublicationWindow() {
+    for(const field of ['V2_FC_PUBLIC_WRITE_SCOPE','V2_PUBLIC_PUBLICATION_STARTS_AT','V2_PUBLIC_PUBLICATION_EXPIRES_AT',
+      'V2_PUBLIC_PUBLICATION_TASK_ID','V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST','V2_PUBLIC_PUBLICATION_VERIFICATION_ID',
+      'V2_PRIVATE_RELEASE_ENABLED','V2_PRIVATE_RELEASE_TRIGGER_NAMES','V2_SCHEDULER_TICK_SECRET']) delete f.env[field];
+    f.env.V2_FC_PUBLIC_READ_ONLY='true';
+  }
+  if(cashChange){
+    const registered=f.store.get('release',releaseId,PROJECT);
+    const previousExpiry=Date.parse(f.env.V2_PUBLIC_PUBLICATION_EXPIRES_AT);
+    const oldEvent=releaseTimer('c');
+    closePublicationWindow();
+    f.later(previousExpiry-f.now()+1);
+    await f.restart();
+    assert.equal((await f.call('/auth/session')).body.readOnly,true);
+    assert.equal((await f.privateCall(oldEvent)).status,401);
+    const readback=await cli('v3-publish',['--reconcile']);
+    assert.deepEqual(readback.publication.batchIds,batchIds);
+    assert.equal(readback.publication.monitoringStatus,'PENDING');
+    assert.deepEqual(f.store.get('release',releaseId,PROJECT),registered);
+    assert.deepEqual(f.counts(),counts);
+    // A separately granted test window uses the same frozen business scope.
+    // Nothing from the first window reopens it or issues a second publication.
+    Object.assign(f.env,{V2_FC_PUBLIC_READ_ONLY:'false',V2_FC_PUBLIC_WRITE_SCOPE:'PUBLICATION_ONLY',
+      V2_PUBLIC_PUBLICATION_STARTS_AT:new Date(f.now()).toISOString(),
+      V2_PUBLIC_PUBLICATION_EXPIRES_AT:new Date(f.now()+600000).toISOString(),
+      V2_PUBLIC_PUBLICATION_TASK_ID:created.body.id,V2_PUBLIC_PUBLICATION_PACKAGE_DIGEST:bundle.digest,
+      V2_PUBLIC_PUBLICATION_VERIFICATION_ID:verificationId,V2_PRIVATE_RELEASE_ENABLED:'true',
+      V2_PRIVATE_RELEASE_TRIGGER_NAMES:oldEvent.triggerName,V2_SCHEDULER_TICK_SECRET:'fictional-second-release-authorization-1234567890'});
+    await f.restart();
+    assert.equal((await f.privateCall(oldEvent)).status,401);
+    assert.deepEqual(f.counts(),counts);
+  }
+  const measureReopenedBatches=cashChange&&process.env.SHUDUO_TEST_LOCAL_SPARK_REOPENED_CASH_BATCHES==='true';
+  f.later(1000);
+  for (const [index,batchId] of batchIds.entries()) {
+    if (index) f.later(60001);
+    const tick=releaseTimer(index?'b':'a');
     assert.equal((await f.privateCall(tick)).status,200);
     const prepared=f.store.get('release_run',batchId,PROJECT).remoteSubmission.prepared;
-    f.complete(prepared,measure?await measuredSpark(t,f,prepared,'workbench publication '+(index+1)):undefined);
+    if(cashChange){
+      const result=await f.executeCashWorker(prepared,measure||measureReopenedBatches,'publication-batch-'+(index+1));
+      assert.equal((await f.privateCall(result.event)).body.state,'RELEASE_BATCH_SETTLED');
+      assert.equal(f.store.get('release_run',batchId,PROJECT).workerResultDigest,result.workerResultDigest);
+      assert.equal((await f.privateCall(result.event)).body.state,'RELEASE_BATCH_ALREADY_SETTLED');
+    }else f.complete(prepared,measure?await measuredSpark(t,f,prepared,'workbench publication '+(index+1)):undefined);
     assert.equal((await f.privateCall(tick)).body.replayed,true);
+  }
+  if(cashChange){
+    closePublicationWindow();
+    await f.restart();
+    assert.equal((await f.call('/auth/session')).body.readOnly,true);
+    for(const [kind,id] of [['release_approval',initialRelease.approvalId],['release',releaseId]]){
+      assert.deepEqual(f.store.list(kind,PROJECT).map(item=>item.id),[id]);
+    }
+    assert.deepEqual(f.store.list('release_run',PROJECT).sort((a,b)=>a.sequence-b.sequence).map(row=>row.id),batchIds);
+    assert.deepEqual(f.counts(),{modelCalls:counts.modelCalls,jobCreates:counts.jobCreates+2});
+    delete f.env.V2_FC_PUBLIC_READ_ONLY; // The consumer below opens its own scoped window.
   }
   const beforeUsage=readFileSync(checkpoint,'utf8'), queueBeforeReadback=f.queueCounts();
   const firstResult=f.store.get('release_run',batchIds[0],PROJECT);
@@ -1944,8 +1996,10 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
     assert.ok(savedApplications.every(app=>app.status==='REVOKED'));
     assert.deepEqual(f.queueCounts(),queueBeforeReadback);
     t.diagnostic(JSON.stringify({case:receipt.caseId,scope:receipt.scope,modelSource:'DETERMINISTIC_TEST_FIXTURE',
-      cloudEventTransport:'LOCAL_TEST_FIXTURE',spark:measure?'ACTUAL_LOCAL_SPARK':
-        process.env.SHUDUO_TEST_LOCAL_SPARK_WORKER_REHEARSAL==='true'?'ACTUAL_LOCAL_REHEARSAL_ONLY':'SYNTHETIC_WORKER_RECEIPTS',
+      cloudEventTransport:'LOCAL_TEST_FIXTURE',publicationWindow:'CLOSED_AND_REOPENED_WITH_NEW_GRANT',
+      publicationBatchSpark:measure||measureReopenedBatches?'ACTUAL_LOCAL_SPARK':'SYNTHETIC_RUNNER',
+      developmentSpark:measure?'ACTUAL_LOCAL_SPARK':'SYNTHETIC_RUNNER',
+      rehearsalSpark:measure||process.env.SHUDUO_TEST_LOCAL_SPARK_WORKER_REHEARSAL==='true'?'ACTUAL_LOCAL_SPARK':'SYNTHETIC_RUNNER',
       phases:phaseAttribution.phases,verifiedCloudCases:0}));
     return;
   }

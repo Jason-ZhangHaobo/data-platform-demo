@@ -204,6 +204,26 @@ SHUDUO_TEST_LOCAL_SPARK_WORKER_REHEARSAL=true node --test \
 
 该模式使用内存对象存储、回环 HTTP 和模拟模型，其余开发及发布步骤沿用测试数据。只有文件演练计为本机真实 Spark 执行。业务完成与直接自主的正式评分仍取自受邀云端回执。
 
+### 发布已登记，两个批次仍待调度
+
+发布回执已给出发布编号和两个批次编号时，先从原检查点查回这三项。以下命令只读取服务端已有状态，CLI 可据此更新本机检查点。
+
+```sh
+shuduo agent v3-publish --checkpoint /path/to/original-checkpoint.json --reconcile
+```
+
+两批均为 `SCHEDULED`、监控为 `PENDING` 时保留原发布和批准，后续调度沿用原批次。窗口已关闭时可继续查看记录。若要启动新计算，按实际剩余工作取得新的有效执行窗口，并复核当月账单、Worker 就绪、任务、包摘要和原文件演练。原发布在此期间发生取消或来源变化时，先查清该记录。提交结果未知的批次也先按原作业编号回读。
+
+本机可复核这一交接过程。测试登记一个虚构发布并关闭窗口，在重启后找回两个批次；另行设置虚构发布窗口，按顺序执行原批次。每个批次的 Worker 用保存的执行结果处理重复事件。待两个批次各有自己的完成事件，再分别核对 DAPI／XAPI 的金额、分页、授权及应用撤销状态。
+
+```sh
+SHUDUO_TEST_LOCAL_SPARK_REOPENED_CASH_BATCHES=true node --test \
+  --test-name-pattern='the signed cash-change case' \
+  test/v2/public-development-journey.test.mjs
+```
+
+这个开关只为两批发布启动真实本机 Spark。开发模型、对象存储与云事件由本机测试环境提供。云端是否完成，以原批次的 Worker、监控和消费回执为准。
+
 ### 读取云端待审阅证据
 
 拿到原任务、确切交付编号和冻结需求的 SHA-256 后，可读取：
