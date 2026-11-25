@@ -13,6 +13,10 @@ import {handleV2Mcp} from '../../bin/shuduo-mcp.mjs';
 import {readArchivedSyncedPositions, readSyncSqlArchives} from '../../src/v2/sync-sql-output-schema-client.mjs';
 import {archivedSyncSqlInput, materializedSyncSqlCandidates, syncSqlArchiveCandidates} from '../../src/v2/sync-sql-archive.mjs';
 import {freezeSyncSqlInput, readSyncSqlInput, syncSqlContractId, syncSqlOutputColumns, syncSqlOutputSchemaDetails} from '../../src/v2/sync-sql-input.mjs';
+import {checkRegisteredPackageInput} from '../../src/v2/package-input-check.mjs';
+import {checkedPackageInputCheck,readPackageInputCheck} from '../../src/v2/package-input-check-client.mjs';
+import {publishedReportHash} from '../../src/v2/published-report-source.mjs';
+import {syntheticPackage} from './fixtures/input-evidence.mjs';
 
 async function setup(t) {
   const root = mkdtempSync(join(tmpdir(),'shuduo-mysql-holdings-'));
@@ -135,4 +139,77 @@ test('unrecorded or incompatible MySQL amount types do not satisfy the frozen ho
     const run=await ingestion.runServerMysqlTask(task.id);
     assert.throws(()=>archivedSyncSqlInput(f.resources,task.id,run.id),{code:'SYNC_SQL_ARCHIVE_UNAVAILABLE'});
   }
+});
+
+test('a delivery package verifies its original MySQL landing receipt and frozen holdings after the target changes',async t=>{
+  const f=await setup(t), {store,ingestion,landingStore}=f.resources, actor='local-engineer';
+  const first=f.read(), binding=freezeSyncSqlInput({store,project:PROJECT,actorId:actor,selection:first.selection,current:first});
+  const input={...binding,actorId:actor,agentTaskId:randomUUID(),developmentMode:'SYNTHETIC_MODEL'};
+  const bundle=store.create('delivery_package',PROJECT,syntheticPackage({binding,input,context:first.context}));
+  const checker = {
+    retainedRunSnapshot:(taskId,runId)=>ingestion.retainedRunSnapshot(taskId,runId),
+    readRegisteredCsv:()=>assert.fail('MySQL package must not read a CSV file'),
+  };
+  const check=(who=actor)=>checkRegisteredPackageInput({store,project:PROJECT,actor:who,bundle,ingestion:checker});
+  const prior=check();
+  f.rows[0].amount_rmb='9876.54';
+  const replacement=await ingestion.runServerMysqlTask(f.task.id);
+  assert.notEqual(replacement.targetHash,f.run.targetHash);
+  f.setType('DECIMAL(18,4)');
+  await ingestion.collectServerMysqlMetadata(f.source.id);
+  const readCount=f.reads();
+  assert.deepEqual(check(),prior);
+  assert.equal(prior.status,'VERIFIED');
+  assert.deepEqual(prior.input,{
+    syncRunId:f.run.id, metadataVersionId:f.metadata.id, sourceRevisionId:f.task.sourceRevisionId,
+    snapshotHash:binding.snapshotHash, contentHash:f.run.sourceHash, targetHash:f.run.targetHash,
+    rows:f.run.finalCount, finishedAt:f.run.finishedAt,
+    proof:{protocol:'shuduo-mysql-archive-input-proof/v1',scope:'RETAINED_MYSQL_FULL_SNAPSHOT',sourceType:'SERVER_MYSQL',
+      mode:'FULL',targetTable:'raw_positions',syncTaskId:f.task.id,landingReceiptHash:f.run.landingReceiptHash,
+      landingSnapshotHash:f.run.landingSnapshotHash,targetRows:f.run.finalCount,upstreamCoverageVerified:false},
+  });
+  assert.equal(prior.provenance.newSparkRuns,0);
+  assert.equal(prior.provenance.fullLifecycleE2E,false);
+  await t.test('HTTP, CLI, MCP and a downloaded receipt preserve this exact package and snapshot',async()=>{
+    await new Promise(resolve=>f.app.server.listen(0,'127.0.0.1',resolve));
+    const client=new V2Client({baseUrl:'http://127.0.0.1:'+f.app.server.address().port+'/api/v2'});
+    const selection={packageId:bundle.id,packageDigest:bundle.digest};
+    const expected={...selection,sourceType:'SERVER_MYSQL',expectedSyncInput:binding};
+    const changes=()=>store.db.prepare('SELECT total_changes() AS changes').get().changes;
+    const before=changes();
+    assert.deepEqual(await readPackageInputCheck(client,expected),prior);
+    let cli;
+    assert.equal(await runV2Cli(['delivery','input-check','--id',bundle.id,'--package-digest',bundle.digest],
+      {},{client,output:s=>{cli=JSON.parse(s);},error:()=>{}}),0);
+    assert.deepEqual(cli,prior);
+    const reply=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',
+      params:{name:'delivery_input_check',arguments:selection}},{client}));
+    assert.deepEqual(reply.result.structuredContent,prior);
+    const saved=JSON.parse(JSON.stringify(cli));
+    assert.deepEqual(await checkedPackageInputCheck(saved,expected),prior);
+    for (const change of [
+      origin=>{origin.syncRunId=randomUUID();}, origin=>{origin.proof.syncTaskId=randomUUID();},
+      origin=>{origin.proof.landingSnapshotHash='f'.repeat(64);}, origin=>{delete origin.proof;},
+      origin=>{origin.proof.upstreamCoverageVerified=true;}, origin=>{origin.proof.sourceCsvRows=origin.rows;},
+      origin=>{origin.proof.targetRows++;},
+    ]) {
+      const copy=structuredClone(saved);
+      change(copy.input);
+      const {evidenceDigest,...body}=copy;
+      copy.evidenceDigest=publishedReportHash(body);
+      await assert.rejects(checkedPackageInputCheck(copy,expected));
+    }
+    await assert.rejects(client.request('/delivery/packages/'+bundle.id+'/input-evidence?packageDigest='+bundle.digest),
+      error=>error.status===409 && error.code==='INPUT_EVIDENCE_CSV_REQUIRED');
+    assert.equal(changes(),before);
+  });
+  assert.throws(()=>check(randomUUID()),{code:'INPUT_CHECK_ACCESS_DENIED'});
+  const frozen=store.get('sync_sql_input',binding.snapshotId,PROJECT);
+  store.update('sync_sql_input',binding.snapshotId,PROJECT,{contentHash:'0'.repeat(64)});
+  assert.throws(()=>check(),{code:'SYNC_SQL_INPUT_CHANGED'});
+  store.update('sync_sql_input',binding.snapshotId,PROJECT,{contentHash:frozen.contentHash});
+  assert.deepEqual(check(),prior);
+  landingStore.db.prepare('DELETE FROM landing_run_receipts WHERE run_id=?').run(f.run.id);
+  assert.throws(()=>check(),{code:'SYNC_LANDING_RECEIPT_MISSING'});
+  assert.equal(f.reads(),readCount);
 });

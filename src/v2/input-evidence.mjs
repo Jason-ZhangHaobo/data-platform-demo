@@ -32,7 +32,10 @@ export function buildInputEvidence({store,project,bundle,readSnapshot}){
  requireEvidence(input&&plan.source.projectId===project);
  const ids={offline_sync_run:input.runId,offline_sync_task:input.taskId,source_metadata:input.metadataVersionId,source_revision:input.sourceRevisionId,sync_sql_input:input.snapshotId},records={};
  for(const kind of Object.keys(inputEvidenceFields)){
-  const record=store.get(kind,ids[kind],project);requireEvidence(record?.id===ids[kind]&&record.projectId===project);records[kind]=projectInputEvidenceRecord(kind,record);
+  const record=store.get(kind,ids[kind],project);requireEvidence(record?.id===ids[kind]&&record.projectId===project);
+  if(kind==='offline_sync_task' && record.sourceType==='SERVER_MYSQL')
+    throw Object.assign(Error('此包使用 MySQL 原持仓归档。请使用「核验原包输入」并下载该批次的核验回执。'),{status:409,code:'INPUT_EVIDENCE_CSV_REQUIRED'});
+  records[kind]=projectInputEvidenceRecord(kind,record);
  }
  const run=records.offline_sync_run;
  requireEvidence(run.snapshotStatus!=='RETAINED'||typeof readSnapshot==='function');

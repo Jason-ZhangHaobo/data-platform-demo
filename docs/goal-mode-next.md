@@ -6,7 +6,7 @@
 
 正式链路的下一步是完成受保护环境的模型 Key 交接并核对既有控制面配置。以原发布编号找回两批的当前状态，再依据原维护与业务窗口决定能否继续调度。已结束的窗口和本机验收均不增加云端执行额度。[模型 Key 单项维护](credential-maintenance.md#模型-key-单项核对与同步)
 
-独立 Agent 工作台可选择已核验的 MySQL 全量持仓批次。源表更新后，任务仍使用原快照，结果页可核对原运行及元数据。隔离 CI 的 MySQL 业务源步骤通过正式 API 完成连接、采集、同步及按原批次运行 Spark，使用合成 SQL 生成器。正式 RDS 数据面及云端 Agent 评测另行计数。[选择原批次与结果示例](synced-archive-agent-input.md#mysql-源更新之后按原持仓计算) · [实库同步与精度核验](m4a-ingestion.md#用真实-mysql-复核持仓同步)
+独立 Agent 可以从 MySQL 全量持仓归档开发、准备八文件、执行包内 SQL 和断言，并在待审阅的交付包查回原同步批次。隔离 CI 的 MySQL 业务源步骤使用真实 MySQL 和 Spark、合成 SQL 生成器；审核、发布和调度依各自的实际记录推进。正式第二例及云端评测仍按上面的原检查点计数。[选择原批次与结果示例](synced-archive-agent-input.md#mysql-源更新之后按原持仓计算) · [MySQL 原包输入核验](package-input-check.md#从-mysql-交付包查回当时的持仓)
 
 已登记派生关系的任务另可通过 GUI、CLI 或 MCP 对照原口径与新口径的客户金额。实际比较来自两侧保存的运行，独立创建的第二例继续沿用自己的检查点。[查看派生前后的金额](agent-context-derivation.md#查看派生前后的金额)
 

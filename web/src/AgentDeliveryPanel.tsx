@@ -1,4 +1,5 @@
 import {agentCalendarBody,checkedCalendarDelivery,agentDeliveryWorkflowPath,agentCalendarRequestWorkflowPath,pendingAgentCalendar,agentCalendarLocation,selectedAgentDelivery,agentDeliveryLocation,leaveAgentCalendarRecovery} from '../../src/v2/agent-calendar-client.mjs';
+import type {PackageSyncInput} from '../../src/v2/package-input-check-client.mjs';
 import type {CalendarPending} from '../../src/v2/agent-calendar-client.mjs';
 import type {CalendarSelection} from '../../src/v2/trading-calendar-client.mjs';
 import {LocalDistributionControls} from './LocalDistributionControls';
@@ -57,7 +58,7 @@ function download(name: string, value: unknown) {
   try { document.body.appendChild(link); link.click(); }
   finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
 }
-export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, expectedSourceBinding,codeBusy, onOpenServices, handoffBlocked = false, manual = false, assisted = false, pinPreparation = false, localCalendarEntry=false, fundPreparation }: { api: Api; taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; expectedSourceBinding?:ServiceSourceBinding; codeBusy: boolean; onOpenServices?: (source:ServiceSourceBinding) => void; handoffBlocked?: boolean; manual?: boolean;assisted?:boolean;pinPreparation?:boolean;localCalendarEntry?:boolean;fundPreparation?:FundExecutionBinding }) {
+export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, dirty, canWrite, canPublish, publicationTarget, expectedSourceBinding,codeBusy, onOpenServices, handoffBlocked = false, manual = false, assisted = false, pinPreparation = false, localCalendarEntry=false, fundPreparation, mysqlSnapshotHash }: { api: Api; taskId: string; contextId?:string; revisionId?: string; runId?: string; dirty: boolean; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; expectedSourceBinding?:ServiceSourceBinding; codeBusy: boolean; onOpenServices?: (source:ServiceSourceBinding) => void; handoffBlocked?: boolean; manual?: boolean;assisted?:boolean;pinPreparation?:boolean;localCalendarEntry?:boolean;fundPreparation?:FundExecutionBinding;mysqlSnapshotHash?:string }) {
   const fund = fundPreparation !== undefined;
   const workflowSourceKey=JSON.stringify([taskId,manual,assisted,runId,revisionId,contextId,expectedSourceBinding,fundPreparation]);
   const [workflowRecord,setWorkflowRecord]=useState<{key:string;value:Workflow}>();
@@ -157,6 +158,8 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
     ? workflow?.fileReview : undefined;
   const activeFileReview=useRef(fileReview?.id);
   activeFileReview.current=fileReview?.id;
+  const packageInput=(workflow?.package?.manifest as {source?:{syncInput?:PackageSyncInput}}|undefined)?.source?.syncInput;
+  const knownMysql=Boolean(mysqlSnapshotHash && packageInput?.snapshotHash===mysqlSnapshotHash);
   const cloud = workflow?.publication.scope === "PRIVATE_CLOUD_TEST";
   const exactCloudReview = cloud && pinPreparation;
   // A retained, successfully read workflow may still select read-only history
@@ -519,7 +522,7 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
           clarification:frozen.clarification,humanClarified:frozen.humanClarified,directAutonomousEligible:frozen.directAutonomousEligible,clarificationOriginTaskId:frozen.clarificationOriginTaskId,
           attempts:[{attempt:frozen.attempt,revisionId:frozen.revisionId,model:frozen.model}]}}/>;})()}
         {workflow.package && <Suspense fallback={<p role="status">正在读取原包调度说明…</p>}><FrozenSchedulePanel key={workflow.package.digest} api={api} packageId={workflow.package.id} packageDigest={workflow.package.digest} current={current}/></Suspense>}
-        {workflow.package && Boolean((workflow.package.manifest as {source?:{syncInput?:unknown}})?.source?.syncInput) && <Suspense fallback={<p role="status">正在加载原包输入证明…</p>}><InputEvidencePanel key={workflow.package.digest} api={api} packageId={workflow.package.id} packageDigest={workflow.package.digest} current={current} reviewTarget={!manual&&!assisted&&delivery&&workflow.verification?.status==="SUCCEEDED"?{taskId,deliveryId:delivery.id,verificationId:workflow.verification.id,enabled:canWrite&&current&&fileVerified&&!working,mayPublish:canPublish!==false}:undefined}/></Suspense>}
+        {workflow.package && packageInput && <Suspense fallback={<p role="status">正在加载原包输入证明…</p>}><InputEvidencePanel key={workflow.package.digest} api={api} packageId={workflow.package.id} packageDigest={workflow.package.digest} knownMysql={knownMysql} packageInput={packageInput} current={current} reviewTarget={!manual&&!assisted&&delivery&&workflow.verification?.status==="SUCCEEDED"?{taskId,deliveryId:delivery.id,verificationId:workflow.verification.id,enabled:canWrite&&current&&fileVerified&&!working,mayPublish:canPublish!==false}:undefined}/></Suspense>}
         {workflow.package && <DeliveryFilePreview key={workflow.package.digest} bundle={workflow.package} current={current} onDownload={download} />}
         {checkedBatch && (evidenceRead==="READY" || checkedBatch.pending) && <p role="status">{checkedBatch.message}</p>}
         {workflow.verification && <><p className={fileVerified ? "passed" : ""}>{preparationUnknown?'历史文件演练：':'文件演练：'}{fileVerified ? (fund?"主 SQL、测试 SQL 与登记基金断言通过":"主SQL、测试SQL与五场景回归全部通过") : workflow.verification.status} · {workflow.verification.engine} {workflow.verification.engineVersion}</p>

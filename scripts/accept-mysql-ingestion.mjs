@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,6 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import mysql from "mysql2/promise";
 import { createV2Server } from "../src/v2/server.mjs";
 import { referenceSql } from "../src/v2/context.mjs";
+import { readNativeSyncReview } from "../src/v2/native-sync-review-client.mjs";
+import { readPackageInputCheck } from "../src/v2/package-input-check-client.mjs";
 
 // An explicitly invoked test against a disposable loopback MySQL 8 instance.
 // The CI job provisions these two fixture users. The service only gets the reader.
@@ -25,7 +28,7 @@ const expected = [
   ["POS-003", "CLIENT-002", "SEC-DEMO-003", "股票", "金融", "299.75", "2026-09-11"],
 ];
 
-test("MySQL holdings reach the landing table and an Agent runs Spark on the selected historical snapshot", async t => {
+test("Agent develops, rehearses eight files and verifies their original MySQL holdings batch", async t => {
   const port = Number(process.env.SHUDUO_TEST_MYSQL_PORT);
   const readerPassword = process.env.SHUDUO_TEST_MYSQL_READER_PASSWORD;
   const writerPassword = process.env.SHUDUO_TEST_MYSQL_WRITER_PASSWORD;
@@ -93,6 +96,16 @@ test("MySQL holdings reach the landing table and an Agent runs Spark on the sele
     const payload = await response.json();
     assert.equal(response.status, status, path + " " + (payload.code ?? ""));
     return payload;
+  }
+  async function waitForTask(path, first) {
+    const deadline = Date.now() + 130000;
+    let record = first;
+    while (["QUEUED", "RUNNING"].includes(record.status) && Date.now() < deadline) {
+      await delay(500);
+      record = await api(path, 200);
+    }
+    assert.equal(record.status, "SUCCEEDED", path + " " + record.stage);
+    return record;
   }
   const source = await api("/sources", 201, {name:"虚构证券持仓", sourceType:"SERVER_MYSQL", tableName:table}, "mysql-source");
   const probe = await api(`/sources/${source.id}/test`, 200, {});
@@ -181,13 +194,7 @@ test("MySQL holdings reach the landing table and an Agent runs Spark on the sele
     contextId:"holdings-t1", message:"用原同步批次计算客户持仓市值、可用现金、总资产和证券数量",
     sql:"SELECT 1", syncInput:offer.selection,
   }, requestId);
-  const deadline = Date.now() + 130000;
-  let taskResult = created;
-  while (["QUEUED","RUNNING"].includes(taskResult.status) && Date.now() < deadline) {
-    await delay(500);
-    taskResult = await api("/agent/tasks/"+created.id, 200);
-  }
-  assert.equal(taskResult.status, "SUCCEEDED", taskResult.stage);
+  const taskResult = await waitForTask("/agent/tasks/"+created.id, created);
   assert.equal(taskResult.mode, "SYNTHETIC_MODEL");
   assert.equal(taskResult.attempts.length, 1);
   assert.equal(generations, 1);
@@ -221,11 +228,90 @@ test("MySQL holdings reach the landing table and an Agent runs Spark on the sele
   assert.equal(recovered.id, taskResult.id);
   assert.deepEqual(recovered.syncInput, run.syncInput);
   assert.deepEqual(await targetRows(), landed);
+
+  const deliveryKey = "original-mysql-holdings-delivery";
+  const taskPath = "/agent/tasks/"+taskResult.id;
+  const started = await api(taskPath+"/prepare-delivery", 202, {}, deliveryKey);
+  const delivery = await waitForTask("/agent/deliveries/"+started.id, started);
+  assert.equal(delivery.stage, "AWAITING_ENGINEER_REVIEW");
+  assert.equal(delivery.sourceRunId, run.id);
+  assert.equal(delivery.sourceRevisionId, run.revisionId);
+  const packagePath = "/delivery/packages/"+delivery.packageId;
+  const bundle = await api(packagePath, 200);
+  const files = ["main.sql", "tests.sql", "schedule.json", "deployment.json", "calendar.json", "fixtures.json", "validation.json", "README.md"];
+  assert.deepEqual(Object.keys(bundle.files).sort(), [...files].sort());
+  assert.equal(bundle.digest, delivery.packageDigest);
+  assert.equal(bundle.manifest.source.syncInput.runId, baseline.id);
+  assert.equal(bundle.manifest.source.syncInput.snapshotHash, run.syncInput.snapshotHash);
+  assert.equal(bundle.manifest.source.runId, run.id);
+  assert.equal(bundle.manifest.source.revisionId, run.revisionId);
+  assert.equal(bundle.manifest.source.sqlHash, run.revisionHash);
+  assert.equal(bundle.published, false);
+  const rehearsal = await api("/delivery/verifications/"+delivery.verificationId, 200);
+  assert.equal(rehearsal.status, "SUCCEEDED");
+  assert.equal(rehearsal.engine, "Apache Spark");
+  assert.equal(rehearsal.engineVersion, "3.5.9");
+  assert.equal(rehearsal.mode, "LOCAL_FILE_REHEARSAL");
+  assert.equal(rehearsal.mainSqlExecuted, true);
+  assert.notEqual(rehearsal.testDouble, true);
+  assert.equal(rehearsal.testSqlValidation.passed, true);
+  assert.equal(rehearsal.validation.selectedPassed, true);
+  assert.equal(rehearsal.validation.regressions.length, 5);
+  assert.ok(rehearsal.validation.regressions.every(scenario=>scenario.passed));
+  assert.deepEqual(rehearsal.rows, run.rows);
+  assert.deepEqual(rehearsal.workflowTrace.map(({id,kind,status})=>[id,kind,status]), [
+    ["execute","spark_sql","SUCCEEDED"], ["validate","sql_assertions","SUCCEEDED"], ["evidence","record_evidence","SUCCEEDED"],
+  ]);
+  const fileHashes = Object.fromEntries(files.map(name => {
+    const bytes = Buffer.from(bundle.files[name]);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    assert.deepEqual(bundle.manifest.files[name], {sha256, bytes:bytes.length});
+    return [name,sha256];
+  }));
+  assert.deepEqual(rehearsal.fileHashes, fileHashes);
+  assert.equal(fileHashes["main.sql"], run.revisionHash);
+  assert.equal(rehearsal.testSqlValidation.sqlHash, fileHashes["tests.sql"]);
+  assert.equal(rehearsal.schedulerTriggered, false);
+  assert.equal(rehearsal.published, false);
+
+  const readOnlyClient = {request:path => api(path, 200)};
+  const binding = {taskId:taskResult.id, deliveryId:delivery.id, packageId:bundle.id,
+    packageDigest:bundle.digest, verificationId:rehearsal.id};
+  const review = await readNativeSyncReview(readOnlyClient, binding);
+  assert.equal(review.review.status, "NEEDS_REVIEW");
+  assert.equal(review.publicationApproved, false);
+  assert.equal(review.schedulerEnabled, false);
+  assert.deepEqual(review.evidence.fileHashes, fileHashes);
+  const inputCheck = await readPackageInputCheck(readOnlyClient, {packageId:bundle.id,packageDigest:bundle.digest});
+  assert.equal(inputCheck.input.syncRunId, baseline.id);
+  assert.equal(inputCheck.input.metadataVersionId, metadata.id);
+  assert.equal(inputCheck.input.sourceRevisionId, metadata.revisionId);
+  assert.equal(inputCheck.input.contentHash, baseline.sourceHash);
+  assert.equal(inputCheck.input.targetHash, baseline.targetHash);
+  assert.equal(inputCheck.input.snapshotHash, run.syncInput.snapshotHash);
+  assert.deepEqual(inputCheck.input.proof, {protocol:"shuduo-mysql-archive-input-proof/v1",
+    scope:"RETAINED_MYSQL_FULL_SNAPSHOT",sourceType:"SERVER_MYSQL",mode:"FULL",targetTable:target,
+    syncTaskId:full.id,landingReceiptHash:baseline.landingReceiptHash,landingSnapshotHash:baseline.landingSnapshotHash,
+    targetRows:initial.length,upstreamCoverageVerified:false});
+  const recoveredDelivery = await api(taskPath+"/delivery-requests/"+deliveryKey, 200);
+  assert.equal(recoveredDelivery.id, delivery.id);
+  assert.equal(recoveredDelivery.verificationId, rehearsal.id);
+  assert.equal((await api(taskPath+"/prepare-delivery", 200, {}, deliveryKey)).id, delivery.id);
+  const savedRehearsals = await api("/delivery/verifications", 200);
+  assert.deepEqual(savedRehearsals.map(item=>item.id), [rehearsal.id]);
+  assert.deepEqual((await api("/delivery/packages", 200)).map(item=>item.id), [bundle.id]);
+  assert.equal(generations, 1);
+  assert.deepEqual(await api("/release/approvals", 200), []);
+  const releases = await api("/releases", 200);
+  assert.deepEqual(releases, []);
   t.diagnostic(JSON.stringify({engine:"MySQL", version:probe.serverVersion, sourceTable:table, metadataFields:fields.length,
     fullRows:baseline.finalCount, inserted:change.inserted, updated:change.updated, unchanged:change.unchanged,
     finalRows:landed.length, totalMarketValue:"1900.00", watermark:change.watermark, originalRequestRecovered:true,
     sourceScaleChange:drift.code, landedRowsPreserved:true, sqlInput:"MYSQL_FULL_ARCHIVE", originalSnapshotMatched:true,
     generator:"SYNTHETIC_MODEL", sparkVersion:run.engineVersion, sparkRuns:taskResult.attempts.length,
     regressionScenarios:run.validation.regressions.length, archivedCustomerAssets:run.rows.map(row=>row.total_assets),
-    originalAndCurrentMetadataMatched:true}));
+    originalAndCurrentMetadataMatched:true, deliveryFiles:files.length, fileRehearsalSparkRuns:savedRehearsals.length,
+    fileRehearsalCustomerAssets:rehearsal.rows.map(row=>row.total_assets), fileRehearsalRegressionCount:rehearsal.validation.regressions.length,
+    testSqlExecuted:rehearsal.testSqlValidation.passed, mysqlInputProof:inputCheck.input.proof.scope,
+    deliveryRequestRecovered:recoveredDelivery.id===delivery.id, fileReview:review.review.status, publicationCount:releases.length}));
 });

@@ -11,9 +11,10 @@ import { QualityManager } from "./quality.mjs";
 import { checkedPublishedReportArtifacts } from "./report-provenance.mjs";
 import { publishedSqlColumnLineage } from "./sql-column-lineage.mjs";
 import { syncReportAsset, syncReportLineage, syncReportFields } from "./sync-sql-report.mjs";
-import { syncSqlLandingContext } from "./sync-sql-input.mjs";
+import { readSyncSqlInput, syncSqlLandingContext } from "./sync-sql-input.mjs";
+import { archivedSyncSqlInput } from "./sync-sql-archive.mjs";
 import {verifySavedMaterializedInput} from './materialized-saved-input.mjs';
-import {materializedSyncInputKind,syncSqlSelectionFromBinding} from './sync-sql-selection.mjs';
+import {archivedSyncInputKind,materializedSyncInputKind,syncSqlSelectionFromBinding} from './sync-sql-selection.mjs';
 import { certifiedSyncSqlSource, readSyncSqlCallEvidence, readSyncSqlPaginationCoverage, syncSqlPageShape } from "./sync-sql-service-source.mjs";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -57,14 +58,37 @@ export function verifySavedSyncSqlInput({ read, input, context, csv, readSnapsho
     contentHash, targetHash: source.targetHash, rows: input.rowCount, finishedAt: source.finishedAt };
 }
 
+function verifyMysqlPackageInput({store, project, ingestion}, input, context) {
+  requireEvidence(input.kind === archivedSyncInputKind && typeof ingestion?.retainedRunSnapshot === 'function', 'MYSQL_ARCHIVE_REQUIRED');
+  const archive = archivedSyncSqlInput({store, project, ingestion}, input.taskId, input.runId);
+  const {actorId, agentTaskId, developmentMode, snapshotId, snapshotHash} = input;
+  const binding = {...archive.selection, ...archive.source, snapshotId, snapshotHash};
+  requireEvidence(archive.sourceType === 'SERVER_MYSQL' && same(input, {...binding,actorId,agentTaskId,developmentMode}), 'INPUT_CHANGED');
+  const frozen = readSyncSqlInput({store, project, actorId, binding});
+  requireEvidence(same(frozen, context) && same(archive.context, context), 'INPUT_PROJECTION_CHANGED');
+
+  // The standard landing receipt binds this hash of the bounded read. The
+  // upstream table may have changed; this check uses only the retained batch.
+  const run = store.get('offline_sync_run', input.runId, project);
+  return {syncRunId:run.id, metadataVersionId:input.metadataVersionId, sourceRevisionId:input.sourceRevisionId,
+    snapshotHash:input.snapshotHash, contentHash:run.sourceHash, targetHash:run.targetHash,
+    rows:input.rowCount, finishedAt:run.finishedAt,
+    proof:{protocol:'shuduo-mysql-archive-input-proof/v1', scope:'RETAINED_MYSQL_FULL_SNAPSHOT',
+      sourceType:'SERVER_MYSQL', mode:'FULL', targetTable:input.targetTable, syncTaskId:input.taskId,
+      landingReceiptHash:run.landingReceiptHash, landingSnapshotHash:input.landingSnapshotHash,
+      targetRows:input.rowCount, upstreamCoverageVerified:false}};
+}
+
 // A package input check is usable before publication and never attests lifecycle completion.
-export function verifySavedSyncSqlPackageInput({store,project,actor,originalPackage,packageDigest,csv,readSnapshot}) {
+export function verifySavedSyncSqlPackageInput({store,project,actor,originalPackage,packageDigest,csv,readSnapshot,ingestion}) {
   requireEvidence(digest.test(packageDigest??'')&&typeof project==='string'&&project.length>0&&typeof actor==='string'&&actor.length>0,'SELECTION_INVALID');
   const plan=validateDeliveryPackage(originalPackage,packageDigest),input=plan.source?.syncInput;
   requireEvidence(input?.actorId===actor,'AGENT_SOURCE_REQUIRED');
   requireEvidence(plan.source.projectId===project,'INPUT_PROJECT_CHANGED');
   const read=(kind,id)=>{const value=store.get(kind,id,project);requireEvidence(value?.id===id&&value.projectId===project,'RECORD_MISSING');return value;};
-  const origin=verifySavedSyncSqlInput({read,input,context:plan.fixtures.context,csv,readSnapshot});
+  const origin = read('offline_sync_task',input.taskId).sourceType === 'SERVER_MYSQL'
+    ? verifyMysqlPackageInput({store,project,ingestion},input,plan.fixtures.context)
+    : verifySavedSyncSqlInput({read,input,context:plan.fixtures.context,csv,readSnapshot});
   const result={protocol:'shuduo-saved-sync-sql-input/v1',status:'VERIFIED',scope:'LOCAL_SAVED_INPUT_ONLY',
     packageDigest,input:origin,
     provenance:{developmentMode:input.developmentMode,newSparkRuns:0,newModelCalls:0,cloudRequests:0,
