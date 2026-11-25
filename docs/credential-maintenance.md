@@ -41,6 +41,8 @@
 | `apply` | 使用已批准的独占改配窗口。同一函数的代码、规格、网络、其他环境字段及只读边界必须与预审一致。通过目录核对后再读一次；仅当值需要变化时提交一次配置更新。 |
 | 已发出写入、响应未知 | 工作流直接读回原函数。稳定配置与预期一致才返回 `CONFIG_VERIFIED`。仍读到原值或服务状态未确认则保留未确认结论；后续仅用 `verify` 对账。第三种配置会报告漂移。 |
 
+记录原 GitHub 运行编号、审阅的配置摘要和命名 Secret 的更新时间。独立 `verify` 使用其启动时的候选值；如果 Secret 在两次运行之间再次换发，这次回读只能说明当前配置是否匹配，原写入继续保留待核对状态。
+
 FC 3.0 的公开接口接收完整的 `environmentVariables` 对象。仓库内的控制面操作共用工作流互斥组，实际写入期间也须协调控制台和其他外部改配者。前后读取能发现观测到的漂移，无法排除最后一次读取与写入之间被其他执行者改动的竞态。FC 3.0 文档未给出可在此处依赖的版本条件写保证。[FC 3.0 UpdateFunction](https://www.alibabacloud.com/help/en/functioncompute/api-fc-2023-03-30-updatefunction) · [UpdateFunctionInput](https://www.alibabacloud.com/help/en/functioncompute/api-fc-2023-03-30-struct-updatefunctioninput)
 
 成功回执分别记录目录鉴权和函数配置核对结果。真实推理、已泄露旧值在供应方的撤销、其他凭证轮换及恢复业务写入仍各自需要证据。目录探测只读取北京服务的模型清单，不产生生成任务。[百炼模型目录](https://help.aliyun.com/zh/model-studio/list-models)
