@@ -57,7 +57,12 @@ jobs:
             SHUDUO_TEST_MYSQL_PORT=3306 \
             SHUDUO_TEST_MYSQL_READER_PASSWORD="$reader_password" \
             SHUDUO_TEST_MYSQL_WRITER_PASSWORD="$writer_password" \
+            SHUDUO_WEALTH_REPORT_OUTPUT_DIR="$RUNNER_TEMP/shuduo-wealth-reports" \
             node --test scripts/accept-mysql-ingestion.mjs
+          for filename in customer-001.csv customer-002.csv; do
+            file="$RUNNER_TEMP/shuduo-wealth-reports/$filename"
+            [[ -f "$file" && -s "$file" && ! -L "$file" ]]
+          done
       - name: Package account-restricted workbench preview
         run: zip -qr "$RUNNER_TEMP/shuduo-private-preview.zip" web-dist scripts/run-v2-cloudshell-preview.mjs src/v2/private-service-routes.mjs src/v2/publication-request.mjs src/v2/service-plan-request.mjs
       - name: Retain credential-free private preview
@@ -74,3 +79,33 @@ jobs:
           chmod 0755 /tmp/shuduo-v2-ci/runtime/node
           test "$(/tmp/shuduo-v2-ci/runtime/node -p 'process.platform + "/" + process.arch')" = "linux/x64"
           /tmp/shuduo-v2-ci/runtime/node -e 'import("node:sqlite").then(() => process.stdout.write("node:sqlite ready\n"))'
+      - name: Deliver the two fictional customer reports
+        id: wealth_reports
+        uses: actions/upload-artifact@v6
+        with:
+          name: shuduo-fictional-wealth-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/shuduo-wealth-reports/customer-001.csv
+            ${{ runner.temp }}/shuduo-wealth-reports/customer-002.csv
+          retention-days: 7
+          if-no-files-found: error
+      - name: Show report download and file digests
+        env:
+          WEALTH_ARTIFACT_URL: ${{ steps.wealth_reports.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          checked_commit=$(git rev-parse HEAD)
+          cd "$RUNNER_TEMP/shuduo-wealth-reports"
+          {
+            echo '## 财富顾问复刻结果'
+            echo
+            printf '[下载两位虚构客户的五指标报表](%s)\n\n' "$WEALTH_ARTIFACT_URL"
+            printf '运行 %s，第 %s 次尝试，检出提交 `%s`。\n\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$checked_commit"
+            echo '报表取自同一发布的第二批。隔离环境使用真实 MySQL 和 Spark、合成 SQL 生成器及虚构测试批准。'
+            echo
+            echo '每份 CSV 的 SHA-256'
+            echo
+            echo '```text'
+            sha256sum -- customer-001.csv customer-002.csv
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

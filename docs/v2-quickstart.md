@@ -1,7 +1,45 @@
 # 新版工作台启动与验收
 
-本文用于复刻数舵 V2 本机参考流程。公网、受邀权限和真实 Agent 验收见[当前执行清单](goal-mode-next.md)。
-所有输入均为本项目虚构证券数据；不用公司文件或真实客户数据进行测试。
+可先用 GitHub Actions 从干净源码生成客户报表，也可按第 1 节在本机启动交互工作台。案例输入均为项目提供的虚构证券数据。公网试点进度见[当前执行清单](goal-mode-next.md)。
+
+## 从干净检出生成两份客户报表
+
+**想先看成品**，可下载下列 CI 页面中已有成功运行的报表。**要独立复刻**，在仓库开启 Actions 并手动启动一次 CI。GitHub 托管 runner 在新的工作目录检出源码，准备 MySQL 与 Spark，完成数据接入、开发、演练、两批定时计算、接口消费和报表导出。只需 GitHub 账号及相应仓库权限。用自己的 fork 时，先同步包含此导出功能的 `main`，在 fork 的 Actions 页启用工作流。
+
+1. 登录 GitHub，打开仓库的 **Actions → CI**。手动复刻需要对所选仓库有写权限，点击 **Run workflow**，选择 **main** 并运行一次。PR 检查与合并至 `main` 的推送也会运行这份工作流，可直接复用相应结果。[数舵 CI 运行页](https://github.com/Jason-ZhangHaobo/data-platform-demo/actions/workflows/ci.yml) · [GitHub 手动运行说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+2. 打开这次运行，确认仓库、分支或 PR、提交 SHA 和尝试号。运行编号是页面 URL 中 `/actions/runs/` 后的数字。等待工作流整体显示 **Success**。在 **Lint, test and build** 作业中可查看 **Verify MySQL source ingestion on the runner** 的业务断言。
+3. 在成功运行的摘要中下载 **`shuduo-fictional-wealth-reports-<运行编号>-<尝试号>`**。制品保留 7 天，下载需要已登录且对仓库有读权限。解压后用电子表格工具按 UTF-8 打开 `customer-001.csv` 或 `customer-002.csv`。摘要提供两份文件各自的 SHA-256。[GitHub 制品下载说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)
+4. 核对业务日 **2026-09-10** 和文件内的脱敏客户。第一份应显示总资产 **1,300.00 元**、持仓 **1,000.00 元**、现金 **300.00 元**。第二份分别是 **700.00 元**、**500.00 元**、**200.00 元**。两份都来自第二批的同一份报表。比较各文件末尾的发布批次、报表运行与持仓快照摘要，应分别相同。[完整五项指标与讲解分工](company-replication-playbook.md#用虚构持仓复刻财富顾问报表)
+
+如用已登录的 GitHub CLI，在需要新运行时执行下面两行。将 `wealth_repo` 替换为自己的 fork 即可在自己的仓库复刻。
+
+```sh
+wealth_repo=Jason-ZhangHaobo/data-platform-demo
+gh workflow run ci.yml --repo "$wealth_repo" --ref main
+```
+
+使用上述命令返回的运行链接。若 CLI 版本未返回链接，执行 `gh run list --repo "$wealth_repo" --workflow ci.yml --branch main --event workflow_dispatch --limit 10 --json databaseId,headSha,createdAt,status,url`，按触发时间、分支与提交 SHA 核对本次记录。已有合格运行可直接从该运行页面进入下载步骤。
+
+```sh
+(
+  set -eu
+  wealth_repo=${wealth_repo:-Jason-ZhangHaobo/data-platform-demo}
+  printf '输入本次 CI 运行编号：'
+  read -r wealth_run
+  gh run watch "$wealth_run" --repo "$wealth_repo" --exit-status
+  gh run view "$wealth_run" --repo "$wealth_repo" --json url,headSha,attempt,conclusion
+  wealth_attempt=$(gh run view "$wealth_run" --repo "$wealth_repo" --json attempt,status,conclusion \
+    --jq 'select(.status == "completed" and .conclusion == "success") | .attempt')
+  test -n "$wealth_attempt"
+  wealth_dir=$(mktemp -d)
+  gh run download "$wealth_run" --repo "$wealth_repo" --dir "$wealth_dir" \
+    --name "shuduo-fictional-wealth-reports-$wealth_run-$wealth_attempt"
+  shasum -a 256 "$wealth_dir/customer-001.csv" "$wealth_dir/customer-002.csv"
+  printf '客户报表目录：%s\n' "$wealth_dir"
+)
+```
+
+核对输出的两个文件摘要与同一次尝试页面中的 SHA-256。在 Linux 中也可使用 `sha256sum`。运行失败时，先查看失败步骤。若同一运行重新执行，打开新尝试并核对它的制品名。制品过期时可用相应源码新开一次运行，并保留新的运行链接。业务数据来自隔离 MySQL，计算来自真实 Spark，SQL 生成器和审批人使用测试实现。正式云端的模型及授权验收单独记录。
 
 ## 1. 启动
 
@@ -117,6 +155,7 @@ npm run v2:m1-eval
 |---|---|
 | 本文参考流程 | 已知 SQL 的实际结果、测试与交付文件可复刻 |
 | CI 的 `TEST_DOUBLE` | 接口、流程与异常处理 |
+| CI 的 MySQL 财富案例 | 真实同步、Spark 开发及文件演练、双批调度与消费、独立报告和单客户 CSV；生成器与审批为测试实现 |
 | 历史 M1 产物回放 | 冻结代码的本机生命周期 |
 | 真实模型 v3 | 按原任务、版本、发布与消费证据计算当前完成率 |
 
@@ -144,7 +183,7 @@ npm run v2:cli -- sync list
 npm run v2:cli -- sync rows --table raw_positions
 ```
 
-MCP对应提供`source_*`、`sync_*`与`ingestion_plan_*`工具；它们与GUI/CLI使用同一`/api/v2`，当前只允许仓库内虚构CSV。
+MCP 对应提供 `source_*`、`sync_*` 与 `ingestion_plan_*` 工具，与 GUI/CLI 使用同一 `/api/v2`。文件源使用仓库虚构 CSV；服务端配置的 MySQL 源从表白名单采集字段，显式启用同步后可做有界全量及快照增量。[MySQL 接入与验收](m4a-ingestion.md)
 
 CI 的模型/执行器边界测试使用明确标注的 TEST_DOUBLE，不计入真实 Agent E2E 成功率。
 Spark 检查才运行真正引擎，生成 `.v2-artifacts/spark-acceptance.json`。

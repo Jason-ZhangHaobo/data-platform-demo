@@ -1,16 +1,50 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, open, readFile, rmdir, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import { lookupPublishedReport, readPublishedReportResult, submitPublishedReport } from "../src/v2/published-report-client.mjs";
 import { readCustomerAssetAnalysis } from "../src/v2/customer-asset-analysis-client.mjs";
 import { runV2Cli } from "../bin/shuduo.mjs";
 import { handleV2Mcp } from "../bin/shuduo-mcp.mjs";
+import { customerAnalysisCsv } from "../web/src/customer-analysis-csv.ts";
 
 // These values come from the two original positions and the registered cash
 // fixture. The later three-position landing has a different market value.
 const clients = [
-  {label:"CLI***001", total:"1300.00", holding:"1000.00", cash:"300.00", category:"股票", industry:"金融"},
-  {label:"CLI***002", total:"700.00", holding:"500.00", cash:"200.00", category:"债券", industry:"公共事业"},
+  {file:"customer-001.csv", label:"CLI***001", total:"1300.00", holding:"1000.00", cash:"300.00", category:"股票", industry:"金融"},
+  {file:"customer-002.csv", label:"CLI***002", total:"700.00", holding:"500.00", cash:"200.00", category:"债券", industry:"公共事业"},
 ];
+
+export async function exportFixtureCustomerReports(directory,client,selection,original) {
+  if (directory===undefined) return;
+  const report=await readCustomerAssetAnalysis(client,selection);
+  assert.equal(report.digest,original.digest);
+  assert.equal(report.source.sequence,2);
+  assert.deepEqual(report.customers.map(c=>c.clientLabel).sort(),clients.map(c=>c.label));
+  const files=clients.map(({file,label})=>{
+    const customer=report.customers.find(c=>c.clientLabel===label);
+    return {name:file, content:customerAnalysisCsv(report,customer.customerKey,original.digest).content};
+  });
+  // Claim a new directory. A rerun must never replace or mix with a prior result.
+  await mkdir(directory,{mode:0o700});
+  const owned=[], hashes={};
+  try {
+    for (const file of files) {
+      const path=join(directory,file.name), handle=await open(path,"wx",0o600);
+      owned.push(path);
+      try { await handle.writeFile(file.content,"utf8"); } finally { await handle.close(); }
+      const bytes=await readFile(path);
+      assert.ok(bytes.equals(Buffer.from(file.content,"utf8")), "Written CSV differs from the customer export");
+      hashes[file.name]=createHash("sha256").update(bytes).digest("hex");
+    }
+  } catch (error) {
+    for (const path of owned) await unlink(path);
+    await rmdir(directory);
+    throw error;
+  }
+  return {sequence:report.source.sequence,batchId:report.source.batchId,reportRunId:report.report.runId,
+    landingSnapshotHash:report.source.landingSnapshotHash,files:hashes};
+}
 
 export async function verifyMysqlCustomerReports({client, source, batchIds, originalInput}) {
   const saved = [];
@@ -86,9 +120,10 @@ export async function verifyMysqlCustomerReports({client, source, batchIds, orig
   }
   const after = overview.counts;
   for (const key of ["datasets","reports","runs"]) assert.equal(after[key]-before[key],2,key);
+  const exported=await exportFixtureCustomerReports(process.env.SHUDUO_WEALTH_REPORT_OUTPUT_DIR,client,selection,report);
   return {wealthReports:saved.length, wealthReportRuns:after.runs-before.runs,
     wealthCustomersPerReport:clients.length, wealthCustomerAssets:clients.map(c=>c.total),
     wealthHoldingValues:clients.map(c=>c.holding), wealthSecurityCounts:[1,1],
     wealthAssetClasses:clients.map(c=>c.category), wealthIndustries:clients.map(c=>c.industry),
-    wealthReportReopenVerified:true};
+    wealthReportReopenVerified:true,...(exported?{wealthReportCsvFiles:Object.keys(exported.files).length,wealthReportExport:exported}:{})};
 }
