@@ -1,29 +1,31 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import mysql from "mysql2/promise";
 import { createV2Server } from "../src/v2/server.mjs";
+import { referenceSql } from "../src/v2/context.mjs";
 
 // An explicitly invoked test against a disposable loopback MySQL 8 instance.
 // The CI job provisions these two fixture users. The service only gets the reader.
 const database = "shuduo_ingestion_test";
 const table = "fixture_holdings";
-const target = "landed_fixture_holdings";
-const fields = ["position_id", "security_code", "market_value", "trade_date"];
+const target = "raw_positions";
+const fields = ["position_id", "client_id", "security_code", "asset_class", "industry", "market_value", "trade_date"];
 const initial = [
-  ["POS-001", "SEC-DEMO-001", "1000.00", "2026-09-10"],
-  ["POS-002", "SEC-DEMO-002", "500.00", "2026-09-10"],
+  ["POS-001", "CLIENT-001", "SEC-DEMO-001", "股票", "金融", "1000.00", "2026-09-10"],
+  ["POS-002", "CLIENT-002", "SEC-DEMO-002", "债券", "公共事业", "500.00", "2026-09-10"],
 ];
 const expected = [
-  ["POS-001", "SEC-DEMO-001", "1100.25", "2026-09-11"],
+  ["POS-001", "CLIENT-001", "SEC-DEMO-001", "股票", "金融", "1100.25", "2026-09-11"],
   initial[1],
-  ["POS-003", "SEC-DEMO-003", "299.75", "2026-09-11"],
+  ["POS-003", "CLIENT-002", "SEC-DEMO-003", "股票", "金融", "299.75", "2026-09-11"],
 ];
 
-test("MySQL holdings reach the landing table through the source, metadata and sync APIs", async t => {
+test("MySQL holdings reach the landing table and an Agent runs Spark on the selected historical snapshot", async t => {
   const port = Number(process.env.SHUDUO_TEST_MYSQL_PORT);
   const readerPassword = process.env.SHUDUO_TEST_MYSQL_READER_PASSWORD;
   const writerPassword = process.env.SHUDUO_TEST_MYSQL_WRITER_PASSWORD;
@@ -37,16 +39,31 @@ test("MySQL holdings reach the landing table through the source, metadata and sy
   // No IF NOT EXISTS: abort before changing data if the fixture name is already in use.
   await writer.query(`CREATE TABLE fixture_holdings (
     position_id VARCHAR(32) NOT NULL PRIMARY KEY,
+    client_id VARCHAR(32) NOT NULL,
     security_code VARCHAR(32) NOT NULL,
+    asset_class VARCHAR(32) NOT NULL,
+    industry VARCHAR(32) NOT NULL,
     market_value DECIMAL(18,2) NOT NULL,
     trade_date DATE NOT NULL
   ) ENGINE=InnoDB`);
-  const insert = "INSERT INTO fixture_holdings (position_id,security_code,market_value,trade_date) VALUES (?,?,?,?)";
+  const insert = `INSERT INTO fixture_holdings (${fields.join(",")}) VALUES (?,?,?,?,?,?,?)`;
   for (const row of initial) await writer.execute(insert, row);
 
   const root = await mkdtemp(join(tmpdir(), "shuduo-mysql-ingestion-"));
-  const app = createV2Server({ root, env: {
+  // The product's normal Spark runner resolves worker.py under the app root;
+  // keep only source code linked while databases and execution files stay temporary.
+  await symlink(join(process.cwd(), "src"), join(root, "src"), "dir");
+  let generations = 0;
+  const app = createV2Server({ root, generator: async ({context}) => {
+    assert.equal(++generations, 1, "Unexpected repeated generation");
+    assert.equal(context.expected, undefined);
+    assert.ok(context.tables.every(t => t.rows === undefined));
+    return {sql:referenceSql, explanation:"仓库虚构场景的固定 SQL 生成器", usage:{total_tokens:1}};
+  }, env: {
     V2_LOCAL_DEVELOPMENT: "true", V2_RELEASE_SCHEDULER_MODE: "DISABLED",
+    JAVA_HOME:process.env.JAVA_HOME ?? join(process.cwd(), ".runtime", "java", "Contents", "Home"),
+    V2_PYTHON:process.env.V2_PYTHON ?? join(process.cwd(), ".runtime", "python", "bin", "python"),
+    V2_RETAIN_SPARK_ARTIFACTS:"false",
     V2_MYSQL_SOURCE_HOST: host, V2_MYSQL_SOURCE_PORT: String(port),
     V2_MYSQL_SOURCE_DATABASE: database, V2_MYSQL_SOURCE_USER: "shuduo_fixture_reader",
     V2_MYSQL_SOURCE_PASSWORD: readerPassword, V2_MYSQL_SOURCE_TABLE_ALLOWLIST: table,
@@ -86,8 +103,9 @@ test("MySQL holdings reach the landing table through the source, metadata and sy
   assert.equal(metadata.classification, "SERVER_MYSQL_SCHEMA_SCAN");
   assert.equal(metadata.rowCount, 2);
   assert.deepEqual(metadata.columns.map(c => [c.name,c.type,c.ordinal,c.nullable]), [
-    ["position_id","VARCHAR",1,false], ["security_code","VARCHAR",2,false],
-    ["market_value","DECIMAL(18,2)",3,false], ["trade_date","DATE",4,false],
+    ["position_id","VARCHAR",1,false], ["client_id","VARCHAR",2,false],
+    ["security_code","VARCHAR",3,false], ["asset_class","VARCHAR",4,false], ["industry","VARCHAR",5,false],
+    ["market_value","DECIMAL(18,2)",6,false], ["trade_date","DATE",7,false],
   ]);
 
   function task(mode) {
@@ -109,7 +127,7 @@ test("MySQL holdings reach the landing table through the source, metadata and sy
   assert.deepEqual(projection(await targetRows()), initial);
 
   await writer.execute("UPDATE fixture_holdings SET market_value=?, trade_date=? WHERE position_id=?",
-    [expected[0][2],expected[0][3],expected[0][0]]);
+    [expected[0][5],expected[0][6],expected[0][0]]);
   await writer.execute(insert, expected[2]);
   const delta = await task("INCREMENTAL_UPSERT");
   const path = `/sync/tasks/${delta.id}`, key = "mysql-delta-run";
@@ -147,8 +165,67 @@ test("MySQL holdings reach the landing table through the source, metadata and sy
   assert.deepEqual(newer.change, {changed:true, added:[], removed:[], typeChanged:[
     {name:"market_value", from:"DECIMAL(18,2)", to:"DECIMAL(18,4)"},
   ]});
+
+  const catalog = await api("/development/synced-positions/archives", 200);
+  const candidate = catalog.candidates.find(item => item.runId === baseline.id);
+  assert.equal(candidate?.taskId, full.id);
+  assert.equal(candidate.sourceType, "SERVER_MYSQL");
+  assert.equal(catalog.candidates.some(item => item.runId === change.id), false);
+  const offer = await api(`/development/synced-positions/archives/${full.id}/${baseline.id}`, 200);
+  assert.equal(offer.sourceType, "SERVER_MYSQL");
+  assert.equal(offer.metadataVersionId, metadata.id);
+  assert.equal(offer.selection.landingSnapshotHash, baseline.landingSnapshotHash);
+  assert.equal(offer.selection.targetHash, baseline.targetHash);
+  const requestId = "original-mysql-holdings-agent";
+  const created = await api("/agent/tasks", 202, {
+    contextId:"holdings-t1", message:"用原同步批次计算客户持仓市值、可用现金、总资产和证券数量",
+    sql:"SELECT 1", syncInput:offer.selection,
+  }, requestId);
+  const deadline = Date.now() + 130000;
+  let taskResult = created;
+  while (["QUEUED","RUNNING"].includes(taskResult.status) && Date.now() < deadline) {
+    await delay(500);
+    taskResult = await api("/agent/tasks/"+created.id, 200);
+  }
+  assert.equal(taskResult.status, "SUCCEEDED", taskResult.stage);
+  assert.equal(taskResult.mode, "SYNTHETIC_MODEL");
+  assert.equal(taskResult.attempts.length, 1);
+  assert.equal(generations, 1);
+  const run = await api("/runs/"+taskResult.runId, 200);
+  assert.equal(run.agentTaskId, taskResult.id);
+  assert.equal(run.revisionId, taskResult.revisionId);
+  assert.equal(run.status, "SUCCEEDED");
+  assert.equal(run.engine, "Apache Spark");
+  assert.equal(run.engineVersion, "3.5.9");
+  assert.equal(run.mainSqlExecuted, true);
+  assert.notEqual(run.testDouble, true);
+  assert.equal(run.validation.passed, true);
+  assert.equal(run.validation.contractId, "securities-synced-holdings-t1-v1");
+  assert.equal(run.validation.regressions.length, 5);
+  assert.ok(run.validation.regressions.every(item => item.passed));
+  assert.deepEqual(run.syncInput, taskResult.syncInput);
+  assert.equal(run.syncInput.runId, baseline.id);
+  assert.equal(run.syncInput.metadataVersionId, metadata.id);
+  assert.equal(run.syncInput.landingSnapshotHash, baseline.landingSnapshotHash);
+  const schema = await api("/runs/"+run.id+"/output-schema", 200);
+  assert.equal(schema.inputMetadata.sourceType, "SERVER_MYSQL");
+  assert.equal(schema.inputMetadata.frozen.metadataVersionId, metadata.id);
+  assert.equal(schema.inputMetadata.current.metadataVersionId, newer.id);
+  assert.equal(schema.inputMetadata.frozen.columns.find(c=>c.name==="market_value").type, "decimal(18,2)");
+  assert.equal(schema.inputMetadata.current.columns.find(c=>c.name==="market_value").type, "decimal(18,4)");
+  assert.deepEqual(run.rows, [
+    {client_id:"CLIENT-001", holding_market_value:"1000.00", available_cash:"300.00", total_assets:"1300.00", security_count:1},
+    {client_id:"CLIENT-002", holding_market_value:"500.00", available_cash:"200.00", total_assets:"700.00", security_count:1},
+  ]);
+  const recovered = await api("/agent/requests/"+requestId, 200);
+  assert.equal(recovered.id, taskResult.id);
+  assert.deepEqual(recovered.syncInput, run.syncInput);
+  assert.deepEqual(await targetRows(), landed);
   t.diagnostic(JSON.stringify({engine:"MySQL", version:probe.serverVersion, sourceTable:table, metadataFields:fields.length,
     fullRows:baseline.finalCount, inserted:change.inserted, updated:change.updated, unchanged:change.unchanged,
     finalRows:landed.length, totalMarketValue:"1900.00", watermark:change.watermark, originalRequestRecovered:true,
-    sourceScaleChange:drift.code, landedRowsPreserved:true}));
+    sourceScaleChange:drift.code, landedRowsPreserved:true, sqlInput:"MYSQL_FULL_ARCHIVE", originalSnapshotMatched:true,
+    generator:"SYNTHETIC_MODEL", sparkVersion:run.engineVersion, sparkRuns:taskResult.attempts.length,
+    regressionScenarios:run.validation.regressions.length, archivedCustomerAssets:run.rows.map(row=>row.total_assets),
+    originalAndCurrentMetadataMatched:true}));
 });

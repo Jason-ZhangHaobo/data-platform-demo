@@ -64,7 +64,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo sql materialized-archives
   shuduo sql materialized-positions --task-id UUID --run-id UUID
   shuduo sql sync-archives
-  shuduo sql archived-positions --task-id UUID --run-id UUID
+  shuduo sql archived-positions --task-id UUID --run-id UUID [--source-type SERVER_MYSQL|LOCAL_CSV]
   shuduo sql compare-runs --run-id RUN_ID --baseline-run-id RUN_ID
   shuduo budget
   shuduo manual publication --source-run-id RUN_ID --id MANUAL_DELIVERY_ID --package-digest SHA256 --verification-id ID [--release-id ID]
@@ -525,7 +525,10 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if(resource==='sql'&&action==='materialized-archives')result=await readMaterializedSyncSqlArchives(client);
     else if(resource==='sql'&&action==='materialized-positions')result=await readMaterializedSyncedPositions(client,{taskId:required(parsed.options,'task_id'),runId:required(parsed.options,'run_id')});
     else if(resource==='sql'&&action==='sync-archives')result=await readSyncSqlArchives(client);
-    else if(resource==='sql'&&action==='archived-positions')result=await readArchivedSyncedPositions(client,{taskId:required(parsed.options,'task_id'),runId:required(parsed.options,'run_id')});
+    else if(resource==='sql'&&action==='archived-positions')result=await readArchivedSyncedPositions(client,{
+      taskId:required(parsed.options,'task_id'),runId:required(parsed.options,'run_id'),sourceType:parsed.options.source_type,
+      targetHash:parsed.options.target_hash,landingSnapshotHash:parsed.options.landing_snapshot_hash,
+    });
     else if(resource==='sql'&&action==='compare-runs')result=await readSqlRunComparison(client,{runId:required(parsed.options,'run_id'),baselineRunId:required(parsed.options,'baseline_run_id')});
     else if (resource === "budget" && !action)
       result = await client.request("/budget");

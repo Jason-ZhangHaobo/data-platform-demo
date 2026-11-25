@@ -27,10 +27,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: deploy/spark-worker/requirements.txt
       - name: Install the existing SQL parser for lineage verification
         run: python3 -m pip install --require-hashes --no-deps --requirement deploy/sql-lineage-requirements.txt
       - name: Run quality gate
         run: npm run ci
+      - name: Install the locked Spark runtime for the MySQL archive journey
+        run: python3 -m pip install --require-hashes --no-deps --requirement deploy/spark-worker/requirements.txt
       - name: Verify MySQL source ingestion on the runner
         shell: bash
         run: |
@@ -48,7 +52,9 @@ jobs:
           GRANT SELECT ON \`shuduo\_ingestion\_test\`.* TO 'shuduo_fixture_reader'@'127.0.0.1';
           GRANT CREATE, SELECT, INSERT, UPDATE, ALTER ON shuduo_ingestion_test.fixture_holdings TO 'shuduo_fixture_writer'@'127.0.0.1';
           SQL
-          SHUDUO_TEST_MYSQL_PORT=3306 \
+          JAVA_HOME="${JAVA_HOME_17_X64:?Runner JDK 17 is required}" \
+            V2_PYTHON="$(command -v python3)" \
+            SHUDUO_TEST_MYSQL_PORT=3306 \
             SHUDUO_TEST_MYSQL_READER_PASSWORD="$reader_password" \
             SHUDUO_TEST_MYSQL_WRITER_PASSWORD="$writer_password" \
             node --test scripts/accept-mysql-ingestion.mjs

@@ -14,7 +14,7 @@ function FrozenSourceSchema({ evidence }: { evidence: SyncSqlOutputSchema["input
     : differences.length ? `${differences.length} 个源字段与当前采集版本不同。本次执行使用冻结输入。`
       : "冻结输入与当前已采集源的字段结构一致。";
   return <details className="agent-dev-source-schema" open={differences.length > 0 || undefined}>
-    <summary>冻结输入元数据</summary>
+    <summary>冻结输入元数据{evidence.sourceType==="SERVER_MYSQL" && " · MySQL"}</summary>
     <p>同步批次 <code title={evidence.syncRunId}>{evidence.syncRunId.slice(0,8)}</code> · 原元数据 <code title={frozen.metadataVersionId}>{frozen.metadataVersionId.slice(0,8)}</code>
       {current && current.metadataVersionId !== frozen.metadataVersionId && <> · 当前元数据 <code title={current.metadataVersionId}>{current.metadataVersionId.slice(0,8)}</code></>}</p>
     <p>{summary}</p>
