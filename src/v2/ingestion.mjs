@@ -39,6 +39,14 @@ const canonical = (value) =>
   );
 const stableHash = (value) => hash(canonical(value));
 export const ingestionSchemaHash = columns => stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable })));
+
+// Legacy MySQL scans recorded only DECIMAL. Compare those frozen columns at
+// their recorded granularity until the user collects a new metadata version.
+function mysqlColumnsForComparison(columns, previous = []) {
+  const coarseDecimals = new Set(previous.filter(c => c.type === "DECIMAL").map(c => c.name));
+  return columns.map(column => coarseDecimals.has(column.name) && column.type.startsWith("DECIMAL(")
+    ? { ...column, type: "DECIMAL" } : column);
+}
 const landingHash = rows => stableHash(rows.map(({ sourceHash: _source, syncedAt: _time, ...row }) => row));
 const staleSyncErrors = {
   SOURCE_REVISION_STALE: "数据源版本已变化，请新建同步任务版本",
@@ -648,7 +656,7 @@ export class IngestionManager {
     const described = await this.serverMysqlAdapter.describe(revision.tableName),
       columns = described.columns.map((column) => ({ ...column, distinctCount: undefined })),
       prior = this.store.list("source_metadata", this.project).find((item) => item.sourceId === source.id),
-      change = schemaChange(prior, columns),
+      change = schemaChange(prior, mysqlColumnsForComparison(columns, prior?.columns)),
       metadata = this.store.create("source_metadata", this.project, {
         sourceId: source.id,
         revisionId: revision.id,
@@ -1158,18 +1166,12 @@ export class IngestionManager {
       if (!metadata || source.currentMetadataId !== metadata.id)
         throw fail(409, "元数据版本已变化，请重新配置同步任务", "METADATA_STALE");
       const revision = this.#revision(task.sourceRevisionId),
-        described = await this.serverMysqlAdapter.describe(revision.tableName),
-        currentColumns = described.columns.map((column) => ({
-          ...column,
-          distinctCount: undefined,
-        })),
-        currentSchemaHash = stableHash(
-          currentColumns.map(({ name, type, nullable }) => ({ name, type, nullable })),
-        );
-      if (currentSchemaHash !== metadata.schemaHash)
+        snapshot = await this.serverMysqlAdapter.readRows(revision.tableName),
+        currentColumns = snapshot.columns ?? (await this.serverMysqlAdapter.describe(revision.tableName)).columns;
+      if (ingestionSchemaHash(metadata.columns) !== metadata.schemaHash ||
+          ingestionSchemaHash(mysqlColumnsForComparison(currentColumns, metadata.columns)) !== metadata.schemaHash)
         throw fail(409, "MySQL表结构在元数据采集后发生变化", "SOURCE_CHANGED");
-      const snapshot = await this.serverMysqlAdapter.readRows(revision.tableName),
-        sourceKeyFields = task.keyFields.map(
+      const sourceKeyFields = task.keyFields.map(
           (target) =>
             Object.entries(task.mapping).find(([, mapped]) => mapped === target)?.[0],
         ),
