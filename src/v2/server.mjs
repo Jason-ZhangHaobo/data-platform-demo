@@ -44,6 +44,7 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,as
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
+import { readDerivedResultComparison } from "./derived-result-comparison.mjs";
 import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, storedFundFileRehearsal, pinnedCloudDeliverySource,storedBackgroundRehearsalEvidence,storedRehearsalSettlementEvidence } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import { exactPublicationReceipt, projectCloudReleaseBatchStage } from "./cloud-release-evidence.mjs";
@@ -4250,6 +4251,23 @@ export function createV2Server(options = {}) {
         return json(res, 200, store.list("agent", PROJECT)
           .filter(task => mayReadDurableAgent(task, auth.sessionFromHeaders(req.headers)))
           .map(exposeDurableTask));
+      const derivedComparisonRoute=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]{36})\/derivation-comparison$/);
+      if (method==='GET' && derivedComparisonRoute) {
+        const actorId=workspaceReadActor(req);
+        if (!actorId) throw Object.assign(fail(401,'请先登录原任务账号'),{code:'AUTHENTICATION_REQUIRED'});
+        if (url.searchParams.size) throw fail(422,'派生对照只接受原派生任务编号');
+        const read=(kind,id)=>{
+          const item=store.get(kind,id,PROJECT);
+          if (item) {
+            if (kind==='agent') requireDurableAgentOwner(item,req);
+            else requireDevelopmentOwner(kind,item,req);
+          }
+          return item;
+        };
+        const task=read('agent',derivedComparisonRoute[1]);
+        if (!task) throw fail(404,'未找到当前项目的任务');
+        return json(res,200,readDerivedResultComparison({task,project:PROJECT,actorId,read}));
+      }
       const clarificationSourceRoute=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/clarification-source$/);
       if(clarificationSourceRoute&&method==='GET'){
         const parent=get('agent',clarificationSourceRoute[1]);requireDurableAgentOwner(parent,req);

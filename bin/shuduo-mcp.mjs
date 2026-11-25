@@ -32,6 +32,7 @@ import {readBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import{publishedReportSourceSchema,publishedReportMetricIds}from'../src/v2/published-report-request.mjs';
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
+import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
 import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
@@ -85,6 +86,7 @@ const tools = [
     inputSchema: { type: "object", additionalProperties: false, required: ["requestId", "basisDigest", "confirm"],
       properties: { requestId: { type: "string", format: "uuid" }, basisDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, confirm: { const: true } } },
     annotations: { readOnlyHint: false } },
+  {name:'agent_derived_result_comparison',description:'读取本人派生任务和原任务已核验的客户资产结果，按客户对照持仓、现金、总资产和证券数量。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'}},required:['taskId']},annotations:{readOnlyHint:true}},
   {name:'agent_clarification_source',description:'只读本人原SQL澄清问题、输入与摘要，不调用模型或计算。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'}},required:['taskId']},annotations:{readOnlyHint:true}},
   {name:'agent_clarification_reply',description:'明确回答已读取的原问题后新建独立任务，可能调用模型和Spark；保留原用量，不继承批准，不计直接自主完成。未知结果先按requestId查询，不自动重试。',inputSchema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},evidenceDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},answer:{type:'string',minLength:1,maxLength:1000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['taskId','evidenceDigest','answer','requestId','confirm']},annotations:{readOnlyHint:false}},
   {name:'manual_publication_detail',description:'只读本人独立手工交付的确切发布、批次和告警，不借用Agent身份或创建新计算。',inputSchema:{type:'object',additionalProperties:false,properties:manualPublicationProperties,required:manualPublicationRequired},annotations:{readOnlyHint:true}},
@@ -498,6 +500,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     return args.sourceKind==='MANUAL'?readManualDeliveryWorkflow(client,args):client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/workflow`);
   }
   if(name==='agent_context_derive')return createContextDerivedTask(client,args);
+  if(name==='agent_derived_result_comparison')return readDerivedComparison(client,args);
   if(name==="agent_request_lookup"){
     if(!/^[A-Za-z0-9_-]{1,100}$/.test(args.requestId??""))throw Error("原请求编号格式不合法");
     return client.request(`/agent/requests/${encodeURIComponent(args.requestId)}`);

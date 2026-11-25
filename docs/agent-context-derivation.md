@@ -45,6 +45,33 @@ shuduo agent derive --task-id TASK_ID --revision-id REVISION_ID \
 
 MCP 工具 `agent_context_derive` 接收 `derivation`、`contextId`、`message`、`requestId`、`confirm:true`。CLI/MCP 都只读原代码后提交一次相同 API，不自动推进持久任务、审批或发布；本机新任务的既有执行器可能立即开始模型与Spark，所以这不是只读操作。结果未知时先用 `shuduo agent request --request-id UUID` 或 `agent_request_lookup` 找回原任务，不换编号重提。
 
+## 查看派生前后的金额
+
+在派生任务中选择 **查看金额对照**。先看合计，再按客户核对口径内资产、持仓市值、可用现金和证券数量。展开「查看运行来源」可找到两次保存的运行编号。
+
+| 虚构客户 | 原可用现金 | 新可用现金 | 原口径内资产 | 新口径内资产 | 资产差额 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CLIENT-001 | 300.00 | 800.00 | 1,800.00 | 2,300.00 | +500.00 |
+| CLIENT-002 | 200.00 | 200.00 | 950.00 | 950.00 | 0.00 |
+| 合计 | 500.00 | 1,000.00 | 2,750.00 | 3,250.00 | +500.00 |
+
+金额单位为元。示例中可用现金贡献了全部资产差额。两侧数值来自保存的结果行，变化的业务原因需结合源数据另行确认。证券数量合计按各客户统计数求和，同一证券在两位客户的持仓中可各计一次。
+
+| 入口 | 使用方式 |
+| --- | --- |
+| HTTP | `GET /api/v2/agent/tasks/{派生任务编号}/derivation-comparison` |
+| CLI | `shuduo agent compare-derived --id DERIVED_TASK_ID` |
+| MCP | `agent_derived_result_comparison`，参数为 `{"taskId":"派生任务 UUID"}` |
+
+三个入口都从派生任务登记的来源查回本人、当前项目下的原任务。返回金额前，两侧分别核对代码摘要、原运行、独立断言，以及同一交易日期、顾问范围和客户集合。已核验返回 `MATCHED`；派生任务运行中可返回 `PENDING`；缺少原运行、客户范围变更或无法确认来源时返回 `UNAVAILABLE` 及原因。后两种状态均应清除上次显示的金额。读取对照只使用已保存的结果。
+
+本机真实 Spark 的复核命令如下，开发模型使用本机合成实现。
+
+```sh
+SHUDUO_TEST_LOCAL_SPARK_DERIVED_AMOUNTS=true node --test \
+  --test-name-pattern='owner reads exact cash-change amounts' test/v2/public-development-journey.test.mjs
+```
+
 ## 验收边界
 
 必须验证准确目标与原 SQL、刷新后的来源恢复、提交前无计算、未知响应找回、重复提交不重复任务、来源和权限反例、原历史不变及新交付包重新绑定。合成模型/Spark与本机 HTTP/SQLite 可证明接口和流程，不证明真实模型改写正确率、云端部署或整体 85% 完成率。固定历史评测集与分母不因增加此入口而自动改变。

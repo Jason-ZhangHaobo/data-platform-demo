@@ -41,6 +41,7 @@ import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} from '../src/v2/agent-consumption-request.mjs';
 import {createContextDerivedTask} from "../src/v2/agent-derivation-client.mjs";
+import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
 import {readAssistedContinuation,createAssistedContinuation} from '../src/v2/assisted-continuation-client.mjs';
@@ -129,6 +130,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent repair-basis --source-run-id FAILED_RUN_ID --baseline-run-id SUCCEEDED_RUN_ID
   shuduo agent repair-compare --source-run-id FAILED_RUN_ID --baseline-run-id SUCCEEDED_RUN_ID --message "参考基线修正" --request-id UUID --confirm
   shuduo agent derive --task-id TASK_ID --revision-id REVISION_ID --run-id RUN_ID --revision-hash SHA256 --context stock-cash-t1 --message "改为股票持仓和现金口径" --request-id UUID --confirm
+  shuduo agent compare-derived --id DERIVED_TASK_ID
     从原成功版本创建独立任务，可能执行模型与Spark；原批准不继承。未知结果先用 agent request 查询，不换请求编号重试。
   shuduo services task-evidence [--task-id AGENT_TASK_ID | --manual-delivery-task-id MANUAL_DELIVERY_ID] --package-digest SHA256 [--release-id RELEASE_ID [--batch-id BATCH_ID] [--call-id-digest SHA256]]
   shuduo agent deliveries [--source-id AGENT_TASK_ID]
@@ -807,6 +809,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       if(parsed.positionals.length!==2)throw Error('续改命令包含额外参数');
       for(const token of argv.filter(v=>v.startsWith('--'))){const key=token.slice(2).replaceAll('-','_');if(!allowed.has(key)||seen.has(key))throw Error('续改命令包含未知或重复参数');seen.add(key);}
       const taskId=required(parsed.options,'id');result=action==='continuation'?await readAssistedContinuation(client,{taskId}):await createAssistedContinuation(client,{taskId,message:required(parsed.options,'message'),requestId:required(parsed.options,'request_id'),confirm:parsed.options.confirm});
+    }
+    else if(resource==='agent'&&action==='compare-derived'){
+      const flags=argv.filter(v=>v.startsWith('--'));
+      if (parsed.positionals.length!==2 || flags.some(v=>!['--id','--base-url'].includes(v)) || new Set(flags).size!==flags.length)
+        throw Error('派生对照只接受任务编号及服务地址');
+      result=await readDerivedComparison(client,{taskId:required(parsed.options,'id')});
     }
     else if(resource==='agent'&&action==='derive'){
       const allowed=new Set(['task_id','revision_id','run_id','revision_hash','context','message','request_id','confirm','base_url','help']),seen=new Set();

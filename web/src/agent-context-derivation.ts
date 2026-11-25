@@ -25,6 +25,13 @@ export function validContextDerivation(value:unknown):value is ContextDerivation
   return Object.keys(source).length===sourceKeys.length&&sourceKeys.every(key=>Object.hasOwn(source,key))&&source.kind==="REGISTERED_CONTEXT_CHANGE"&&
     uuid(source.taskId)&&uuid(source.revisionId)&&uuid(source.runId)&&hash(source.revisionHash);
 }
+export function derivedParentCheckpoint(value:DerivedFrom|undefined,childId:string,childContextId:string) {
+  if(!value || !knownContext(value.contextId) || value.taskId===childId || value.contextId===childContextId) return;
+  const {contextId,validationContractId,...reference}=value;
+  if(!validContextDerivation(reference) || validationFamilyForContextId(contextId)?.id!==validationContractId) return;
+  const {taskId,revisionId,runId,revisionHash}=reference;
+  return {taskId,revisionId,runId,revisionHash,contextId,validationContractId};
+}
 export function contextDerivationFromLocation(href:string):DerivationLocation{
   const invalid=():DerivationLocation=>({status:"INVALID",error:"口径变更来源链接不完整或冲突；未采用其他任务或最新版本。"});
   let query:URLSearchParams;try{query=new URL(href).searchParams;}catch{return invalid();}

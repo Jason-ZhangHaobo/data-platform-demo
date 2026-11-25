@@ -51,12 +51,10 @@ export function validStoredAgentDerivation(task,read) {
   }
 }
 
-// Returns genealogy only, never approval, budget, result rows or inherited run
-// pointers. Successful source and new target each keep their own context family.
-export function resolveAgentContextDerivation({ derivation, actorId, targetContextId, currentSql, project, read }) {
-  const selected = validateAgentContextDerivation(derivation), targetFamily = validationFamilyForContext(targetContextId);
-  if (!targetFamily || !getContext(targetContextId))
-    throw failure("AGENT_CONTEXT_TARGET_INVALID", "请选择已登记的不同业务口径");
+// Used by both creation and the read-only comparison. Callers select an exact
+// revision and run; a later run with similar rows cannot stand in for them.
+export function verifiedAgentContextExecution({ derivation, actorId, currentSql, project, read }) {
+  const selected = validateAgentContextDerivation(derivation);
   if (typeof actorId !== "string" || !actorId || typeof project !== "string" || !project ||
       typeof currentSql !== "string" || typeof read !== "function") throw invalidSource();
   const task = read("agent", selected.taskId), revision = read("revision", selected.revisionId), run = read("run", selected.runId);
@@ -73,6 +71,15 @@ export function resolveAgentContextDerivation({ derivation, actorId, targetConte
       run.agentTaskId !== task.id || run.revisionId !== revision.id || run.status !== "SUCCEEDED" || run.engine !== "Apache Spark" || run.mainSqlExecuted !== true ||
       !Array.isArray(run.rows) || run.rows.length > 1000 || !run.rows.every(row => row && typeof row === "object" && !Array.isArray(row)) ||
       developmentVerificationReport(task, run, revision).status !== "PASSED") throw invalidSource();
+  return { selected, task, revision, run, family };
+}
+
+// Returns genealogy only, never approval, budget, result rows or inherited run
+// pointers. Successful source and new target each keep their own context family.
+export function resolveAgentContextDerivation({ derivation, actorId, targetContextId, currentSql, project, read }) {
+  if (!validationFamilyForContext(targetContextId) || !getContext(targetContextId))
+    throw failure("AGENT_CONTEXT_TARGET_INVALID", "请选择已登记的不同业务口径");
+  const { selected, task, family } = verifiedAgentContextExecution({ derivation, actorId, currentSql, project, read });
   if (targetContextId === task.contextId)
     throw failure("AGENT_CONTEXT_TARGET_INVALID", "目标口径与原任务相同，请选择已登记的不同业务口径");
   return { ...selected, contextId: task.contextId, validationContractId: family.id };

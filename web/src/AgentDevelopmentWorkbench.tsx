@@ -28,7 +28,7 @@ import {readAssistedContinuation,assistedContinuationReceiptMatches} from '../..
 import {readManualContinuation,manualContinuationReceiptMatches} from '../../src/v2/manual-continuation-client.mjs';
 import {AgentModelRecovery} from "./AgentModelRecovery";
 import {AgentContextDerivation} from "./AgentContextDerivation";
-import {contextDerivationFromLocation,contextDerivationLocation,clearContextDerivation,contextDerivationReference,contextDerivationAccessReason,readContextDerivationSource,contextDerivationSubmitReason,contextDerivationBody,contextDerivationReceiptMatches,contextDerivationReceiptContent} from "./agent-context-derivation";
+import {contextDerivationFromLocation,contextDerivationLocation,clearContextDerivation,contextDerivationReference,contextDerivationAccessReason,readContextDerivationSource,contextDerivationSubmitReason,contextDerivationBody,contextDerivationReceiptMatches,contextDerivationReceiptContent,derivedParentCheckpoint} from "./agent-context-derivation";
 import type {ContextDerivationDraft,VerifiedDerivationSource,DerivedFrom} from "./agent-context-derivation";
 import {ValidationDetails,ValidationResultScope} from "./ValidationDetails";
 import {SyncOutputSchemaDetails} from "./SyncOutputSchemaDetails";
@@ -51,6 +51,7 @@ const SqlEditor = lazy(() => import("./SqlEditor"));
 const ManualDeliveryWorkbench = lazy(async () => ({default:(await import("./DeliveryWorkbench")).DeliveryWorkbench}));
 const RunColumnLineagePanel=lazy(()=>import('./RunColumnLineagePanel'));
 const RunComparisonPanel=lazy(()=>import('./RunComparisonPanel'));
+const DerivedAmountComparison=lazy(()=>import('./DerivedAmountComparison'));
 const StandaloneManualDeliveryPanel=lazy(async()=>({default:(await import('./StandaloneManualDeliveryPanel')).StandaloneManualDeliveryPanel}));
 const OpsPublicationPanel=lazy(async()=>({default:(await import('./OpsPublicationPanel')).OpsPublicationPanel}));
 type Context = { id: string; name: string; definition: string; businessDate?:string; validationFamily?:ValidationFamily; capabilities?:{delivery?:boolean;agentDevelopment?:boolean;fundPreparation?:boolean};outputContract?:{id:string;fields:{name:string;label:string}[]}; tables: { name: string; columns: [string, string][] }[] };
@@ -236,6 +237,9 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const derivationAccess={canWrite:originalCanWrite,readOnly,taskOnly,sourceLocked:sourceReturnActive,publicationOnly:Boolean(publicationTarget),working,
     pending:manualUnconfirmed||Boolean(pendingSaveKey)||Boolean(pendingAgentKey)||runPending,dirty};
   const derivationReference=fundTask?undefined:contextDerivationReference(task,run,baselineRevisionId);
+  const derivedParent=task&&derivedParentCheckpoint(task.derivedFrom,task.id,task.contextId);
+  const comparisonScopeVisible=!loading&&!working&&!dirty&&!taskReadFailure&&!returnSourceError&&!expectedSourceError&&
+    runRead.state==="IDLE"&&(!taskOnly||task?.id===targetTaskId)&&(!publicationTarget||task?.id===publicationTarget.taskId);
   const derivationStartReason=contextDerivationAccessReason({...derivationAccess,unsentMessage:Boolean(message.trim())})||(!derivationReference?"请选择当前已成功核验的原生SQL Agent版本，人工版本与历史失败批次不适用。":"");
   const derivationSubmitReason=derivationState!=="READY"?derivationError||"原冻结来源尚未核验，请等待或重新读取。":contextDerivationSubmitReason(derivationDraft,derivationSource,derivationAccess,ready,draft);
   function accept(current: Task) {
@@ -848,7 +852,14 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
             {task.sourceKind==='MANUAL'&&<div className="agent-dev-notice agent-dev-assisted" role="status"><strong>人工辅助修正 · 独立开发结果</strong><p>工程师引用了历史开发依据。代码、运行与核验保留人工辅助来源，不计 Agent 自主完成。交付文件与演练使用下方人工辅助流程，须重新审阅确切版本。</p></div>}
             {task.manualContinuation&&<div className="agent-dev-notice agent-dev-assisted" role="status"><strong>基于手工成功版本修改</strong><p>手工版本 {task.manualContinuation.revisionId.slice(0,8)}、运行 {task.manualContinuation.runId.slice(0,8)}。原代码和结果保留；本次由Agent生成独立版本，继续记录人工来源并重新核验交付。</p></div>}
             {task.assistedContinuation&&<div className="agent-dev-notice agent-dev-assisted" role="status"><strong>基于成功版本续改 · 第{task.assistedContinuation.depth}次</strong><p>父任务 {task.assistedContinuation.taskId.slice(0,8)}，父版本 {task.assistedContinuation.revisionId.slice(0,8)}。原文件与批准保留，本任务需重新核验和交付；人工参考归因继续保留。</p><button className="button" disabled={working} onClick={()=>void selectTask(task.assistedContinuation!.taskId)}>查看父任务</button></div>}
-            {task.derivedFrom&&<div className="agent-dev-notice" role="status"><strong>已登记口径变更 · 独立新任务</strong><p>来自任务 {task.derivedFrom.taskId.slice(0,8)}、版本 {task.derivedFrom.revisionId.slice(0,8)}。原口径：{contexts.find(item=>item.id===task.derivedFrom?.contextId)?.name??task.derivedFrom.contextId}；原任务及批准不变，新任务需重新核验、交付和审阅。</p></div>}
+            {derivedParent&&<div className="agent-dev-notice" role="status"><strong>已登记口径变更 · 独立新任务</strong><p>来自任务 {derivedParent.taskId.slice(0,8)}、版本 {derivedParent.revisionId.slice(0,8)}。原口径：{contexts.find(item=>item.id===derivedParent.contextId)?.name??derivedParent.contextId}；原任务及批准不变，新任务需重新核验、交付和审阅。</p>
+              {comparisonScopeVisible&&!derivationReference&&<small>选中核验通过的新口径运行后，可查看两次运行的金额对照。</small>}
+            </div>}
+            {derivedParent&&comparisonScopeVisible&&derivationReference&&run?.validationContractId&&<Suspense fallback={null}>
+              <DerivedAmountComparison key={JSON.stringify([readOnly,originalCanWrite,canPublish,taskOnly,targetTaskId,publicationTarget,sourceReturnActive])} api={api}
+                parent={derivedParent} child={{taskId:task.id,revisionId:derivationReference.revisionId,revisionHash:derivationReference.revisionHash,
+                  runId:derivationReference.runId,contextId:task.contextId,validationContractId:run.validationContractId}}/>
+            </Suspense>}
             <div className="agent-dev-message assistant"><strong>{automatic ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}{automatic && task.stage === "READY_FOR_MODEL" ? "正在请求模型生成或修正…" : stageText[task.stage ?? task.status] ?? task.status}</strong><p>{task.explanation || "需求已记录，将使用上方已确认的上下文和口径。"}</p>
               {task.error && <p className="agent-dev-error-text">{task.error}</p>}
               {task.attempts.filter(a=>a.diagnostic).map(a=><p key={`diagnostic-${a.attempt}`} className="agent-dev-error-text">第{a.attempt}次安全诊断：{a.diagnostic!.code} · 阶段 {a.diagnostic!.phase}{a.diagnostic!.httpStatus?` · HTTP ${a.diagnostic!.httpStatus}`:""} · {a.diagnostic!.elapsedMs}ms。{a.diagnostic!.requestMayHaveBeenSent?"请求可能已发送，不能据此确认是否计费。":"失败发生在请求发送前；原预算预留仍保留。"}</p>)}
