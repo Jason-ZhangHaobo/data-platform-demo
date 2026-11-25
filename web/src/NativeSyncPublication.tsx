@@ -2,6 +2,7 @@ import {useEffect,useRef,useState}from'react';
 import {readNativeSyncPublication,submitNativeSyncPublication,nativePublicationLocation,pendingNativePublication}from'../../src/v2/native-sync-publication-client.mjs';
 import type{NativeSyncPublicationRequest,NativeSyncPublication as Receipt}from'../../src/v2/native-sync-publication-client.mjs';
 import type{NativeSyncReview,NativeSyncReviewBinding}from'../../src/v2/native-sync-review-client.mjs';
+import {nativeBatchServiceHref} from './native-sync-service-handoff';
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
 const labels={version:'明确批准上方包摘要、代码和演练所对应的这个版本',batches:'同意启动同一冻结业务日的两批本机虚构数据测试（5秒、35秒）',scope:'知悉这会实际运行两批Spark；不属于公网或生产部署'};
 const states:Record<string,string>={SCHEDULED:'等待计时',RUNNING:'运行中',SUCCEEDED:'结果及监控已核对',FAILED:'执行失败',INTERRUPTED:'结果未知，待查证',CANCELLED:'已停止'};
@@ -23,6 +24,13 @@ export function NativeSyncPublication({api,binding,review,current,enabled}:{api:
   {record?.phase==='APPROVED'&&<><p>原批准已记录，尚未激活。有效至 {record.approval?.expiresAt}；继续只启动原批准的两批。</p><button className="button primary" disabled={!mayWrite||unknown} onClick={()=>void publish(true)}>继续激活原批准的两批</button></>}
   {record?.phase==='EXPIRED'&&<><p>原批准已到期，未自动重新批准。</p><button className="button" disabled={!enabled||!current||busy} onClick={restart}>重新审阅一个新发布请求</button></>}
   {(!request||record?.phase==='NOT_FOUND')&&enabled&&current&&<fieldset disabled={!mayWrite||unknown}><legend>明确批准此版本</legend>{Object.entries(labels).map(([id,label])=><label key={id}><input type="checkbox" checked={Boolean(checked[id])} onChange={e=>setChecked(v=>({...v,[id]:e.target.checked}))}/>{label}</label>)}<button className="button primary" disabled={!mayWrite||!all||unknown} onClick={()=>void publish()}>批准并启动此版本两批本机测试</button></fieldset>}
-  {record?.monitor&&<div className="native-sync-monitor" role="status"><strong>{record.monitor.completed?'两批结果及监控证据已核对':record.monitor.health==='RESULT_UNKNOWN'?'已有执行结果未知，不能当作成功':record.monitor.status==='CANCELLED'?'此发布已停止，历史批次保留':'两批测试尚未全部核验通过'}</strong><p>冻结业务日 {record.monitor.businessDate} · 监控事件 {record.monitor.monitorEventCount} · 未关闭告警 {record.monitor.openAlertCount}</p><ol>{record.monitor.runs.map(run=><li key={run.id}><strong>第{run.sequence}批：{states[run.status]}</strong><small>{run.id}</small><p>{run.schedulerTriggered?'已由本机计时器触发':'尚未证明触发'}{run.resultUnknown?' · 原执行结果仍未知':''}{run.status==='SUCCEEDED'?` · ${run.rowCount}行结果 · ${run.regressionCount}场景通过`:''}</p></li>)}</ol>{record.monitor.status==='ACTIVE_LOCAL'&&<button className="button" disabled={!mayWrite||unknown} onClick={()=>void stop()}>停止此版本后续本机批次</button>}<p>仅本机测试证据，不计正式云端或真实模型完整E2E。查询不会重跑失败或未知批次。</p></div>}
+  {record?.monitor&&<div className="native-sync-monitor" role="status"><strong>{record.monitor.completed?'两批结果及监控证据已核对':record.monitor.health==='RESULT_UNKNOWN'?'已有执行结果未知，不能当作成功':record.monitor.status==='CANCELLED'?'此发布已停止，历史批次保留':'两批测试尚未全部核验通过'}</strong><p>冻结业务日 {record.monitor.businessDate} · 监控事件 {record.monitor.monitorEventCount} · 未关闭告警 {record.monitor.openAlertCount}</p><ol>{record.monitor.runs.map(run=>{
+    const serviceHref=!busy&&!error&&!unknown ? nativeBatchServiceHref(location.href,binding,review,record,run.id) : undefined;
+    return <li key={run.id}>
+      <strong>第{run.sequence}批：{states[run.status]}</strong><small>{run.id}</small>
+      <p>{run.schedulerTriggered?'已由本机计时器触发':'尚未证明触发'}{run.resultUnknown?' · 原执行结果仍未知':''}{run.status==='SUCCEEDED'?` · ${run.rowCount}行结果 · ${run.regressionCount}场景通过`:''}</p>
+      {serviceHref&&<a className="button" href={serviceHref} target="_blank" rel="noopener" aria-label={`用第 ${run.sequence} 批开发接口（新标签页）`}>用第 {run.sequence} 批开发接口</a>}
+    </li>;
+  })}</ol>{record.monitor.status==='ACTIVE_LOCAL'&&<button className="button" disabled={!mayWrite||unknown} onClick={()=>void stop()}>停止此版本后续本机批次</button>}<p>仅本机测试证据，不计正式云端或真实模型完整E2E。查询不会重跑失败或未知批次。</p></div>}
  </section>;
 }

@@ -3,6 +3,46 @@ import test from 'node:test';import assert from 'node:assert/strict';import {ran
 import {setup}from'./fixtures/native-sync-agent.mjs';import{PROJECT}from'../../src/v2/server.mjs';import{loadDeliveryDirectory,sha256,resolveDeliverySchedule}from'../../src/v2/delivery.mjs';import{syncSqlOutputColumns}from'../../src/v2/sync-sql-input.mjs';import{readNativeSyncReview}from'../../src/v2/native-sync-review-client.mjs';import{readNativeSyncPublication,submitNativeSyncPublication,nativeSyncReceiptPath,nativePublicationLocation,pendingNativePublication}from'../../src/v2/native-sync-publication-client.mjs';import{publishedReportHash}from'../../src/v2/published-report-source.mjs';import{runV2Cli}from'../../bin/shuduo.mjs';import{handleV2Mcp}from'../../bin/shuduo-mcp.mjs';
 // Every execution in this suite is an explicit synthetic protocol fixture, not Spark.
 import {prepared}from'./fixtures/native-sync-release.mjs';
+import {nativeBatchServiceHref} from '../../web/src/native-sync-service-handoff.ts';
+import {serviceSourceFromLocation,serviceSourcesPath,sourceBoundServices,defaultBoundSourceRun} from '../../web/src/service-source-binding.ts';
+import {serviceBatchFromLocation} from '../../web/src/service-batch-scope.ts';
+
+test('a completed native monitor opens services on the chosen original batch', async t=>{
+  const f=await prepared(t), origin='http://127.0.0.1/v2/';
+  const review=await readNativeSyncReview(f.client,f.binding);
+  const started=await submitNativeSyncPublication(f.client,f.request,{confirm:true});
+  const [first,second]=started.monitor.runs;
+  for (const batch of [first,second]) {
+    const pending=await readNativeSyncPublication(f.client,f.request);
+    assert.equal(nativeBatchServiceHref(origin,f.binding,review,pending,second.id),undefined);
+    f.setClock(Date.parse(batch.scheduledTriggerAt));
+    await f.app.releaseScheduler.enqueue(batch.id);
+  }
+  const done=await readNativeSyncPublication(f.client,f.request);
+  for(const batch of [first,second]){
+    const path=nativeBatchServiceHref(origin+'?module=agent-center&sync_release=old',f.binding,review,done,batch.id);
+    const url=new URL(path,origin);
+    assert.equal(url.searchParams.has('sync_release'),false);
+    const location=serviceSourceFromLocation(url.href);
+    assert.equal(location.status,'VALID');
+    assert.deepEqual(location.binding,{sourceKind:'AGENT',scope:'LOCAL_TEST_ONLY',taskId:f.binding.taskId,
+      packageDigest:f.binding.packageDigest,releaseId:done.monitor.releaseId,revisionId:f.revision.id,runId:f.run.id});
+    const pin=serviceBatchFromLocation(url.href,location.binding);
+    assert.equal(pin,batch.id);
+    const runs=await f.client.request(serviceSourcesPath(location.binding));
+    const selected=runs.filter(run=>run.id===pin);
+    assert.deepEqual(selected.map(run=>run.sequence),[batch.sequence]);
+    assert.equal(defaultBoundSourceRun(location.binding,selected,[]),batch.id);
+    assert.equal(defaultBoundSourceRun(location.binding,[],[]),undefined);
+    assert.deepEqual(sourceBoundServices([],location.binding,selected),[]);
+  }
+  assert.equal(nativeBatchServiceHref(origin,f.binding,review,done,randomUUID()),undefined);
+  assert.equal(nativeBatchServiceHref(origin,{...f.binding,deliveryId:randomUUID()},review,done,second.id),undefined);
+  assert.equal(nativeBatchServiceHref(origin,f.binding,{...review,review:{status:'STALE_REVIEW'}},done,first.id),undefined);
+  const duplicate=structuredClone(done);
+  duplicate.monitor.runs[1].id=first.id;
+  assert.equal(nativeBatchServiceHref(origin,f.binding,review,duplicate,first.id),undefined);
+});
 test('explicit two-batch publication uses original approval once; exact monitor follows scheduled, successful and terminal evidence',async t=>{
  const f=await prepared(t),before=f.app.store.db.prepare('SELECT total_changes() AS n').get().n;assert.equal((await readNativeSyncPublication(f.client,f.request)).phase,'NOT_FOUND');assert.equal(f.app.store.db.prepare('SELECT total_changes() AS n').get().n,before);await assert.rejects(()=>submitNativeSyncPublication(f.client,f.request,{confirm:false}));assert.equal(f.app.store.list('release_approval',PROJECT).length,0);
  const started=await submitNativeSyncPublication(f.client,f.request,{confirm:true});assert.equal(started.phase,'RELEASED');assert.deepEqual(started.monitor.runs.map(r=>r.status),['SCHEDULED','SCHEDULED']);assert.equal(f.calls(),0);
