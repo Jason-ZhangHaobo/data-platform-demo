@@ -6,8 +6,8 @@ export function serviceBatchFromLocation(href: string, binding?: ServiceSourceBi
   const values = query.getAll("release_batch");
   if (!values.length) return undefined;
   const [batch] = values;
-  if (values.length !== 1 || query.get("module") !== "services" || binding?.sourceKind !== "AGENT" ||
-      binding.scope !== "PRIVATE_CLOUD_TEST" || !binding.runId || !binding.revisionId ||
+  if (values.length !== 1 || query.getAll("module").length !== 1 || query.get("module") !== "services" || binding?.sourceKind !== "AGENT" ||
+      (binding.scope !== "PRIVATE_CLOUD_TEST" && binding.scope !== "LOCAL_TEST_ONLY") || !binding.runId || !binding.revisionId ||
       !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(batch)) return null;
   return batch;
 }

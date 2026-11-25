@@ -2590,6 +2590,11 @@ kbd {
   color: #356346;
   font-size: 12px;
 }
+.service-source-feedback details {min-width:0;max-width:100%;overflow-wrap:anywhere}
+.service-source-ids {margin:12px 0}
+.service-source-ids dt {font-weight:600}
+.service-source-ids dd {margin:2px 0 8px}
+.service-source-ids code {white-space:normal;overflow-wrap:anywhere}
 .service-feedback.error {
   border-color: #e5c7b6;
   background: #fff3ed;

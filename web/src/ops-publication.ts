@@ -73,7 +73,7 @@ export function batchServiceHistoryTarget(href:string) {
   if(url.pathname!=="/v2/"||query.size!==sourceCount+servicePublicationFields.length+2||query.getAll("module").length!==1||source.status!=="VALID") return null;
   const binding=source.binding,batchId=serviceBatchFromLocation(href,binding);
   const [firstBatchId,secondBatchId,verificationId,reviewDigest]=servicePublicationFields.map(key=>query.getAll(key).length===1?query.get(key):null);
-  if(!batchId||!uuid(firstBatchId)||!uuid(secondBatchId)||firstBatchId===secondBatchId||![firstBatchId,secondBatchId].includes(batchId)||
+  if(binding.scope!=="PRIVATE_CLOUD_TEST"||!batchId||!uuid(firstBatchId)||!uuid(secondBatchId)||firstBatchId===secondBatchId||![firstBatchId,secondBatchId].includes(batchId)||
      !uuid(verificationId)||!hash(reviewDigest)||!uuid(binding.taskId)||!uuid(binding.revisionId)||!uuid(binding.runId)) return null;
   return {binding,batchId,publication:{taskId:binding.taskId,releaseId:binding.releaseId,revisionId:binding.revisionId,firstBatchId,secondBatchId,
     source:{runId:binding.runId,packageDigest:binding.packageDigest,verificationId,reviewDigest}}};

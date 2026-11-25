@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,6 +11,9 @@ import { createV2Server } from "../src/v2/server.mjs";
 import { referenceSql } from "../src/v2/context.mjs";
 import { readNativeSyncReview } from "../src/v2/native-sync-review-client.mjs";
 import { readPackageInputCheck } from "../src/v2/package-input-check-client.mjs";
+import { readNativeSyncPublication, submitNativeSyncPublication } from "../src/v2/native-sync-publication-client.mjs";
+import { V2Client } from "../src/v2/client.mjs";
+import { verifyMysqlReleaseServices } from "./accept-mysql-release-services.mjs";
 
 // An explicitly invoked test against a disposable loopback MySQL 8 instance.
 // The CI job provisions these two fixture users. The service only gets the reader.
@@ -27,8 +30,13 @@ const expected = [
   initial[1],
   ["POS-003", "CLIENT-002", "SEC-DEMO-003", "股票", "金融", "299.75", "2026-09-11"],
 ];
+// Independent amounts from the original two holdings plus the registered fictional cash.
+const expectedAssetRows = [
+  {client_id:"CLIENT-001", holding_market_value:"1000.00", available_cash:"300.00", total_assets:"1300.00", security_count:1},
+  {client_id:"CLIENT-002", holding_market_value:"500.00", available_cash:"200.00", total_assets:"700.00", security_count:1},
+];
 
-test("Agent develops, rehearses eight files and verifies their original MySQL holdings batch", async t => {
+test("Agent develops from a historical MySQL batch and its reviewed package serves two scheduled results", async t => {
   const port = Number(process.env.SHUDUO_TEST_MYSQL_PORT);
   const readerPassword = process.env.SHUDUO_TEST_MYSQL_READER_PASSWORD;
   const writerPassword = process.env.SHUDUO_TEST_MYSQL_WRITER_PASSWORD;
@@ -63,7 +71,7 @@ test("Agent develops, rehearses eight files and verifies their original MySQL ho
     assert.ok(context.tables.every(t => t.rows === undefined));
     return {sql:referenceSql, explanation:"仓库虚构场景的固定 SQL 生成器", usage:{total_tokens:1}};
   }, env: {
-    V2_LOCAL_DEVELOPMENT: "true", V2_RELEASE_SCHEDULER_MODE: "DISABLED",
+    V2_LOCAL_DEVELOPMENT: "true", V2_RELEASE_SCHEDULER_MODE: "LOCAL_TIMER",
     JAVA_HOME:process.env.JAVA_HOME ?? join(process.cwd(), ".runtime", "java", "Contents", "Home"),
     V2_PYTHON:process.env.V2_PYTHON ?? join(process.cwd(), ".runtime", "python", "bin", "python"),
     V2_RETAIN_SPARK_ARTIFACTS:"false",
@@ -220,10 +228,7 @@ test("Agent develops, rehearses eight files and verifies their original MySQL ho
   assert.equal(schema.inputMetadata.current.metadataVersionId, newer.id);
   assert.equal(schema.inputMetadata.frozen.columns.find(c=>c.name==="market_value").type, "decimal(18,2)");
   assert.equal(schema.inputMetadata.current.columns.find(c=>c.name==="market_value").type, "decimal(18,4)");
-  assert.deepEqual(run.rows, [
-    {client_id:"CLIENT-001", holding_market_value:"1000.00", available_cash:"300.00", total_assets:"1300.00", security_count:1},
-    {client_id:"CLIENT-002", holding_market_value:"500.00", available_cash:"200.00", total_assets:"700.00", security_count:1},
-  ]);
+  assert.deepEqual(run.rows, expectedAssetRows);
   const recovered = await api("/agent/requests/"+requestId, 200);
   assert.equal(recovered.id, taskResult.id);
   assert.deepEqual(recovered.syncInput, run.syncInput);
@@ -280,7 +285,7 @@ test("Agent develops, rehearses eight files and verifies their original MySQL ho
   const review = await readNativeSyncReview(readOnlyClient, binding);
   assert.equal(review.review.status, "NEEDS_REVIEW");
   assert.equal(review.publicationApproved, false);
-  assert.equal(review.schedulerEnabled, false);
+  assert.equal(review.schedulerEnabled, true);
   assert.deepEqual(review.evidence.fileHashes, fileHashes);
   const inputCheck = await readPackageInputCheck(readOnlyClient, {packageId:bundle.id,packageDigest:bundle.digest});
   assert.equal(inputCheck.input.syncRunId, baseline.id);
@@ -302,8 +307,97 @@ test("Agent develops, rehearses eight files and verifies their original MySQL ho
   assert.deepEqual((await api("/delivery/packages", 200)).map(item=>item.id), [bundle.id]);
   assert.equal(generations, 1);
   assert.deepEqual(await api("/release/approvals", 200), []);
-  const releases = await api("/releases", 200);
-  assert.deepEqual(releases, []);
+  const beforeRelease = await api("/releases", 200);
+  assert.deepEqual(beforeRelease, []);
+
+  // These explicit consents apply only to this freshly created fictional CI project.
+  const fileReview = await api(packagePath+"/review", 201, {
+    packageDigest:bundle.digest, verificationId:rehearsal.id, syncRehearsalDigest:review.evidence.syncRehearsalDigest,
+    reviewNote:"本次隔离测试已核对原持仓快照、八份文件和 Spark 演练结果。",
+    attestations:{code:true, assertions:true, deliveryFiles:true, localScope:true},
+  },randomUUID());
+  const reviewed = await readNativeSyncReview(readOnlyClient,binding);
+  assert.deepEqual([reviewed.review.status,reviewed.review.id,reviewed.publicationApproved],["REVIEWED",fileReview.id,false]);
+  const publishRequest = {...binding,requestId:randomUUID(),reviewId:fileReview.id,syncRehearsalDigest:review.evidence.syncRehearsalDigest};
+  const publisher = new V2Client({baseUrl:base});
+  assert.equal((await readNativeSyncPublication(publisher,publishRequest)).phase,"NOT_FOUND");
+  // The server accepted activation, but the original client missed its response.
+  // Recover by reading the same request, without repeating a business write.
+  const writes = [];
+  const interrupted = {request:async(path,options)=>{
+    const result = await publisher.request(path,options);
+    if (options?.method === "POST") writes.push(path);
+    if (path === "/releases" && options?.method === "POST") throw Error("FIXTURE_ACTIVATION_ACK_LOST");
+    return result;
+  }};
+  await assert.rejects(submitNativeSyncPublication(interrupted,publishRequest,{confirm:true}),
+    e=>e.message==="FIXTURE_ACTIVATION_ACK_LOST" && e.publicationWriteAttempted);
+  assert.deepEqual(writes,[packagePath+"/approve","/releases"]);
+  const registered = await readNativeSyncPublication(readOnlyClient,publishRequest);
+  assert.equal(registered.phase,"RELEASED");
+  const {releaseId,runs:registeredRuns} = registered.monitor;
+  const batchIds = registeredRuns.map(batch=>batch.id);
+  assert.equal(new Set(batchIds).size,2);
+  const approvals = await api("/release/approvals",200);
+  assert.deepEqual(approvals.map(item=>item.id), [registered.approval.id]);
+  assert.equal(approvals[0].consumedByReleaseId,releaseId);
+
+  // Leave both timers to the server. Only fetch the scheduled records while waiting.
+  const deadline = Date.now()+180000;
+  let batches;
+  do {
+    batches = (await api("/release/runs",200)).sort((a,b)=>a.sequence-b.sequence);
+    assert.deepEqual(batches.map(b=>b.id),batchIds);
+    for(const batch of batches) assert.ok(["SCHEDULED","RUNNING","SUCCEEDED"].includes(batch.status),
+      "Fixture batch "+batch.sequence+" ended "+batch.status+" "+(batch.errorCode??""));
+    if(batches.every(b=>b.status==="SUCCEEDED")) break;
+    await delay(1000);
+  } while (Date.now()<deadline);
+  for (const batch of batches) {
+    assert.equal(batch.status,"SUCCEEDED");
+    assert.equal(batch.releaseId,releaseId);
+    assert.equal(batch.packageId,bundle.id);
+    assert.equal(batch.packageDigest,bundle.digest);
+    assert.equal(batch.snapshotHash,run.syncInput.snapshotHash);
+    assert.equal(batch.sourceRevisionId,run.revisionId);
+    assert.equal(batch.businessScheduledFor,rehearsal.scheduledFor);
+    assert.equal(batch.clockMode,"WALL_CLOCK_TIMER");
+    assert.equal(batch.schedulerTriggered,true);
+    assert.ok(Date.parse(batch.triggeredAt)>=Date.parse(batch.scheduledTriggerAt));
+    assert.ok(Date.parse(batch.finishedAt)>=Date.parse(batch.triggeredAt));
+    assert.equal(batch.publicDeployed,false);
+    assert.equal(batch.engine,"Apache Spark");
+    assert.equal(batch.engineVersion,"3.5.9");
+    assert.notEqual(batch.testDouble,true);
+    assert.equal(batch.mainSqlExecuted,true);
+    assert.deepEqual(batch.fileHashes,fileHashes);
+    assert.equal(batch.testSqlValidation.sqlHash,fileHashes["tests.sql"]);
+    assert.equal(batch.testSqlValidation.passed,true);
+    assert.equal(batch.validation.selectedPassed,true);
+    assert.equal(batch.validation.regressions.length,5);
+    assert.ok(batch.validation.regressions.every(item=>item.passed));
+    assert.deepEqual(batch.rows,expectedAssetRows);
+  }
+  const {monitor} = await readNativeSyncPublication(readOnlyClient,publishRequest);
+  assert.equal(monitor.completed,true);
+  assert.equal(monitor.health,"HEALTHY");
+  assert.equal(monitor.monitorEventCount,2);
+  assert.equal(monitor.openAlertCount,0);
+  const monitoring = await api("/monitoring/overview",200);
+  assert.deepEqual(monitoring.recentEvents.map(event=>event.releaseRunId).sort(),[...batchIds].sort());
+  for(const event of monitoring.recentEvents) {
+    assert.equal(event.releaseId,releaseId);
+    assert.equal(event.type,"BATCH_SUCCEEDED");
+    assert.equal(event.packageDigest,bundle.digest);
+    assert.equal(event.snapshotHash,run.syncInput.snapshotHash);
+  }
+  const consumption = await verifyMysqlReleaseServices({
+    base,api,taskId:taskResult.id,releaseId,packageId:bundle.id,packageDigest:bundle.digest,batchIds,expectedRows:expectedAssetRows,
+  });
+  const releases=await api("/releases",200);
+  assert.deepEqual(releases.map(item=>item.id),[releaseId]);
+  assert.deepEqual((await api("/release/runs",200)).map(item=>item.id).sort(),[...batchIds].sort());
+  assert.equal(generations,1);
   t.diagnostic(JSON.stringify({engine:"MySQL", version:probe.serverVersion, sourceTable:table, metadataFields:fields.length,
     fullRows:baseline.finalCount, inserted:change.inserted, updated:change.updated, unchanged:change.unchanged,
     finalRows:landed.length, totalMarketValue:"1900.00", watermark:change.watermark, originalRequestRecovered:true,
@@ -313,5 +407,10 @@ test("Agent develops, rehearses eight files and verifies their original MySQL ho
     originalAndCurrentMetadataMatched:true, deliveryFiles:files.length, fileRehearsalSparkRuns:savedRehearsals.length,
     fileRehearsalCustomerAssets:rehearsal.rows.map(row=>row.total_assets), fileRehearsalRegressionCount:rehearsal.validation.regressions.length,
     testSqlExecuted:rehearsal.testSqlValidation.passed, mysqlInputProof:inputCheck.input.proof.scope,
-    deliveryRequestRecovered:recoveredDelivery.id===delivery.id, fileReview:review.review.status, publicationCount:releases.length}));
+    deliveryRequestRecovered:recoveredDelivery.id===delivery.id, fileReview:review.review.status,
+    beforeReleasePublicationCount:beforeRelease.length, fileReviewAfterFixtureReview:reviewed.review.status,
+    publicationCount:releases.length, scheduledSparkRuns:batches.length, triggerClock:batches[0].clockMode,
+    scheduledCustomerAssets:batches.map(batch=>batch.rows.map(row=>row.total_assets)),
+    monitoringEvents:monitor.monitorEventCount, openAlerts:monitor.openAlertCount, originalReleaseRecovered:true,
+    ...consumption}));
 });
