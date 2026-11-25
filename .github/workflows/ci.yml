@@ -31,6 +31,27 @@ jobs:
         run: python3 -m pip install --require-hashes --no-deps --requirement deploy/sql-lineage-requirements.txt
       - name: Run quality gate
         run: npm run ci
+      - name: Verify MySQL source ingestion on the runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo systemctl start mysql.service
+          trap 'sudo systemctl stop mysql.service' EXIT
+          reader_password="Se7!$(openssl rand -hex 24)"
+          writer_password="Se7!$(openssl rand -hex 24)"
+          printf '::add-mask::%s\n' "$reader_password" "$writer_password"
+          # The hosted runner image ships this local administrative socket account.
+          MYSQL_PWD=root mysql --no-defaults --protocol=socket --user=root --batch <<SQL
+          CREATE DATABASE shuduo_ingestion_test CHARACTER SET utf8mb4;
+          CREATE USER 'shuduo_fixture_reader'@'127.0.0.1' IDENTIFIED BY '$reader_password';
+          CREATE USER 'shuduo_fixture_writer'@'127.0.0.1' IDENTIFIED BY '$writer_password';
+          GRANT SELECT ON \`shuduo\_ingestion\_test\`.* TO 'shuduo_fixture_reader'@'127.0.0.1';
+          GRANT CREATE, SELECT, INSERT, UPDATE, ALTER ON shuduo_ingestion_test.fixture_holdings TO 'shuduo_fixture_writer'@'127.0.0.1';
+          SQL
+          SHUDUO_TEST_MYSQL_PORT=3306 \
+            SHUDUO_TEST_MYSQL_READER_PASSWORD="$reader_password" \
+            SHUDUO_TEST_MYSQL_WRITER_PASSWORD="$writer_password" \
+            node --test scripts/accept-mysql-ingestion.mjs
       - name: Package account-restricted workbench preview
         run: zip -qr "$RUNNER_TEMP/shuduo-private-preview.zip" web-dist scripts/run-v2-cloudshell-preview.mjs src/v2/private-service-routes.mjs src/v2/publication-request.mjs src/v2/service-plan-request.mjs
       - name: Retain credential-free private preview

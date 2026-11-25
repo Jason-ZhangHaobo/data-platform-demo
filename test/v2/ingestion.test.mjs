@@ -291,6 +291,80 @@ test("enabled server MySQL performs bounded FULL and snapshot-diff UPSERT withou
   }
 });
 
+test("MySQL sync preserves legacy decimal receipts and detects changed scale from the row snapshot", async t => {
+  const columns = type => [
+    { name: "position_id", ordinal: 1, type: "VARCHAR", nullable: false },
+    { name: "market_value", ordinal: 2, type, nullable: false },
+  ];
+  let describedType = "DECIMAL", snapshotType = "DECIMAL(18,2)", amount = "1100.00";
+  let descriptions = 0, snapshots = 0;
+  const app = setup({ serverMysqlAdapter: {
+    profileId: "server-mysql-synthetic", allowTables: ["synthetic_positions"], supportsOfflineSync: true,
+    async probe() { return { status: "CONNECTED", serverVersion: "8.0.synthetic" }; },
+    async describe() {
+      descriptions++;
+      return { rowCount: 1, columns: columns(describedType) };
+    },
+    async readRows() {
+      snapshots++;
+      return { rows: [{ position_id: "POS-001", market_value: amount }], rowCount: 1, columns: columns(snapshotType) };
+    },
+  }});
+  t.after(() => app.close());
+  const { manager } = app;
+  const source = manager.createSource({
+    name: "虚构证券持仓", sourceType: "SERVER_MYSQL", tableName: "synthetic_positions",
+  });
+  await manager.testServerMysqlConnection(source.id);
+  const createTask = name => manager.createTask({
+    name, sourceId: source.id, targetTable: "mysql_positions", mode: "FULL",
+    mapping: { position_id: "position_id", market_value: "market_value" }, keyFields: ["position_id"],
+  });
+
+  const legacyMeta = await manager.collectServerMysqlMetadata(source.id);
+  assert.equal(legacyMeta.columns[1].type, "DECIMAL");
+  const legacy = createTask("旧版本虚构持仓");
+  describedType = "DECIMAL(18,2)";
+  const request = { requestKey: "original-full-run", requestSignature: "original-full-signature" };
+  const original = await manager.runServerMysqlTask(legacy.id, request);
+  assert.equal(original.status, "SUCCEEDED");
+  assert.equal(original.metadataVersionId, legacyMeta.id);
+  assert.equal(descriptions, 1);
+  assert.equal(snapshots, 1);
+  const originalTarget = manager.previewTarget("mysql_positions");
+  assert.equal(originalTarget[0].market_value, "1100.00");
+
+  const preciseMeta = await manager.collectServerMysqlMetadata(source.id);
+  assert.equal(preciseMeta.columns[1].type, "DECIMAL(18,2)");
+  assert.notEqual(preciseMeta.schemaHash, legacyMeta.schemaHash);
+  assert.equal(preciseMeta.change.changed, false);
+  assert.deepEqual(preciseMeta.change.typeChanged, []);
+
+  const precise = createTask("已确认金额精度的虚构持仓");
+  snapshotType = "DECIMAL(18,4)";
+  amount = "1100.0001";
+  // The previous scan still reports scale 2; the rows were read at scale 4.
+  await assert.rejects(manager.runServerMysqlTask(precise.id), { code: "SOURCE_CHANGED" });
+  assert.equal(descriptions, 2);
+  assert.equal(snapshots, 2);
+  assert.deepEqual(manager.previewTarget("mysql_positions"), originalTarget);
+
+  describedType = snapshotType;
+  const changed = await manager.collectServerMysqlMetadata(source.id);
+  assert.equal(changed.change.changed, true);
+  assert.deepEqual(changed.change.typeChanged, [
+    { name: "market_value", from: "DECIMAL(18,2)", to: "DECIMAL(18,4)" },
+  ]);
+  const replay = await manager.runServerMysqlTask(legacy.id, request);
+  assert.equal(replay.id, original.id);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.landingReceiptHash, original.landingReceiptHash);
+  assert.equal(manager.taskRunRequest(legacy.id, request.requestKey).landingEvidence.receiptHash, original.landingReceiptHash);
+  assert.deepEqual(manager.previewTarget("mysql_positions"), originalTarget);
+  assert.equal(descriptions, 3);
+  assert.equal(snapshots, 2);
+});
+
 test("full and incremental UPSERT perform real atomic landing writes", () => {
   const app = setup();
   try {

@@ -23,9 +23,10 @@ function loaderFor(rows, calls, failure) {
       return {
         async query(statement) {
           calls.push(["query", statement]);
+          if (statement === "START TRANSACTION READ ONLY") return [];
           if (statement === "SELECT VERSION() AS server_version")
             return [[{ server_version: "8.0.synthetic" }]];
-          if (typeof statement === "string" && statement.startsWith("SELECT COUNT"))
+          if (statement.sql?.startsWith("SELECT COUNT"))
             return [[{ row_count: rows.length }]];
           if (typeof statement === "object" && statement.sql.startsWith("SELECT *"))
             return [structuredClone(rows)];
@@ -35,9 +36,10 @@ function loaderFor(rows, calls, failure) {
           calls.push(["execute", statement, values]);
           return [[
             { name: "position_id", type: "varchar", nullable: "NO", ordinal: 1 },
-            { name: "market_value", type: "decimal", nullable: "NO", ordinal: 2 },
+            { name: "market_value", type: "decimal(18,2)", nullable: "NO", ordinal: 2 },
           ]];
         },
+        async commit() { calls.push(["commit"]); },
         async end() {
           calls.push(["end"]);
         },
@@ -65,7 +67,9 @@ test("server MySQL source probes, scans schema and reads bounded rows through an
   const metadata = await adapter.describe("synthetic_positions"),
     snapshot = await adapter.readRows("synthetic_positions");
   assert.equal(metadata.rowCount, 2);
-  assert.equal(metadata.columns[1].type, "DECIMAL");
+  assert.equal(metadata.columns[1].type, "DECIMAL(18,2)");
+  assert.deepEqual(snapshot.columns, metadata.columns);
+  assert.equal(calls.filter(([kind]) => kind === "commit").length, 2);
   assert.deepEqual(snapshot.rows, rows);
   assert.equal(snapshot.contentHash.length, 64);
   assert.equal(snapshot.strategy, "BOUNDED_SNAPSHOT");

@@ -85,6 +85,30 @@ export function createServerMysqlSourceAdapter(env = process.env, options = {}) 
       if (connection) await connection.end().catch(() => undefined);
     }
   };
+  const withReadTransaction = (action) => withConnection(async (connection) => {
+    await connection.query("START TRANSACTION READ ONLY");
+    // withConnection closes the session on error, discarding this read transaction.
+    const result = await action(connection);
+    await connection.commit();
+    return result;
+  });
+  const readColumns = async (connection, tableName) => {
+    const [columns] = await connection.execute({
+      sql: `SELECT COLUMN_NAME AS name,
+                   CASE WHEN DATA_TYPE = 'decimal' THEN COLUMN_TYPE ELSE DATA_TYPE END AS type,
+                   IS_NULLABLE AS nullable, ORDINAL_POSITION AS ordinal
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+            ORDER BY ORDINAL_POSITION`,
+      timeout: queryTimeoutMs,
+    }, [tableName]);
+    return columns.map(column => ({
+      name: String(column.name),
+      ordinal: Number(column.ordinal),
+      type: String(column.type).toUpperCase(),
+      nullable: String(column.nullable).toUpperCase() === "YES",
+    }));
+  };
   const normalizeValue = (value) => {
     if (value === null || ["string", "number", "boolean"].includes(typeof value)) return value;
     if (typeof value === "bigint") return value.toString();
@@ -104,21 +128,15 @@ export function createServerMysqlSourceAdapter(env = process.env, options = {}) 
     },
     async describe(tableName) {
       assertTable(tableName);
-      return withConnection(async (connection) => {
-        const [columns] = await connection.execute(
-          "SELECT COLUMN_NAME AS name, DATA_TYPE AS type, IS_NULLABLE AS nullable, ORDINAL_POSITION AS ordinal FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-          [tableName],
-        );
-        const [countRows] = await connection.query(`SELECT COUNT(*) AS row_count FROM \`${tableName}\``);
+      return withReadTransaction(async (connection) => {
+        const [countRows] = await connection.query({
+          sql: `SELECT COUNT(*) AS row_count FROM \`${tableName}\``,
+          timeout: queryTimeoutMs,
+        });
         return {
           tableName,
           rowCount: Number(countRows?.[0]?.row_count ?? 0),
-          columns: columns.map((column) => ({
-            name: String(column.name),
-            ordinal: Number(column.ordinal),
-            type: String(column.type).toUpperCase(),
-            nullable: String(column.nullable).toUpperCase() === "YES",
-          })),
+          columns: await readColumns(connection, tableName),
         };
       });
     },
@@ -129,7 +147,7 @@ export function createServerMysqlSourceAdapter(env = process.env, options = {}) 
           status: 409,
           code: "MYSQL_SYNC_NOT_ENABLED",
         });
-      return withConnection(async (connection) => {
+      return withReadTransaction(async (connection) => {
         const [rows] = await connection.query({
           sql: `SELECT * FROM \`${tableName}\` LIMIT ${maxRows + 1}`,
           timeout: queryTimeoutMs,
@@ -152,6 +170,9 @@ export function createServerMysqlSourceAdapter(env = process.env, options = {}) 
             code: "MYSQL_SOURCE_BYTE_LIMIT",
           });
         return {
+          // The table read above holds its metadata lock until this transaction
+          // commits. Bind these rows to that definition, including DECIMAL scale.
+          columns: await readColumns(connection, tableName),
           rows: normalized,
           rowCount: normalized.length,
           contentHash: createHash("sha256").update(body).digest("hex"),

@@ -592,11 +592,18 @@ export function IngestionWorkbench({
                         <div><span>结构摘要</span><code>{selectedMetadata.schemaHash.slice(0, 12)}</code></div>
                       </div>
                       {selectedMetadata.change.changed && (
-                        <div className="schema-change"><AlertTriangle size={16} /><div><strong>检测到结构变化</strong><p>新增：{selectedMetadata.change.added.join("、") || "无"} · 删除：{selectedMetadata.change.removed.join("、") || "无"}</p></div></div>
+                        <div className="schema-change"><AlertTriangle size={16} /><div>
+                          <strong>检测到结构变化</strong>
+                          {selectedMetadata.change.added.length > 0 && <p>新增字段 {selectedMetadata.change.added.join("、")}</p>}
+                          {selectedMetadata.change.removed.length > 0 && <p>删除字段 {selectedMetadata.change.removed.join("、")}</p>}
+                          {(selectedMetadata.change.typeChanged ?? []).map(change =>
+                            <p key={change.name}><code>{change.name}</code> 类型由 <code>{change.from}</code> 变为 <code>{change.to}</code></p>
+                          )}
+                        </div></div>
                       )}
                       <div className="metadata-table-wrap">
                         <table><thead><tr><th>#</th><th>字段</th><th>类型</th><th>可空</th><th>基数</th></tr></thead><tbody>
-                          {selectedMetadata.columns.map((column) => <tr key={column.name}><td>{column.ordinal + 1}</td><td><code>{column.name}</code></td><td>{column.type}</td><td>{column.nullable ? "是" : "否"}</td><td>{column.distinctCount ?? "—"}</td></tr>)}
+                          {selectedMetadata.columns.map((column, index) => <tr key={column.name}><td>{index + 1}</td><td><code>{column.name}</code></td><td>{column.type}</td><td>{column.nullable ? "是" : "否"}</td><td>{column.distinctCount ?? "—"}</td></tr>)}
                         </tbody></table>
                       </div>
                     </>
