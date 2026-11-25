@@ -101,6 +101,8 @@ export function currentSyncSqlInput({ assets, landingStore, store, project }) {
   try { asset = assets.detail(`landing:${targetTable}`); }
   catch (cause) { if (cause.code === "ASSET_NOT_FOUND") throw unavailable(); throw cause; }
   const source = asset.syncSource;
+  if (["SYNC_LANDING_RECEIPT_MISSING", "SYNC_LANDING_RECEIPT_MISMATCH", "SYNC_LANDING_RESULT_UNCONFIRMED"].includes(source?.evidenceCode))
+    throw fail(409, "当前批次的落地回执待核对，请查询原同步请求", source.evidenceCode);
   const syncTask = source?.taskId && store.get("offline_sync_task", source.taskId, project);
   if (source?.status !== "VERIFIED" || source.mode !== "FULL" || syncTask?.sourceType !== "LOCAL_CSV" ||
       !asset.rowCount || asset.rowCount > 500) throw unavailable();

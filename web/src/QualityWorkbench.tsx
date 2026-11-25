@@ -6,6 +6,8 @@ import {qualityConfigDraft,qualityConfig,qualityConfigProblem,qualityVersionDraf
 import type {QualityVersionDraft} from './quality-rule-config';
 import {checkedQualityVersionWrite,qualityVersionRequestPath} from '../../src/v2/quality-version-request.mjs';
 import { FundReportQualityLookup } from './FundReportQualityPanel';
+import { unconfirmedSyncLandingEvidence } from "./sync-landing-evidence";
+import type { SyncSourceEvidenceState } from "./sync-landing-evidence";
 import {
   Activity,
   AlertTriangle,
@@ -32,6 +34,7 @@ type Asset = {
   rowCount?: number;
   fields: { name: string; type: string }[];
   executableMetrics: boolean;
+  syncSource?: SyncSourceEvidenceState;
 };
 type QualityRun = {
   id: string;
@@ -181,6 +184,11 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
       () => assets.filter((asset) => asset.executableMetrics),
       [assets],
     );
+  const landingEvidenceFor = (id: string | undefined) =>
+    unconfirmedSyncLandingEvidence(assets.find(asset => asset.id === id)?.syncSource);
+  const ruleLandingEvidence = landingEvidenceFor(selectedRule?.assetId);
+  const planLandingEvidence = landingEvidenceFor(agentPlan?.proposal?.assetId);
+  const creationLandingEvidence = unconfirmedSyncLandingEvidence(selectedAsset?.syncSource);
 
   const reload = async () => {
     const [nextOverview, nextAssets, nextPlans] = await Promise.all([
@@ -191,7 +199,7 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
     setOverview(nextOverview);
     setAssets(nextAssets);
     setPlans(nextPlans);
-    if(!catalogInitialized.current){catalogInitialized.current=true;setAssetId(previous=>nextAssets.some(asset=>asset.id===previous&&asset.executableMetrics)?previous:nextAssets.find(asset=>asset.executableMetrics)?.id??'');}
+    if(!catalogInitialized.current){catalogInitialized.current=true;setAssetId(previous=>nextAssets.some(asset=>asset.id===previous&&(asset.executableMetrics||unconfirmedSyncLandingEvidence(asset.syncSource)))?previous:nextAssets.find(asset=>asset.executableMetrics)?.id??'');}
     if (!selectedRuleId && nextOverview.rules[0])
       setSelectedRuleId(nextOverview.rules[0].id);
     if (!assetId && nextAssets.find((asset) => asset.executableMetrics))
@@ -241,6 +249,7 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
     }
   };
   const createRule = () =>
+    selectedAsset?.executableMetrics && !creationLandingEvidence &&
     action(
       "create",
       async () => {
@@ -258,7 +267,7 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
       "质量规则已绑定资产与当前配置版本，尚未运行",
     );
   const runRule = () =>
-    selectedRule &&
+    selectedRule && !ruleLandingEvidence &&
     action(
       "run",
       () => api(`/quality/rules/${selectedRule.id}/run`, {expectedVersionId:selectedRule.currentVersionId}),
@@ -307,7 +316,7 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
       "Data Agent正在读取字段元数据和聚合质量结果",
     );
   const applyPlan = () =>
-    agentPlan &&
+    agentPlan && !planLandingEvidence &&
     action(
       "apply-plan",
       async () => {
@@ -339,7 +348,7 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
       <section className="quality-agent-v2">
         <header><div className="quality-agent-icon-v2"><Bot size={20} /></div><div><span className="eyebrow">DATA AGENT · METADATA + AGGREGATED EVIDENCE</span><h3>让 Agent 建议规则，人决定是否创建与运行</h3><p>模型只看字段元数据和失败计数，不接收业务行、无效样本或客户标识。</p></div></header>
         <div className="quality-agent-compose-v2"><textarea aria-label="向Data Agent描述质量需求" rows={2} value={agentMessage} onChange={(event) => setAgentMessage(event.target.value)} /><button className="button primary" onClick={generatePlan} disabled={!canWrite || !!busy || pending(agentPlan?.status)}>{busy === "agent" || pending(agentPlan?.status) ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />}生成规则方案</button></div>
-        {agentPlan && <div className="quality-agent-result-v2"><span className={`status-pill ${agentPlan.status.toLowerCase()}`}>{labels[agentPlan.status] ?? agentPlan.status}</span><div><strong>{agentPlan.proposal?.name ?? "正在分析字段与质量摘要"}</strong><p>{agentPlan.explanation ?? agentPlan.error ?? "生成中…"}</p>{agentPlan.proposal && <code>{agentPlan.proposal.type} · {agentPlan.proposal.assetId}.{agentPlan.proposal.field}</code>}</div><button className="button" onClick={applyPlan} disabled={!canWrite || !!busy || agentPlan.status !== "SUCCEEDED"}><CheckCircle2 size={14} />确认创建规则</button></div>}
+        {agentPlan && <div className="quality-agent-result-v2"><span className={`status-pill ${agentPlan.status.toLowerCase()}`}>{labels[agentPlan.status] ?? agentPlan.status}</span><div><strong>{agentPlan.proposal?.name ?? "正在分析字段与质量摘要"}</strong><p>{agentPlan.explanation ?? agentPlan.error ?? "生成中…"}</p>{agentPlan.proposal && <code>{agentPlan.proposal.type} · {agentPlan.proposal.assetId}.{agentPlan.proposal.field}</code>}</div>{planLandingEvidence && <p role="status">{planLandingEvidence} 暂停应用此方案。</p>}<button className="button" onClick={applyPlan} disabled={!canWrite || !!busy || Boolean(planLandingEvidence) || agentPlan.status !== "SUCCEEDED"}><CheckCircle2 size={14} />确认创建规则</button></div>}
         <small>{plans.length}条Agent方案 · 创建后不自动运行或解除告警</small>
       </section>
 
@@ -351,7 +360,8 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
         </aside>
         <section className="quality-detail-v2">
           {selectedRule ? <>
-            <header><div><span className="eyebrow">{selectedRule.code} · V{selectedRule.currentVersion.versionNumber}</span><h3>{selectedRule.name}</h3><p>{selectedRule.assetId}</p></div><button className="button primary" onClick={runRule} disabled={!canWrite || !!busy}>{busy === "run" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际检测当前表</button></header>
+            <header><div><span className="eyebrow">{selectedRule.code} · V{selectedRule.currentVersion.versionNumber}</span><h3>{selectedRule.name}</h3><p>{selectedRule.assetId}</p></div><button className="button primary" onClick={runRule} disabled={!canWrite || !!busy || Boolean(ruleLandingEvidence)}>{busy === "run" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际检测当前表</button></header>
+            {ruleLandingEvidence && <p className="quality-no-data-v2" role="status">{ruleLandingEvidence} 当前表检测已暂停，原检测记录仍可查看。</p>}
             <div className="quality-proof-v2"><div><span>本次读取状态</span><strong>{labels[selectedRule.health ?? selectedRule.status] ?? selectedRule.health ?? selectedRule.status}</strong></div><div><span>规则表达</span><strong>{configText(selectedRule.currentVersion)}</strong></div><div><span>版本</span><strong>{selectedRule.versions.length}</strong></div><div><span>检测</span><strong>{selectedRule.runs.length}</strong></div><div><span>开放告警</span><strong>{selectedRule.alerts.filter((item) => item.status === "OPEN").length}</strong></div></div>
             {selectedRule.sourceFreshness&&<section className={"quality-current-evidence "+(selectedRule.health==='STALE'||selectedRule.health==='UNCONFIRMED'?'pending':'')} aria-label="当前质量证据"><header><div><strong>{selectedRule.sourceFreshness.status==='MATCHED'?'本次读取的数据与原检测一致':'当前证据核对'}</strong><p>{selectedRule.sourceFreshness.reason}</p></div><button className="button" disabled={!!busy} onClick={()=>void reload().catch(cause=>setError((cause as Error).message))}>重读当前数据状态</button></header>
               {selectedRule.sourceFreshness.lastDetected&&<p>原检测结论：{labels[selectedRule.sourceFreshness.lastDetected.status]??selectedRule.sourceFreshness.lastDetected.status} · 批次 {selectedRule.sourceFreshness.lastDetected.versionId?.slice(0,8)??'未记录'}{selectedRule.sourceFreshness.current?.versionId&&<> · 当前批次 {selectedRule.sourceFreshness.current.versionId.slice(0,8)}</>}</p>}
@@ -379,8 +389,8 @@ export function QualityWorkbench({ api, canWrite, local }: { api: Api; canWrite:
 
       <section className="quality-create-v2">
         <header><div><span className="eyebrow">MANUAL RULE</span><h3>手动创建规则</h3></div><SlidersHorizontal size={19} /></header>
-        <div><label>规则名称<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>规则代码<input value={code} onChange={(event) => setCode(event.target.value)} /></label><label>实际资产<select value={assetId} onChange={(event) => {setAssetId(event.target.value);setField(assets.find(asset=>asset.id===event.target.value)?.fields[0]?.name??'');}}>{assetId&&!selectedAsset&&<option value={assetId}>原资产暂不可读，请重新选择</option>}{executableAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.businessName} · {asset.rowCount ?? 0}行</option>)}</select></label><label>字段<select value={field} onChange={(event) => setField(event.target.value)}>{selectedAsset?.fields.map((item) => <option key={item.name}>{item.name}</option>)}</select></label><QualityConfigFields draft={configDraft} prefix="新规则" disabled={!canWrite||Boolean(busy)} onChange={setConfigDraft}/><label className="wide">规则说明<input value={description} onChange={(event) => setDescription(event.target.value)} /></label></div>
-        <footer><span>{createConfigProblem||(!selectedAsset?'请选择可读取的实际资产':!selectedAsset.fields.some(item=>item.name===field)?'原字段已不在当前资产中，请重新选择':'创建只保存规则V1；必须显式点击“实际检测”才会读取资产行。')}</span><button className="button" onClick={createRule} disabled={!canWrite || !selectedAsset || !selectedAsset.fields.some(item=>item.name===field) || Boolean(createConfigProblem) || !field || !!busy}><ShieldCheck size={14} />创建规则草稿</button></footer>
+        <div><label>规则名称<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>规则代码<input value={code} onChange={(event) => setCode(event.target.value)} /></label><label>实际资产<select value={assetId} onChange={(event) => {setAssetId(event.target.value);setField(assets.find(asset=>asset.id===event.target.value)?.fields[0]?.name??'');}}>{assetId&&!selectedAsset&&<option value={assetId}>原资产暂不可读，请重新选择</option>}{creationLandingEvidence && selectedAsset && !selectedAsset.executableMetrics && <option value={selectedAsset.id} disabled>{selectedAsset.businessName} · 落地待核对</option>}{executableAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.businessName} · {asset.rowCount ?? 0}行</option>)}</select></label><label>字段<select value={field} onChange={(event) => setField(event.target.value)}>{selectedAsset?.fields.map((item) => <option key={item.name}>{item.name}</option>)}</select></label><QualityConfigFields draft={configDraft} prefix="新规则" disabled={!canWrite||Boolean(busy)} onChange={setConfigDraft}/><label className="wide">规则说明<input value={description} onChange={(event) => setDescription(event.target.value)} /></label></div>
+        <footer><span>{creationLandingEvidence||createConfigProblem||(!selectedAsset?'请选择可读取的实际资产':!selectedAsset.fields.some(item=>item.name===field)?'原字段已不在当前资产中，请重新选择':'创建只保存规则V1；必须显式点击“实际检测”才会读取资产行。')}</span><button className="button" onClick={createRule} disabled={!canWrite || !selectedAsset?.executableMetrics || !selectedAsset.fields.some(item=>item.name===field) || Boolean(creationLandingEvidence || createConfigProblem) || !field || !!busy}><ShieldCheck size={14} />创建规则草稿</button></footer>
       </section>
       <footer className="quality-boundary-v2"><ShieldAlert size={14} />当前只检测本机合成落地/实时状态行；不是公司生产质量中心，未连接公网告警渠道。</footer>
     </div>

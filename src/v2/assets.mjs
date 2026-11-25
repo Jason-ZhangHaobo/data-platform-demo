@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
 import { getContext } from "./context.mjs";
 import {publishedSqlColumnLineage} from './sql-column-lineage.mjs';
+import { requiresStandardRunReceipt, verifyStandardRunReceipt } from "./sync-standard-receipt.mjs";
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
+function assertSyncSourceEvidence(asset) {
+  const code = asset.syncSource?.evidenceCode;
+  if (code) throw fail(409, "当前落地批次的回执待核对，请查询原同步请求", code);
+}
 const hash = (value) =>
   createHash("sha256")
     .update(typeof value === "string" ? value : JSON.stringify(value))
@@ -285,8 +290,7 @@ export class AssetCatalogManager {
 
   runMetric(id) {
     const metric = this.#metric(id),
-      asset = this.#asset(metric.assetId),
-      rows = this.#rows(asset),
+      { asset, rows } = this.executionRows(metric.assetId),
       started = this.now(),
       grouped = new Map();
     for (const row of rows) {
@@ -364,8 +368,7 @@ export class AssetCatalogManager {
 
   checkStandard(id) {
     const standard = this.#standard(id),
-      asset = this.#asset(standard.assetId),
-      rows = this.#rows(asset),
+      { asset, rows } = this.executionRows(standard.assetId),
       validator = {
         SECURITY_CODE: (value) => /^SEC-[A-Z0-9-]+$/.test(String(value ?? "")),
         CLIENT_ID: (value) => /^CLIENT-[A-Z0-9-]+$/.test(String(value ?? "")),
@@ -452,6 +455,7 @@ export class AssetCatalogManager {
 
   executionRows(id) {
     const asset = this.#asset(id);
+    assertSyncSourceEvidence(asset);
     if (!asset.executableMetrics)
       throw fail(
         422,
@@ -463,6 +467,7 @@ export class AssetCatalogManager {
 
   reportRows(id) {
     const asset = this.#asset(id);
+    assertSyncSourceEvidence(asset);
     if (!asset.reportable)
       throw fail(422, "资产当前不支持报表快照", "ASSET_NOT_REPORTABLE");
     if (asset.kind === "PUBLISHED_DATASET") {
@@ -524,21 +529,45 @@ export class AssetCatalogManager {
         reportable: false,
       });
     }
+    const syncTasks = this.store.list("offline_sync_task", this.project);
+    const tasksById = new Map(syncTasks.map(task => [task.id, task]));
     const targets = new Map();
-    for (const task of this.store.list("offline_sync_task", this.project))
+    for (const task of syncTasks)
       if (!targets.has(task.targetTable)) targets.set(task.targetTable, task);
+    let modernTargets;
     for (const [targetTable, draft] of targets) {
-      const observed = this.landingStore.inspectTarget(targetTable),
-        run = observed.runId && this.store.get("offline_sync_run", observed.runId, this.project),
-        applied = run && this.store.get("offline_sync_task", run.taskId, this.project),
-        original = run && this.store.get("source_metadata", run.metadataVersionId, this.project);
-      let verified = run?.status === "SUCCEEDED" && run.actualExecution === true && run.targetTable === targetTable &&
+      const observed = this.landingStore.inspectTarget(targetTable, {includeRecordedRun:true}),
+        recordedRunId = observed.recordedRunId ?? observed.runId,
+        run = recordedRunId && this.store.get("offline_sync_run", recordedRunId, this.project),
+        applied = run && tasksById.get(run.taskId),
+        original = run?.metadataVersionId && this.store.get("source_metadata", run.metadataVersionId, this.project);
+      let verified = run?.status === "SUCCEEDED" && observed.runId === run.id && run.actualExecution === true && run.targetTable === targetTable &&
         run.targetHash === observed.targetHash && run.finalCount === observed.rowCount && applied?.targetTable === targetTable &&
         applied.configHash === run.configHash && applied.sourceRevisionId === run.sourceRevisionId &&
         applied.metadataVersionId === run.metadataVersionId && original?.revisionId === run.sourceRevisionId &&
-        original.sourceId === applied.sourceId && (applied.sourceType !== "LOCAL_CSV" || original.contentHash === run.sourceHash);
+        original?.sourceId === applied.sourceId && (applied.sourceType !== "LOCAL_CSV" || original?.contentHash === run.sourceHash);
       const registry=this.store.list('sync_change_target',this.project).find(r=>r.targetTable===targetTable);
       if(applied?.mode==='INCREMENTAL_CHANGELOG'){try{const marker=this.landingStore.changeStatus(targetTable);verified=Boolean(verified&&registry?.status==='READY'&&registry.lastRunId===run.id&&registry.stateHash===marker?.state_hash);}catch{verified=false;}}
+      let evidenceCode;
+      if (requiresStandardRunReceipt(run, this.landingStore)) {
+        try {
+          verifyStandardRunReceipt({store:this.store, landingStore:this.landingStore, project:this.project, task:applied, run});
+          if (observed.runId !== run.id) evidenceCode = "SYNC_LANDING_RECEIPT_MISMATCH";
+          else if (run.status !== "SUCCEEDED") evidenceCode = "SYNC_LANDING_RESULT_UNCONFIRMED";
+          else if (!verified) evidenceCode = "SYNC_LANDING_RECEIPT_MISMATCH";
+        } catch (error) {
+          evidenceCode = error.code === "SYNC_LANDING_RECEIPT_MISSING"
+            ? error.code : "SYNC_LANDING_RECEIPT_MISMATCH";
+        }
+        if (evidenceCode) verified = false;
+      } else if (!verified) {
+        // History can require evidence, but cannot identify the current commit.
+        modernTargets ??= new Set(this.store.list("offline_sync_run", this.project)
+          .filter(run => run.standardReceiptVersion !== undefined || run.landingReceiptHash !== undefined)
+          .flatMap(run => [run.targetTable, tasksById.get(run.taskId)?.targetTable]));
+        if (modernTargets.has(targetTable) || this.landingStore.hasStandardRunReceiptForTarget(targetTable))
+          evidenceCode = recordedRunId ? "SYNC_LANDING_RECEIPT_MISMATCH" : "SYNC_LANDING_RESULT_UNCONFIRMED";
+      }
       const task = verified ? applied : draft;
       const metadata = verified ? original : this.store.get("source_metadata", task.metadataVersionId, this.project),
         types = new Map(metadata?.columns.map((field) => [field.name, field]) ?? []),
@@ -565,9 +594,11 @@ export class AssetCatalogManager {
           status:"VERIFIED", runId:run.id, taskId:task.id, sourceId:task.sourceId,
           sourceRevisionId:run.sourceRevisionId, metadataVersionId:run.metadataVersionId, targetHash:run.targetHash,
           mode:task.mode, fieldMappings:Object.entries(task.mapping).map(([source,target])=>({source,target})),
-        } : {status:"UNCONFIRMED",targetHash:observed.targetHash},
-        executableMetrics: true,
-        reportable: true,
+        } : {status:"UNCONFIRMED",targetHash:observed.targetHash,
+          ...(evidenceCode ? {evidenceCode} : {}),
+          ...(evidenceCode && run && applied?.targetTable === targetTable ? {runId:run.id, taskId:run.taskId} : {})},
+        executableMetrics: !evidenceCode,
+        reportable: !evidenceCode,
       });
     }
     for (const source of this.store.list("stream_source", this.project)) {

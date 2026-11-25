@@ -5,6 +5,8 @@ const DistributionReportResults=lazy(async()=>({default:(await import('./Distrib
 const WealthReportConsumptionPanel=lazy(()=>import('./WealthReportConsumptionPanel'));
 import { lazy,Suspense,useEffect, useMemo, useState } from "react";
 import { securitiesReportTemplate } from "./report-template";
+import { unconfirmedSyncLandingEvidence } from "./sync-landing-evidence";
+import type { SyncSourceEvidenceState } from "./sync-landing-evidence";
 import {
   AlertTriangle,
   BarChart3,
@@ -30,6 +32,7 @@ type Asset = {
   name: string;
   rowCount?: number;
   reportable: boolean;
+  syncSource?: SyncSourceEvidenceState;
   fields: { name: string; type: string }[];
 };
 type Snapshot = {
@@ -168,6 +171,9 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
     selectedAsset = assets.find((asset) => asset.id === assetId),
     reportableAssets = useMemo(() => assets.filter((asset) => asset.reportable), [assets]),
     latestRun = selectedReport?.runs.find((run) => run.id === selectedReport.lastRunId) ?? selectedReport?.runs[0];
+  const newDatasetLandingEvidence = unconfirmedSyncLandingEvidence(selectedAsset?.syncSource);
+  const currentDatasetLandingEvidence = selectedDataset?.publishedSource ? undefined :
+    unconfirmedSyncLandingEvidence(assets.find(asset => asset.id === selectedDataset?.assetId)?.syncSource);
 
   const reload = async () => {
     const [nextOverview, nextAssets, nextPlans] = await Promise.all([
@@ -224,6 +230,7 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
     }
   };
   const createDataset = () =>
+    selectedAsset?.reportable && !newDatasetLandingEvidence &&
     action(
       "dataset",
       async () => {
@@ -237,10 +244,11 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
       },
       "数据集草稿已创建；还没有复制业务行",
     );
-  const refreshDataset = (id: string) =>
+  const refreshDataset = () =>
+    selectedDataset && !currentDatasetLandingEvidence &&
     action(
-      `refresh:${id}`,
-      () => api(`/reports/datasets/${id}/refresh`, {}),
+      `refresh:${selectedDataset.id}`,
+      () => api(`/reports/datasets/${selectedDataset.id}/refresh`, {}),
       "实际资产行已物化为独立不可变快照",
     );
   const templateFor=(dataset?:Dataset)=>distributionReportTemplate(dataset?.outputContractId)??securitiesReportTemplate(dataset?.fields);
@@ -362,8 +370,8 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
       <section className="reports-builder-v2">
         <header><div><span className="eyebrow">DATASET → REPORT</span><h3>手动构建</h3></div><Sparkles size={19} /></header>
         <div className="reports-builder-steps-v2">
-          <fieldset><legend>1. 数据集草稿</legend><label>可报表资产<select value={assetId} onChange={(event) => setAssetId(event.target.value)}>{reportableAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.businessName} · {asset.rowCount ?? 0}行</option>)}</select></label><label>名称<input value={datasetName} onChange={(event) => setDatasetName(event.target.value)} /></label><label>代码<input value={datasetCode} onChange={(event) => setDatasetCode(event.target.value)} /></label><button className="button" onClick={createDataset} disabled={!canWrite || !selectedAsset || !!busy}><Database size={13} />创建数据集</button></fieldset>
-          <fieldset><legend>2. 物化快照</legend><label>数据集<select value={selectedDatasetId} onChange={(event) => setSelectedDatasetId(event.target.value)}>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name} · {dataset.status}</option>)}</select></label><div className="dataset-proof-v2"><span>字段 {selectedDataset?.fields.length ?? 0}</span><span>快照 {selectedDataset?.snapshots.length ?? 0}</span><span>行 {selectedDataset?.currentSnapshot?.rowCount ?? 0}</span></div><button className="button" onClick={() => selectedDataset && refreshDataset(selectedDataset.id)} disabled={!canWrite || !selectedDataset || !!busy}><RefreshCw size={13} />刷新实际快照</button></fieldset>
+          <fieldset><legend>1. 数据集草稿</legend><label>可报表资产<select value={assetId} onChange={(event) => setAssetId(event.target.value)}>{newDatasetLandingEvidence && selectedAsset && !selectedAsset.reportable && <option value={selectedAsset.id} disabled>{selectedAsset.businessName} · 落地待核对</option>}{reportableAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.businessName} · {asset.rowCount ?? 0}行</option>)}</select></label><label>名称<input value={datasetName} onChange={(event) => setDatasetName(event.target.value)} /></label><label>代码<input value={datasetCode} onChange={(event) => setDatasetCode(event.target.value)} /></label>{newDatasetLandingEvidence && <p role="status">{newDatasetLandingEvidence} 暂停使用当前表创建数据集。</p>}<button className="button" onClick={createDataset} disabled={!canWrite || !selectedAsset?.reportable || Boolean(newDatasetLandingEvidence) || !!busy}><Database size={13} />创建数据集</button></fieldset>
+          <fieldset><legend>2. 物化快照</legend><label>数据集<select value={selectedDatasetId} onChange={(event) => setSelectedDatasetId(event.target.value)}>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name} · {dataset.status}</option>)}</select></label><div className="dataset-proof-v2"><span>字段 {selectedDataset?.fields.length ?? 0}</span><span>快照 {selectedDataset?.snapshots.length ?? 0}</span><span>行 {selectedDataset?.currentSnapshot?.rowCount ?? 0}</span></div>{currentDatasetLandingEvidence && <p role="status">{currentDatasetLandingEvidence} 已有快照仍可查看。</p>}<button className="button" onClick={refreshDataset} disabled={!canWrite || !selectedDataset || Boolean(currentDatasetLandingEvidence) || !!busy}><RefreshCw size={13} />刷新实际快照</button></fieldset>
           <fieldset><legend>3. 报表草稿</legend><label>名称<input value={reportName} onChange={(event) => setReportName(event.target.value)} /></label><label>代码<input value={reportCode} onChange={(event) => setReportCode(event.target.value)} /></label><label>说明<input value={reportDescription} onChange={(event) => setReportDescription(event.target.value)} /></label>{selectedDataset && <aside className="report-template-notes-v2" aria-label="模板指标与口径"><strong>按实际字段生成 {reportTemplate.widgets.length} 个组件</strong>{reportTemplate.notes.map(note => <p key={note}>{note}</p>)}</aside>}<button className="button" onClick={createReport} disabled={!canWrite || selectedDataset?.status !== "READY" || !reportTemplate.widgets.length || !!busy}><PieChart size={13} />创建{reportTemplate.widgets.length}组件报表</button></fieldset>
         </div>
       </section>

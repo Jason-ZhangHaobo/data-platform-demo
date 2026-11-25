@@ -16,6 +16,23 @@ const invalid = () => Object.assign(Error('原同步落地回执与任务、版�
   status: 409, code: 'SYNC_LANDING_RECEIPT_MISMATCH',
 });
 
+export const standardRunRequestHash = run => syncSnapshotDigest({
+  key: run.requestKey ?? null, signature: run.requestSignature ?? null,
+});
+
+export const standardLandingOutput = receipt => ({
+  targetTable: receipt.targetTable, sourceHash: receipt.binding.sourceHash,
+  readCount: receipt.readCount, inserted: receipt.inserted, updated: receipt.updated,
+  unchanged: receipt.unchanged, deleted: receipt.deleted, finalCount: receipt.finalCount,
+  targetHash: receipt.targetHash, snapshotStatus: receipt.snapshotStatus,
+  landingSnapshotHash: receipt.landingSnapshotHash, watermark: receipt.watermark,
+});
+
+export const syncLandingBinding = (task, project, sourceHash) => ({
+  projectId: project, taskId: task.id, sourceId: task.sourceId, sourceRevisionId: task.sourceRevisionId,
+  metadataVersionId: task.metadataVersionId, configHash: task.configHash, sourceHash,
+});
+
 export function checkedStandardSyncReceipt(row, projectId) {
   let value;
   try {
@@ -51,4 +68,42 @@ export function checkedStandardSyncReceipt(row, projectId) {
     !matches(row.receipt_hash, digest) || syncSnapshotDigest(value) !== row.receipt_hash
   ) throw invalid();
   return { ...value, receiptHash: row.receipt_hash };
+}
+
+// A committed receipt remains evidence of the new format when both metadata markers are lost.
+export const requiresStandardRunReceipt = (run, landingStore) => Boolean(run && (
+  run.standardReceiptVersion !== undefined || run.landingReceiptHash !== undefined ||
+  landingStore.hasStandardRunReceipt(run.id)
+));
+
+export function verifyStandardRunReceipt({ store, landingStore, project, task, run }) {
+  if (!requiresStandardRunReceipt(run, landingStore)) return undefined;
+  if (run.standardReceiptVersion !== 1 ||
+      (run.landingReceiptHash !== undefined && !matches(run.landingReceiptHash, digest))) throw invalid();
+  const proof = landingStore.readStandardRunReceipt(run.id, project);
+  if (!proof) {
+    if (run.status === 'SUCCEEDED' || run.landingReceiptHash)
+      throw Object.assign(new Error('原运行缺少确切落地回执'), {
+        status: 409, code: 'SYNC_LANDING_RECEIPT_MISSING',
+      });
+    return undefined;
+  }
+  const { sourceHash } = proof.binding;
+  const csvMetadata = task.sourceType === 'LOCAL_CSV'
+    ? store.get('source_metadata', task.metadataVersionId, project) : undefined;
+  const startedAt = Date.parse(run.startedAt), landedAt = Date.parse(proof.landedAt);
+  if (proof.runId !== run.id || proof.targetTable !== task.targetTable ||
+      proof.mode !== task.mode || proof.sourceType !== task.sourceType ||
+      run.taskId !== task.id || run.sourceType !== task.sourceType || run.configHash !== task.configHash ||
+      run.sourceRevisionId !== task.sourceRevisionId || run.metadataVersionId !== task.metadataVersionId ||
+      proof.requestHash !== standardRunRequestHash(run) ||
+      syncSnapshotDigest(proof.binding) !== syncSnapshotDigest(syncLandingBinding(task, project, sourceHash)) ||
+      !Number.isFinite(startedAt) || landedAt < startedAt ||
+      (task.sourceType === 'LOCAL_CSV' && csvMetadata?.contentHash !== sourceHash) ||
+      !['RUNNING', 'UNCONFIRMED', 'INTERRUPTED', 'SUCCEEDED'].includes(run.status) ||
+      ((run.status === 'SUCCEEDED' || run.landingReceiptHash !== undefined) && run.landingReceiptHash !== proof.receiptHash) ||
+      (run.status === 'SUCCEEDED' && (run.finishedAt !== proof.landedAt || run.durationMs !== landedAt - startedAt ||
+        Object.entries(standardLandingOutput(proof)).some(([field, value]) => run[field] !== value))))
+    throw invalid();
+  return proof;
 }

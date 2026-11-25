@@ -1,7 +1,10 @@
 import {changelogMode,normalizeChangeConfig,changeSpecHash,initializeChangeTables,inspectChangeState,prepareChangeEvents,assertChangeStart,applyChangeEvents,changeStateHash,changeHash} from './csv-changelog.mjs';
 import {ingestionWatermark} from './ingestion-watermark.mjs';
 import { buildSyncSnapshot, checkedSyncSnapshot, syncSnapshotLimits } from './sync-run-snapshot.mjs';
-import { checkedStandardSyncReceipt, standardSyncReceiptProtocol } from './sync-standard-receipt.mjs';
+import {
+  checkedStandardSyncReceipt, standardLandingOutput, standardRunRequestHash,
+  standardSyncReceiptProtocol, syncLandingBinding, verifyStandardRunReceipt,
+} from './sync-standard-receipt.mjs';
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import {
@@ -35,16 +38,6 @@ const canonical = (value) =>
       : value,
   );
 const stableHash = (value) => hash(canonical(value));
-const standardRunRequestHash = run => stableHash({
-  key: run.requestKey ?? null, signature: run.requestSignature ?? null,
-});
-const standardLandingOutput = receipt => ({
-  targetTable: receipt.targetTable, sourceHash: receipt.binding.sourceHash,
-  readCount: receipt.readCount, inserted: receipt.inserted, updated: receipt.updated,
-  unchanged: receipt.unchanged, deleted: receipt.deleted, finalCount: receipt.finalCount,
-  targetHash: receipt.targetHash, snapshotStatus: receipt.snapshotStatus,
-  landingSnapshotHash: receipt.landingSnapshotHash, watermark: receipt.watermark,
-});
 export const ingestionSchemaHash = columns => stableHash(columns.map(({ name, type, nullable }) => ({ name, type, nullable })));
 const landingHash = rows => stableHash(rows.map(({ sourceHash: _source, syncedAt: _time, ...row }) => row));
 const staleSyncErrors = {
@@ -261,7 +254,7 @@ export class LandingStore {
     try {
       if (runId && this.db.prepare('SELECT 1 FROM landing_run_snapshots WHERE run_id=?').get(runId))
         throw fail(409,'原同步运行已留存快照，不允许重复落地覆盖','SYNC_SNAPSHOT_EXISTS');
-      if (runId && this.db.prepare('SELECT 1 FROM landing_run_receipts WHERE run_id=?').get(runId))
+      if (runId && this.hasStandardRunReceipt(runId))
         throw fail(409, '原同步运行已留存提交回执，不允许重复落地覆盖', 'SYNC_LANDING_RECEIPT_EXISTS');
       if(config){assertChangeStart({db:this.db,target,targetHash:landingHash(this.readTable(target)),config,specHash,guard:changeGuard,events});
         changeCounts=applyChangeEvents(this.db,target,events,sourceHash,syncedAt);({inserted,updated,unchanged,deleted}=changeCounts);
@@ -358,12 +351,21 @@ export class LandingStore {
     return row ? checkedStandardSyncReceipt(row, project) : undefined;
   }
 
-  inspectTarget(targetTable, { includeRows = false } = {}) {
+  hasStandardRunReceipt(runId) {
+    return Boolean(this.db.prepare('SELECT 1 FROM landing_run_receipts WHERE run_id=?').get(runId));
+  }
+
+  hasStandardRunReceiptForTarget(targetTable) {
+    return Boolean(this.db.prepare('SELECT 1 FROM landing_run_receipts WHERE target_table=? LIMIT 1').get(targetTable));
+  }
+
+  inspectTarget(targetTable, { includeRows = false, includeRecordedRun = false } = {}) {
     this.db.exec("BEGIN");
     try {
       const rows = this.readTable(targetTable), targetHash = landingHash(rows);
       const commit = this.db.prepare("SELECT run_id,target_hash FROM landing_commits WHERE target_table=?").get(targetTable);
       return { rowCount: rows.length, targetHash, runId: commit?.target_hash === targetHash ? commit.run_id : undefined,
+        ...(includeRecordedRun && commit ? {recordedRunId:commit.run_id} : {}),
         ...(includeRows ? { rows } : {}) };
     } finally { this.db.exec("ROLLBACK"); }
   }
@@ -736,30 +738,7 @@ export class IngestionManager {
   }
 
   #standardReceipt(task, run) {
-    if (run.standardReceiptVersion !== 1) return undefined; // No promotion from legacy summaries or mutable rows.
-    const proof = this.landingStore.readStandardRunReceipt(run.id, this.project);
-    if (!proof) {
-      if (run.status === 'SUCCEEDED' || run.landingReceiptHash)
-        throw fail(409, '原运行缺少确切落地回执', 'SYNC_LANDING_RECEIPT_MISSING');
-      return undefined;
-    }
-    const sourceHash = proof.binding.sourceHash;
-    const csvMetadata = task.sourceType === 'LOCAL_CSV'
-      ? this.store.get('source_metadata', task.metadataVersionId, this.project) : undefined;
-    const output = standardLandingOutput(proof);
-    const invalid = proof.targetTable !== task.targetTable || proof.mode !== task.mode || proof.sourceType !== task.sourceType ||
-      run.taskId !== task.id || run.sourceType !== task.sourceType || run.configHash !== task.configHash ||
-      run.sourceRevisionId !== task.sourceRevisionId || run.metadataVersionId !== task.metadataVersionId ||
-      proof.requestHash !== standardRunRequestHash(run) ||
-      stableHash(proof.binding) !== stableHash(this.#snapshotBinding(task, sourceHash)) ||
-      !Number.isFinite(Date.parse(run.startedAt)) || Date.parse(proof.landedAt) < Date.parse(run.startedAt) ||
-      (task.sourceType === 'LOCAL_CSV' && csvMetadata?.contentHash !== sourceHash) ||
-      !['RUNNING', 'UNCONFIRMED', 'INTERRUPTED', 'SUCCEEDED'].includes(run.status) ||
-      (run.status === 'SUCCEEDED' && (run.landingReceiptHash !== proof.receiptHash ||
-        run.finishedAt !== proof.landedAt || run.durationMs !== Date.parse(proof.landedAt) - Date.parse(run.startedAt) ||
-        Object.entries(output).some(([field, value]) => run[field] !== value)));
-    if (invalid) throw fail(409, '原同步落地回执与任务、版本或结果不一致', 'SYNC_LANDING_RECEIPT_MISMATCH');
-    return proof;
+    return verifyStandardRunReceipt({ store: this.store, landingStore: this.landingStore, project: this.project, task, run });
   }
 
   #beginTaskRun(task, pending) {
@@ -790,13 +769,11 @@ export class IngestionManager {
   }
 
   #replayStandard(task, prior) {
-    if (prior.standardReceiptVersion === 1) {
-      const proof = this.#standardReceipt(task, prior);
-      if (proof && prior.status === 'SUCCEEDED')
-        this.#updateTaskRunSummary(task.id, prior.id, { status: 'SUCCEEDED', watermark: prior.watermark });
-      else if (proof && ['RUNNING', 'UNCONFIRMED', 'INTERRUPTED'].includes(prior.status))
-        return { ...this.#finishStandard(task, prior, { reconciled: true, proof }), replayed: true };
-    }
+    const proof = this.#standardReceipt(task, prior);
+    if (proof && prior.status === 'SUCCEEDED')
+      this.#updateTaskRunSummary(task.id, prior.id, { status: 'SUCCEEDED', watermark: prior.watermark });
+    else if (proof && ['RUNNING', 'UNCONFIRMED', 'INTERRUPTED'].includes(prior.status))
+      return { ...this.#finishStandard(task, prior, { reconciled: true, proof }), replayed: true };
     if (['SUCCEEDED', 'FAILED'].includes(prior.status)) return { ...prior, replayed: true };
     throw fail(409, '该同步请求仍在运行或已中断，请先检查运行记录', 'SYNC_RUN_UNCERTAIN');
   }
@@ -1096,7 +1073,7 @@ export class IngestionManager {
           sourceType: task.sourceType, requestHash: standardRunRequestHash(pending), watermark, now: () => this.now(),
         } }),
         runId: pending.id,
-        snapshotBinding: this.#snapshotBinding(task,input.fileHash),
+        snapshotBinding: syncLandingBinding(task, this.project, input.fileHash),
         targetTable: task.targetTable,
         mode: task.mode,
         rows: parsed.rows,
@@ -1212,7 +1189,7 @@ export class IngestionManager {
       this.landingStore.sync({
           standardExecution: { sourceType: task.sourceType, requestHash: standardRunRequestHash(pending), watermark, now: () => this.now() },
           runId: pending.id,
-          snapshotBinding: this.#snapshotBinding(task,sourceHash),
+          snapshotBinding: syncLandingBinding(task, this.project, sourceHash),
           targetTable: task.targetTable,
           mode: task.mode,
           rows,
@@ -1246,20 +1223,16 @@ export class IngestionManager {
     return this.landingStore.readTable(targetTable);
   }
 
-  #snapshotBinding(task,sourceHash) {
-    return {projectId:this.project,taskId:task.id,sourceId:task.sourceId,sourceRevisionId:task.sourceRevisionId,
-      metadataVersionId:task.metadataVersionId,configHash:task.configHash,sourceHash};
-  }
-
   retainedRunSnapshot(taskId,runId) {
     const task=this.#task(taskId),run=this.store.get('offline_sync_run',runId,this.project);
     if (!run || run.taskId!==task.id) throw fail(404,'同步运行不存在','SYNC_RUN_NOT_FOUND');
     if (run.status!=='SUCCEEDED'||run.actualExecution!==true) throw fail(409,'只有实际成功的批次可核对落地快照','SYNC_RUN_NOT_SUCCEEDED');
     if (run.configHash!==task.configHash||run.sourceRevisionId!==task.sourceRevisionId||run.metadataVersionId!==task.metadataVersionId||run.targetTable!==task.targetTable)
       throw fail(409,'运行与原任务版本不一致','SYNC_SNAPSHOT_MISMATCH');
+    this.#standardReceipt(task, run);
     const summary={taskId:task.id,runId:run.id,targetTable:run.targetTable,rowCount:run.finalCount,targetHash:run.targetHash};
     if (run.snapshotStatus!=='RETAINED') return {...summary,status:'NOT_RETAINED',reason:run.snapshotStatus==='NOT_RETAINED_LIMIT'?'RETENTION_LIMIT':'LEGACY_RUN'};
-    const value=this.landingStore.readRunSnapshot({runId,targetTable:task.targetTable,binding:this.#snapshotBinding(task,run.sourceHash),
+    const value=this.landingStore.readRunSnapshot({runId,targetTable:task.targetTable,binding:syncLandingBinding(task, this.project, run.sourceHash),
       targetHash:run.targetHash,rowCount:run.finalCount,snapshotHash:run.landingSnapshotHash});
     return {...summary,status:'VERIFIED',integrityVerified:true,snapshotHash:run.landingSnapshotHash,createdAt:value.createdAt,rows:value.rows};
   }
