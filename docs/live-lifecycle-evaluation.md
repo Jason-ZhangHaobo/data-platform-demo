@@ -190,6 +190,20 @@ API 沿用 `POST /agent/deliveries/{id}/advance`。确切请求包含 `expectedV
 
 评估文件演练的直接自主完成率需要两份证据。第一份记录谁启动了这次演练；第二份记录谁把经过核验的 Worker 结果首次登记为终态，两份证据须指向同一演练及同一结果摘要。签名结果事件和已验签后台唤醒内取得的结果可以证明自主结算。原操作人显式核对后才登记成功的演练记为人工推进，业务结果依然可计入已验证完成。缺少结算来源的历史回执保留原业务记录，自主来源标为待核实。重复核对或迟到的事件均沿用首次记录。
 
+### 在本机复核 Worker 到控制面的演练链路
+
+已安装项目要求的本机 Spark 3.5.9 时，可以只对现金变更用例的文件演练执行一次真实计算：
+
+```bash
+SHUDUO_TEST_LOCAL_SPARK_WORKER_REHEARSAL=true node --test \
+  --test-name-pattern='the signed cash-change case reaches both exact consumers' \
+  test/v2/public-development-journey.test.mjs
+```
+
+测试把同一条作业事件送到项目 Worker 的 HTTP 入口两次。Worker 读取原始队列对象，运行交付包中的 SQL 和测试 SQL，并写出带原作业摘要的签名结果。控制面在重启后接收结果事件，校验两名客户的金额、五组回归以及首次结算来源；重复事件应保留同一条演练记录。诊断中的 `jobDeliveries: 2`、`executions: 1` 和 `resultObjects: 1` 分别表示事件送达次数、实际演练次数和产生的结果对象数。
+
+该模式使用内存对象存储、回环 HTTP 和模拟模型，其余开发及发布步骤沿用测试数据。只有文件演练计为本机真实 Spark 执行。业务完成与直接自主的正式评分仍取自受邀云端回执。
+
 ### 读取云端待审阅证据
 
 拿到原任务、确切交付编号和冻结需求的 SHA-256 后，可读取：

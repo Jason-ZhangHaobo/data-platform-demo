@@ -105,6 +105,77 @@ test("queue timeout leaves a signed cancellation marker for a delayed Worker", a
   assert.equal(verifyQueuedSparkCancellation(marker, marker.jobId, config, clock), "DEADLINE");
 });
 
+function syntheticStoredResult(serializedJob, format, now) {
+  const job = JSON.parse(serializedJob);
+  const result = { status: "SUCCEEDED" };
+  if (format !== "legacy") {
+    // Reformatting a restored object preserves its fields but changes its exact bytes.
+    const bytes = format === "original" ? serializedJob : JSON.stringify(job, null, 2);
+    result.queueJobDigest = createHash("sha256").update(bytes, "utf8").digest("hex");
+  }
+  return JSON.stringify(createQueuedSparkResult(job, result, config, now));
+}
+
+test("ordinary queue polling checks the exact job bytes when a stored result carries a digest", async () => {
+  const now = 1789900000000;
+  for (const format of ["legacy", "original", "reformatted"]) {
+    let resultKey, savedResult;
+    const writes = [];
+    const transport = {
+      create: async (key, body) => {
+        const job = JSON.parse(body);
+        assert.equal(key, config.jobPrefix + "/" + job.jobId + ".json");
+        writes.push(key);
+        resultKey = config.resultPrefix + "/" + job.jobId + ".json";
+        savedResult = syntheticStoredResult(body, format, now);
+        return { created: true };
+      },
+      read: async key => { assert.equal(key, resultKey); return savedResult; },
+    };
+    const client = new RemoteSparkQueueClient(config, transport, {
+      now: () => now, wait: () => assert.fail("the stored result is already available"),
+    });
+    if (format === "reformatted") await assert.rejects(client.execute(input), { code: "SPARK_QUEUE_RESULT_INVALID" });
+    else assert.deepEqual(await client.execute(input), JSON.parse(savedResult).result);
+    assert.equal(writes.length, 1);
+  }
+});
+
+test("Worker replay checks the original object before reporting an existing result, including a concurrent completion", async () => {
+  const now = 1789900000000;
+  for (const concurrent of [false, true]) {
+    for (const format of ["legacy", "original", "reformatted"]) {
+      const queued = createQueuedSparkJob(input, config, {now});
+      const serialized = JSON.stringify(queued.job);
+      const result = syntheticStoredResult(serialized, format, now);
+      const claimKey = config.resultPrefix + "/" + queued.job.jobId + ".claim";
+      const objects = new Map([[queued.jobKey, serialized]]);
+      const writes = [];
+      if (!concurrent) objects.set(queued.resultKey, result);
+      const transport = {
+        read: async key => objects.get(key),
+        create: async (key, _body, options) => {
+          assert.equal(key, claimKey);
+          assert.deepEqual(options, {retry:false, verifyCreateOnly:true});
+          writes.push(key);
+          objects.set(queued.resultKey, result); // The other worker finished before the claim reply.
+          return {created:false};
+        },
+      };
+      const consume = () => consumeQueuedSparkJob({jobKey:queued.jobKey, config, transport, now:() => now,
+        runner:() => assert.fail("replay must not start another computation")});
+      if (format === "reformatted") await assert.rejects(consume(), {code:"SPARK_QUEUE_RESULT_INVALID"});
+      else {
+        const replay = await consume();
+        assert.equal(replay.replayed, true);
+        assert.equal(replay.status, "SUCCEEDED");
+      }
+      assert.deepEqual(writes, concurrent ? [claimKey] : []);
+      assert.equal(objects.get(queued.resultKey), result);
+    }
+  }
+});
+
 test("exact rehearsal uses one OSS PUT and can read a signed result after expiry without writing cancellation", async () => {
   const requests=[];
   let clock=1789900000000, result;
