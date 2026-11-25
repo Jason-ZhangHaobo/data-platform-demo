@@ -4,6 +4,7 @@ import{getContext,contextIds,referenceSql,validationContractId}from'../../src/v2
 import{createDeliveryPackage,sha256}from'../../src/v2/delivery.mjs';
 import{developmentVerificationReport}from'../../src/v2/agent-development-workflow.mjs';
 import{checkedAgentWorkflow,exactDeliveryAdvance}from'../../web/src/agent-workflow-read.ts';import{agentJourney}from'../../web/src/agent-journey.ts';
+import {checkOriginalRehearsal,pendingOriginalRehearsal,settlementLabel} from '../../web/src/rehearsal-result-check.ts';
 const uuid=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 function fixture(t,{manual=false}={}){
  const store=new MetadataStore(':memory:');t.after(()=>store.close());
@@ -78,6 +79,59 @@ test('only exact private rehearsal failures can display confirmed Worker evidenc
  assert.equal((await checkedAgentWorkflow(value,f.selection)).verification.workerResult,'PENDING');
  value.publication.scope='LOCAL_TEST_RELEASE';
  await assert.rejects(checkedAgentWorkflow(value,f.selection),/未确认/);
+});
+
+test('original result check posts the pinned batch once and reads it back even when the reply was lost',async t=>{
+ const f=fixture(t),value=structuredClone(f.value);
+ value.publication.scope='PRIVATE_CLOUD_TEST';
+ Object.assign(value.delivery,{sourcePinned:true,mode:'DURABLE_AGENT_DELIVERY_V1',status:'RUNNING',
+   stage:'FILE_REHEARSAL_RUNNING',rehearsalBackground:{wakeId:uuid(9),state:'BATCH_RESERVED'}});
+ value.verification={id:value.delivery.verificationId,status:'RUNNING'};
+ const saved=await checkedAgentWorkflow(value,f.selection);
+ assert.equal(pendingOriginalRehearsal(saved),true);
+ const done=structuredClone(saved);
+ done.delivery.status='SUCCEEDED';done.delivery.stage='AWAITING_ENGINEER_REVIEW';
+ done.verification={...f.value.verification};
+ for(const [lost,latest,expected] of [[false,saved,/仍待确认/],[true,saved,/结果未知/],[true,done,/结果已保存/]]){
+   const calls=[],submissions=[];
+   const message=await checkOriginalRehearsal(saved,async(path,body)=>{
+     calls.push('POST');
+     submissions.push({path,body});
+     if(lost)throw Error('reply lost');
+   },async()=>{calls.push('GET');return latest;});
+   assert.deepEqual(calls,['POST','GET']);assert.match(message,expected);
+   assert.deepEqual(submissions,[{path:'/agent/deliveries/'+saved.delivery.id+'/advance',body:{expectedVersion:saved.delivery.version,
+     rehearsal:{packageId:saved.package.id,packageDigest:saved.package.digest,verificationId:saved.verification.id}}}]);
+ }
+ assert.equal(pendingOriginalRehearsal(done),false);
+});
+test('an unavailable read or a changed batch cannot report success',async t=>{
+ const f=fixture(t),w=structuredClone(f.value);
+ w.publication.scope='PRIVATE_CLOUD_TEST';w.eventDrivenRehearsal=true;
+ Object.assign(w.delivery,{sourcePinned:true,mode:'DURABLE_AGENT_DELIVERY_V1',status:'RUNNING',stage:'FILE_REHEARSAL_RUNNING'});
+ w.verification.status='RUNNING';
+ const post=async()=>{throw Error('lost');};
+ assert.match(await checkOriginalRehearsal(w,async()=>{throw Object.assign(Error('denied'),{status:403});},async()=>w),/无权登记回执/);
+ await assert.rejects(checkOriginalRehearsal(w,post,async()=>{throw Error('read unavailable');}),/read unavailable/);
+ assert.equal(await checkOriginalRehearsal(w,post,async()=>undefined),undefined,'superseded read has no result');
+ for(const change of [{id:uuid(8)},{verificationId:uuid(8)},{packageDigest:'a'.repeat(64)},{sourceRevisionId:uuid(8)}]){
+   await assert.rejects(checkOriginalRehearsal(w,post,async()=>({...w,delivery:{...w.delivery,...change}})),/原演练批次不符/);
+ }
+});
+test('reopened terminal workflows only attribute settlement from matching stored evidence',async t=>{
+ const f=fixture(t),w=structuredClone(f.value);
+ w.publication.scope='PRIVATE_CLOUD_TEST';
+ Object.assign(w.delivery,{sourcePinned:true,mode:'DURABLE_AGENT_DELIVERY_V1'});
+ const seen=await checkedAgentWorkflow(w,f.selection);
+ assert.equal(settlementLabel(seen.verification.settlementEvidence),'历史回执未记录');
+ for(const [trigger,label] of [['SIGNED_RESULT_EVENT','后台收到签名结果事件'],['SIGNED_REHEARSAL_WAKE','后台执行签名演练事件时取得回执'],['OWNER_RECONCILIATION','操作人核对原批次']]){
+   const proof={trigger,deliveryId:w.delivery.id,packageId:w.package.id,packageDigest:w.package.digest,verificationId:w.verification.id,workerResultDigest:'a'.repeat(64)};
+   const withProof={...w,verification:{...w.verification,settlementEvidence:proof}};
+   assert.equal(settlementLabel((await checkedAgentWorkflow(withProof,f.selection)).verification.settlementEvidence),label);
+   for(const change of [{deliveryId:uuid(7)},{packageId:uuid(7)},{packageDigest:'b'.repeat(64)},{verificationId:uuid(8)},{workerResultDigest:'bad'},{trigger:'UNKNOWN'}]){
+     await assert.rejects(checkedAgentWorkflow({...withProof,verification:{...withProof.verification,settlementEvidence:{...proof,...change}}},f.selection),/未确认/);
+   }
+ }
 });
 test('actual readonly HTTP projection is compatible and does not create new records',async t=>{
  const f=fixture(t),app=createV2Server({store:f.store,env:{V2_LOCAL_DEVELOPMENT:'true',V2_RELEASE_SCHEDULER_MODE:'DISABLED'}});

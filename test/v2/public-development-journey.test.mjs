@@ -550,6 +550,7 @@ test('v3-inspect recovers the same delivery files and rehearsal after CLI termin
   assert.equal(final.delivery.packageDigest,accepted.packageDigest);
   assert.equal(final.delivery.rehearsal.id,verification.id);
   assert.equal(final.delivery.rehearsal.status,'SUCCEEDED');
+  assert.equal(final.delivery.rehearsal.settlementEvidence.trigger,'OWNER_RECONCILIATION');
   assert.equal(final.delivery.rehearsal.reservedDurationMs,verification.reservedDurationMs);
   assert.deepEqual(requests.slice(lastOffset).map(({method})=>method),['GET','GET','GET']);
   assert.equal(requests.at(-1).path,taskPath+'/delivery-requests/'+deliveryKey);
@@ -1765,10 +1766,12 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
   alter=undefined;
   if(backgroundPublication){
-    alter=(path,value)=>{if(path===taskPath+'/delivery-requests/'+deliveryRequestId)delete value.rehearsalInitiationEvidence;};
-    await cli('v3-complete',completionFlags,1);
-    assert.equal(existsSync(completionFile),false);
-    assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+    for (const key of ['rehearsalInitiationEvidence','rehearsalSettlementEvidence']) {
+      alter=(path,value)=>{if(path===taskPath+'/delivery-requests/'+deliveryRequestId)delete value[key];};
+      await cli('v3-complete',completionFlags,1);
+      assert.equal(existsSync(completionFile),false);
+      assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+    }
     alter=undefined;
   }
   if(withAgentEvidence){
@@ -1850,12 +1853,16 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
       phases:run.cases[0].phaseAttribution.phases,verifiedCloudCases:run.verifiedCloudCaseCount}));
   }
   if (backgroundPublication) {
-    const proof=saved().outcomes[0].rehearsal.initiationEvidence;
+    const {initiationEvidence:proof,settlementEvidence}=saved().outcomes[0].rehearsal;
     assert.equal(proof.wakeId,rehearsalWakeId);
     assert.equal(proof.verificationId,verificationId);
     assert.equal(proof.workerResultDigest,f.store.get('delivery_verification',verificationId,PROJECT).workerResultDigest);
     assert.deepEqual(run.cases[0].rehearsalInitiationEvidence,proof);
     assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).rehearsalInitiationEvidence,proof);
+    assert.equal(settlementEvidence.trigger,'SIGNED_RESULT_EVENT');
+    assert.equal(settlementEvidence.workerResultDigest,proof.workerResultDigest);
+    assert.deepEqual(run.cases[0].rehearsalSettlementEvidence,settlementEvidence);
+    assert.deepEqual(JSON.parse(readFileSync(completionFile,'utf8')).rehearsalSettlementEvidence,settlementEvidence);
   }
   const wrongConsumptionPath=join(f.directory,'wrong-consumption-attribution.json'),wrongConsumption=saved();
   wrongConsumption.outcomes[0].consumption[batchIds[0]].attribution.dapi.callIdDigest='a'.repeat(64);

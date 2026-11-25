@@ -6,7 +6,7 @@ import {validPublicationInitiation} from './publication-initiation-evidence.mjs'
 import {validStoredPublicationSchedule} from './cloud-release-evidence.mjs';
 import {validBatchConsumptionAttribution} from './service-consumption-attribution.mjs';
 import {liveEvidenceAttribution} from './live-lifecycle-provenance.mjs';
-import {validBackgroundRehearsalEvidence} from './rehearsal-wake.mjs';
+import {validBackgroundRehearsalEvidence, validRehearsalSettlementEvidence} from './rehearsal-wake.mjs';
 import {storedAgentConsumptionProofs} from './cloud-v3-agent-consumption.mjs';
 
 const id=value=>typeof value==='string'&&uuid.test(value);
@@ -19,6 +19,15 @@ function executionOrigin(triggers) {
   const types=new Set(triggers);
   if (types.size===0 || types.has('UNRECORDED')) return unrecorded;
   return types.size===1 ? triggers[0] : 'MULTIPLE_DRIVERS_RECORDED';
+}
+
+function rehearsalOrigin(code, delivery, rehearsal) {
+  if (rehearsal?.status !== 'SUCCEEDED' || rehearsal.stage !== 'AWAITING_ENGINEER_REVIEW' || !id(rehearsal.id)) return pending;
+  const settlement = rehearsal.settlementEvidence;
+  if (code?.sourceKind !== 'AGENT' ||
+      !validRehearsalSettlementEvidence(settlement,delivery,rehearsal,rehearsal.initiationEvidence)) return unrecorded;
+  if (settlement.trigger === 'OWNER_RECONCILIATION') return settlement.trigger;
+  return validBackgroundRehearsalEvidence(rehearsal.initiationEvidence,code,delivery,rehearsal) ? signed : unrecorded;
 }
 
 function consumptionOrigin(item, publication) {
@@ -49,7 +58,6 @@ export function cloudV3PhaseAttribution(item, {approvalTimingVerified=false,veri
     rehearsal?.id===publication.verificationId && publication.sourceRunId===code.runId;
   const published=Boolean(exactPublication && validPublicationInitiation(publication.initiationEvidence,code,publication));
   const scheduled=exactPublication&&validStoredPublicationSchedule(publication.scheduledBatches,publication);
-  const verifiedRehearsal=rehearsal?.status==='SUCCEEDED'&&rehearsal.stage==='AWAITING_ENGINEER_REVIEW'&&id(rehearsal.id);
   const requirement=code?.requirementBinding;
   const phases={
     requirements: nativeCode && requirement?.protocol===sqlRequirementProtocol && requirement.taskId===item.taskId &&
@@ -57,7 +65,7 @@ export function cloudV3PhaseAttribution(item, {approvalTimingVerified=false,veri
     code: recorded?executionOrigin(attempts.map(attempt=>attempt.modelTrigger)):code?unrecorded:pending,
     sparkDebugging: recorded?executionOrigin(attempts.flatMap(attempt=>attempt.spark?.submissionTriggers??[])):code?unrecorded:pending,
     deliveryFiles: prepared?signed:delivery?.status==='CONFIRMED'?unrecorded:pending,
-    fileRehearsal: nativeCode&&validBackgroundRehearsalEvidence(rehearsal?.initiationEvidence,code,delivery,rehearsal)?signed:verifiedRehearsal?unrecorded:pending,
+    fileRehearsal: rehearsalOrigin(nativeCode ? code : undefined, delivery, rehearsal),
     publication: published?publication.initiationEvidence.trigger:publication?.status==='CONFIRMED'?unrecorded:pending,
     schedulingAndMonitoring: scheduled?'FC_TIMER_AND_SIGNED_WORKER_RESULT':publication?.monitoring?unrecorded:pending,
     authorizedConsumption: exactPublication?consumptionOrigin(item,publication):pending,
@@ -69,7 +77,7 @@ export function cloudV3PhaseAttribution(item, {approvalTimingVerified=false,veri
   const executionEvidence=provenance.synthetic||item.developmentObservation?.provenance==='TEST_HARNESS'?'TEST_HARNESS':provenance.unconfirmed?'UNCONFIRMED':'STORED';
   const intervention=provenance.engineerRescue?'ENGINEER_RESCUE':provenance.humanClarification?'BUSINESS_CLARIFICATION':
     provenance.nonNative?'NON_NATIVE_SOURCE':'NO_RESCUE_RECORDED';
-  const ownerAdvanceRecorded=triggers.includes('OWNER_ADVANCE');
+  const ownerAdvanceRecorded=triggers.includes('OWNER_ADVANCE') || phases.fileRehearsal==='OWNER_RECONCILIATION';
   const approval=exactPublication&&approvalTimingVerified
     ? {status:'RECORDED',waitMs:Date.parse(publication.approvalTiming.approvedAt)-Date.parse(publication.approvalTiming.readyAt)}
     : {status:'UNCONFIRMED'};

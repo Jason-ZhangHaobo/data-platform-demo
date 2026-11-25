@@ -15,6 +15,10 @@ export type Delivery = {calendarSelection?:CalendarSelection;id:string;version:n
  rehearsalBackground?:{wakeId:string;state:'DELIVERY_UNKNOWN'|'QUEUED'|'BATCH_RESERVED'}};
 type PreparationSource = {revisionId:string;revisionHash:string;runId:string;requirementBinding?:{protocol:string;taskId:string;basisDigest:string;reportDigest:string}};
 export type FundReviewBasis = {status:"READY";digest:string} | {status:"UNAVAILABLE"};
+export type RehearsalSettlementEvidence = {
+ trigger:"SIGNED_RESULT_EVENT"|"SIGNED_REHEARSAL_WAKE"|"OWNER_RECONCILIATION";
+ deliveryId:string;packageId:string;packageDigest:string;verificationId:string;workerResultDigest:string;
+};
 export type FileReview={id:string;status:"REVIEWED";packageId:string;packageDigest:string;verificationId:string;reviewedAt:string;scope:"LOCAL_FILE_REVIEW";fundRehearsalDigest?:string};
 export type Workflow = {
  preparationRequest?:{requestId:string;status:'FOUND'|'NOT_FOUND';deliveryId?:string};
@@ -26,7 +30,7 @@ export type Workflow = {
  report:{developmentReference?:AssistedDevelopmentReference;taskId:string;sourceKind?:string;agentIndependentE2E?:boolean;contextId?:string;validationContractId?:string;validationDetails?:ValidationDetailsReport;status:string;summary:string;definition?:string;checks:{id:string;label:string;passed:boolean}[];revisionId?:string;revisionHash?:string;runId?:string;rowCount:number;engine?:string;engineVersion?:string;notice:string};
  delivery?:Delivery;
  package?:{id:string;digest:string;manifest:unknown;files:Record<string,string>};
- verification?:{id:string;status:string;engine?:string;engineVersion?:string;mainSqlExecuted?:boolean;durationMs?:number;error?:string;workerResult?:"CONFIRMED"|"PENDING";testSqlValidation?:{passed:boolean};validation?:{passed:boolean;regressions?:{contextId:string;passed:boolean}[]};fundReview?:FundReviewBasis};
+ verification?:{id:string;status:string;engine?:string;engineVersion?:string;mainSqlExecuted?:boolean;durationMs?:number;error?:string;workerResult?:"CONFIRMED"|"PENDING";testSqlValidation?:{passed:boolean};validation?:{passed:boolean;regressions?:{contextId:string;passed:boolean}[]};fundReview?:FundReviewBasis;settlementEvidence?:RehearsalSettlementEvidence};
  publication:{available:boolean;scope:string;reason:string};
 };
 export type WorkflowSelection={preparationRequestId?:string;deliveryId?:string;taskId:string;contextId?:string;revisionId?:string;runId?:string;manual:boolean;assisted?:boolean;expectedSourceBinding?:ServiceSourceBinding;fundPreparation?:FundExecutionBinding};
@@ -214,6 +218,12 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
   if(v.workerResult!==undefined&&(p.scope!=="PRIVATE_CLOUD_TEST"||selection.manual||
     !(v.status==="FAILED"&&(v.workerResult==="CONFIRMED"||v.workerResult==="PENDING")||
       v.status==="RUNNING"&&v.workerResult==="PENDING")))throw bad();
+  if(v.settlementEvidence!==undefined){
+   const proof=v.settlementEvidence;
+   if(!record(proof)||!['SIGNED_RESULT_EVENT','SIGNED_REHEARSAL_WAKE','OWNER_RECONCILIATION'].includes(String(proof.trigger))||
+      !['SUCCEEDED','FAILED'].includes(String(v.status))||proof.deliveryId!==d.id||proof.packageId!==b.id||
+      proof.packageDigest!==b.digest||proof.verificationId!==v.id||!hash(proof.workerResultDigest))throw bad();
+  }
   const basis=v.fundReview;
   if(signedFund&&v.status==='SUCCEEDED'){
    if(!record(basis)||!(basis.status==='READY'&&hash(basis.digest)||basis.status==='UNAVAILABLE'&&basis.digest===undefined))throw bad();

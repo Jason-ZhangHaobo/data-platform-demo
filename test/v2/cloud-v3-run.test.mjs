@@ -184,8 +184,44 @@ test("cloud completion cannot be created from consumer matches alone, unsettled 
       applicationId:id(70+index),dapi:invocation(0),xapi:invocation(2)};
   }
   const verifiedScope=cloudV3CompletionReceipt(original,paired,time(9)).scope;
+  const unprovenSettlement = cloudV3PhaseAttribution(paired,{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope});
+  assert.equal(verifiedScope,'INVITED_CLOUD_MATCHED');
+  assert.equal(unprovenSettlement.directAutonomousEligible,false);
+  assert.equal(unprovenSettlement.phases.fileRehearsal,'ORIGIN_UNCONFIRMED');
+  assert.deepEqual(unprovenSettlement.unconfirmedAutonomousStages,['fileRehearsal']);
+  assert.equal(cloudV3CompletionReceipt(original,paired,time(9)).rehearsalSettlementEvidence,undefined);
+  paired.rehearsal.settlementEvidence={trigger:'SIGNED_RESULT_EVENT',deliveryId:delivery.id,packageId:delivery.packageId,
+    packageDigest:delivery.packageDigest,verificationId:paired.rehearsal.id,workerResultDigest:hex(80)};
   const classified=cloudV3PhaseAttribution(paired,{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope});
   assert.equal(classified.directAutonomousEligible,true);
+  assert.deepEqual(cloudV3CompletionReceipt(original,paired,time(9)).rehearsalSettlementEvidence,paired.rehearsal.settlementEvidence);
+  const inline=structuredClone(paired);
+  inline.rehearsal.settlementEvidence.trigger='SIGNED_REHEARSAL_WAKE';
+  assert.equal(cloudV3PhaseAttribution(inline,{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope}).directAutonomousEligible,true);
+  const manuallySettled=structuredClone(paired);
+  manuallySettled.rehearsal.settlementEvidence.trigger='OWNER_RECONCILIATION';
+  const ownerSettledScope=cloudV3CompletionReceipt(original,manuallySettled,time(9)).scope;
+  assert.equal(ownerSettledScope,'INVITED_CLOUD_MATCHED');
+  const ownerSettled=cloudV3PhaseAttribution(manuallySettled,{approvalTimingVerified:true,verifiedCompletionScope:ownerSettledScope});
+  assert.equal(ownerSettled.directAutonomousEligible,false);
+  assert.equal(ownerSettled.ownerAdvanceRecorded,true);
+  assert.equal(ownerSettled.phases.fileRehearsal,'OWNER_RECONCILIATION');
+  const attributions=[classified,ownerSettled,unprovenSettlement];
+  const scores=summarizeCloudV3Progress(currentLiveLifecycleContract,
+    Array.from({length:currentLiveLifecycleContract.expectedCaseCount},(_,index)=>({
+      caseId:String(index), ...(attributions[index]
+        ? {status:'CLOUD_CHAIN_VERIFIED',evidenceScope:verifiedScope,phaseAttribution:attributions[index]}
+        : {status:'NOT_STARTED'}),
+    })));
+  assert.equal(scores.denominator,20);
+  assert.equal(scores.reviewedCloudSuccesses,3);
+  assert.equal(scores.directAutonomousSuccesses,1);
+  assert.equal(scores.ownerAdvancedCloudCases,1);
+  assert.equal(scores.unconfirmedAutonomousCloudCases,1);
+  const wrongSettlement=structuredClone(paired);
+  wrongSettlement.rehearsal.settlementEvidence.workerResultDigest=hex(123);
+  assert.throws(()=>cloudV3CompletionReceipt(original,wrongSettlement,time(9)));
+  assert.equal(cloudV3PhaseAttribution(wrongSettlement,{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope}).directAutonomousEligible,false);
   assert.deepEqual(classified.unconfirmedAutonomousStages,[]);
   assert.equal(cloudV3PhaseAttribution(paired,{approvalTimingVerified:true,verifiedCompletionScope:'LOCAL_MATCHED_ONLY'}).directAutonomousEligible,false);
   assert.equal(cloudV3PhaseAttribution({...paired,synthetic:true},{approvalTimingVerified:true,verifiedCompletionScope:verifiedScope}).directAutonomousEligible,false);
