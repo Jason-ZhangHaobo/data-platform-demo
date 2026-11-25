@@ -1,5 +1,6 @@
 import {syncSqlSelectionFromBinding,materializedSyncInputKind} from '../../src/v2/sync-sql-selection.mjs';
 import {MaterializedSyncInputPicker,materializedModeLabels} from './MaterializedSyncInputPicker';
+import {syncLandingEvidenceMessage} from './sync-landing-evidence';
 import {recoverManualRun} from './manual-run-confirmation';
 import {frozenDeliveryMode} from './frozen-delivery-mode';
 import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
@@ -185,6 +186,9 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     syncChoiceSequence.current++;
     setSyncRequested(false);setSyncOffer(undefined);setSyncOfferState("");
   }
+  const syncOfferError = (cause: unknown) =>
+    syncLandingEvidenceMessage((cause as { code?: unknown } | undefined)?.code) ??
+    (cause instanceof Error ? cause.message : "同步持仓批次尚未确认。");
   async function selectLatestSync(){
     const token=epoch.current;
     const sequence=++syncChoiceSequence.current;
@@ -194,7 +198,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
       const offer=await readSyncedPositions({request:path=>api<unknown>(path)});
       if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current){setSyncOffer(offer);setSyncOfferState("");}
     }catch(cause){
-      if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current)setSyncOfferState((cause as Error).message);
+      if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current)setSyncOfferState(syncOfferError(cause));
     }
   }
   async function selectArchivedSync(candidate:SyncSqlArchiveCandidate){
@@ -202,12 +206,12 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     setSyncRequested(true);setSyncOffer(undefined);setSyncOfferState('正在核对原持仓批次…');
     try{const offer=await readArchivedSyncedPositions({request:path=>api(path)},candidate);
       if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current){setSyncOffer(offer);setSyncOfferState('原批次已核对。提交开发时将再次核对并冻结，不会替换为当前表。');}}
-    catch(cause){if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current)setSyncOfferState((cause as Error).message);}
+    catch(cause){if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current)setSyncOfferState(syncOfferError(cause));}
   }
   async function selectMaterializedSync(candidate:MaterializedSyncSqlCandidate){
     const token=epoch.current,sequence=++syncChoiceSequence.current;setSyncRequested(true);setSyncOffer(undefined);setSyncOfferState('正在核对完整目标快照…');
     try{const offer=await readMaterializedSyncedPositions({request:path=>api(path)},candidate);if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current){setSyncOffer(offer);setSyncOfferState('完整目标快照已核对。提交时再次核对并冻结，不使用原始事件或当前表替代。');}}
-    catch(cause){if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current)setSyncOfferState((cause as Error).message);}
+    catch(cause){if(alive.current&&epoch.current===token&&sequence===syncChoiceSequence.current)setSyncOfferState(syncOfferError(cause));}
   }
   const runPending = Boolean(run && !terminal(run.status));
   const working = automatic || busy, durable = task?.executionMode === "DURABLE_SQL_AGENT_V1";
@@ -626,12 +630,13 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     } catch (e) {
       if(alive.current&&epoch.current===token){
         const code=(e as {code?:string}).code;
-        if(selectedSync && (code==="SYNC_SQL_INPUT_STALE" || code==="SYNC_SQL_INPUT_UNAVAILABLE" || code==="SYNC_SQL_INPUT_INVALID")){
+        const landingEvidenceMessage = syncLandingEvidenceMessage(code);
+        if(selectedSync && (landingEvidenceMessage || code==="SYNC_SQL_INPUT_STALE" || code==="SYNC_SQL_INPUT_UNAVAILABLE" || code==="SYNC_SQL_INPUT_INVALID")){
           const controller=submissionController(),key=controller.snapshot().key;
           if(key) controller.acknowledge(key);
           rememberSelection();setSyncOffer(undefined);
-          setSyncOfferState("同步批次未受理。请重新核对批次后提交，原需求已保留。");
-          setError((e as Error).message);
+          setSyncOfferState(landingEvidenceMessage ?? "同步批次未受理。请重新核对批次后提交，原需求已保留。");
+          setError(landingEvidenceMessage ? "当前同步持仓未受理，原需求已保留。" : (e as Error).message);
         }else setError((e as Error).message+" 输入仍在本页，原编号已保留在恢复链接中，请先查询原任务。");
       }
     }
@@ -876,7 +881,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
           </>}
         </div>
         {frozenInput ? <p className="agent-dev-notice">可在代码区修改并运行同一份冻结输入。需要重新委托 Agent 时，请新建任务并确认完整需求与同步批次。</p> : fundTask ? <p className="agent-dev-notice">基金开发基于已保存的口径。{durable ? "修改交易日或需求时，须使用对应的受邀开发窗口。" : "需要调整业务需求时，请新建基金准备。"}</p> : task?.stage==='REQUIREMENT_CLARIFICATION_REQUIRED' ? <AgentClarificationReply answer={message} onChange={setMessage} onReply={()=>void answerClarification()} disabled={Boolean(clarificationReason)||taskOnly||readOnly||Boolean(publicationTarget)||!ready||!canWrite||working||dirty||runPending} reason={clarificationReason??(dirty?'请先处理当前代码编辑，回答不会替换未保存代码。':readinessReason)} background={backgroundAvailable&&!taskOnly&&!readOnly&&!publicationTarget?{checked:backgroundConsent,onChange:setBackgroundConsent}:undefined}/> : (
-        <form className="agent-dev-compose" onSubmit={e => { e.preventDefault(); void send(); }}><label htmlFor="agent-dev-message">{taskOnly ? "本窗口不创建新的需求任务" : derivationActive?"确认新口径任务的需求":task ? "基于当前代码提出下一次修改" : manualSuccessReady?"描述对手工版本的修改":"描述开发需求"}</label><textarea id="agent-dev-message" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} placeholder="例如：计算客户总资产，检查现金是否被重复累计…" disabled={taskOnly||readOnly||Boolean(publicationTarget)||working} />{backgroundAvailable&&!taskOnly&&!readOnly&&!publicationTarget&&<label className="agent-dev-consent"><input type="checkbox" checked={backgroundConsent} disabled={working} onChange={e=>setBackgroundConsent(e.target.checked)}/>委托云后台推进本次开发（15分钟、最多20个事件；沿用模型与执行预算，不自动发布）</label>}<div><small>{taskOnly ? "使用上方原任务的继续／恢复操作，不会清零历史" : readOnly || publicationTarget ? "当前不会调用模型或开发计算" : derivationActive?"确认后才新建任务并调用模型与 Spark，原批准不继承":"本次将真实调用模型与隔离 Spark"}</small><button className="button primary" type="submit" disabled={taskOnly || !ready || !canWrite || working || runPending || Boolean(assistedChatReason) || syncSelectionPending || message.trim().length < 4 || derivationActive&&Boolean(derivationSubmitReason)}><Send size={14} />{derivationActive?"确认新建口径任务并验证":manualSuccessReady?"基于手工版本修改并验证":"按此口径生成并验证"}</button></div>{assistedChatReason&&<p role="status">{assistedChatReason}</p>}</form>
+        <form className="agent-dev-compose" onSubmit={e => { e.preventDefault(); void send(); }}><label htmlFor="agent-dev-message">{taskOnly ? "本窗口不创建新的需求任务" : derivationActive?"确认新口径任务的需求":task ? "基于当前代码提出下一次修改" : manualSuccessReady?"描述对手工版本的修改":"描述开发需求"}</label><textarea id="agent-dev-message" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} placeholder="例如：计算客户总资产，检查现金是否被重复累计…" disabled={taskOnly||readOnly||Boolean(publicationTarget)||working} />{backgroundAvailable&&!taskOnly&&!readOnly&&!publicationTarget&&<label className="agent-dev-consent"><input type="checkbox" checked={backgroundConsent} disabled={working} onChange={e=>setBackgroundConsent(e.target.checked)}/>委托云后台推进本次开发（15分钟、最多20个事件；沿用模型与执行预算，不自动发布）</label>}<div><small>{taskOnly ? "使用上方原任务的继续／恢复操作，不会清零历史" : readOnly || publicationTarget ? "当前不会调用模型或开发计算" : syncSelectionPending ? "核对通过后才可使用该批次提交。" : derivationActive?"确认后才新建任务并调用模型与 Spark，原批准不继承":"本次将真实调用模型与隔离 Spark"}</small><button className="button primary" type="submit" disabled={taskOnly || !ready || !canWrite || working || runPending || Boolean(assistedChatReason) || syncSelectionPending || message.trim().length < 4 || derivationActive&&Boolean(derivationSubmitReason)}><Send size={14} />{derivationActive?"确认新建口径任务并验证":manualSuccessReady?"基于手工版本修改并验证":"按此口径生成并验证"}</button></div>{assistedChatReason&&<p role="status">{assistedChatReason}</p>}</form>
         )}
       </section>
       <section id="agent-code" className="agent-dev-artifacts"><header><div><FileCode2 size={16} /><strong>main.sql</strong><span>{dirty ? "修改待验证" : baselineRevisionId ? `版本 ${baselineRevisionId.slice(0,8)}` : "等待生成"}</span></div><div><button className="icon-button" aria-label="查看代码差异" disabled={!dirty && !task?.initialSql} title={!dirty && !task?.initialSql ? "没有原始草稿，不能重建历史差异" : "对照原始或未修改版本"} aria-pressed={diff} onClick={() => setDiff(!diff)}><GitCompareArrows size={16} /></button><button className="icon-button" disabled={working || !dirty} aria-label="撤销未保存修改" onClick={() => setDraft(baseline)}><Undo2 size={15} /></button></div></header>

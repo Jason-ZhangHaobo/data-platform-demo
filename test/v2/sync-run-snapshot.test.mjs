@@ -56,7 +56,7 @@ test('archive tampering, missing archive and wrong task binding never return mut
   const recachedHash=syncSnapshotDigest(changed),recachedPayload=JSON.stringify(changed);
   f.landingStore.db.prepare('UPDATE landing_run_snapshots SET payload=?,snapshot_hash=?,byte_count=?').run(recachedPayload,recachedHash,Buffer.byteLength(recachedPayload));
   f.store.update('offline_sync_run',f.run.id,PROJECT,{landingSnapshotHash:recachedHash});
-  assert.throws(()=>f.manager.previewRunSnapshot(f.task.id,f.run.id),{code:'SYNC_SNAPSHOT_MISMATCH'});
+  assert.throws(()=>f.manager.previewRunSnapshot(f.task.id,f.run.id),{code:'SYNC_LANDING_RECEIPT_MISMATCH'});
   f.landingStore.db.prepare('UPDATE landing_run_snapshots SET payload=?,snapshot_hash=?,byte_count=?').run(record.payload,record.snapshot_hash,record.byte_count);
   f.store.update('offline_sync_run',f.run.id,PROJECT,{landingSnapshotHash:f.run.landingSnapshotHash});
   f.store.update('offline_sync_run',f.run.id,PROJECT,{configHash:'wrong-version'});
@@ -64,7 +64,10 @@ test('archive tampering, missing archive and wrong task binding never return mut
   f.store.update('offline_sync_run',f.run.id,PROJECT,{configHash:f.task.configHash});
   f.landingStore.db.prepare('DELETE FROM landing_run_snapshots').run();
   assert.throws(()=>f.manager.previewRunSnapshot(f.task.id,f.run.id),{code:'SYNC_SNAPSHOT_MISSING'});
-  f.store.update('offline_sync_run',f.run.id,PROJECT,{snapshotStatus:undefined,landingSnapshotHash:undefined});
+  f.landingStore.db.prepare('DELETE FROM landing_run_receipts WHERE run_id=?').run(f.run.id);
+  f.store.update('offline_sync_run',f.run.id,PROJECT,{
+    snapshotStatus:undefined,landingSnapshotHash:undefined,standardReceiptVersion:undefined,landingReceiptHash:undefined,
+  });
   const legacy=f.manager.previewRunSnapshot(f.task.id,f.run.id);
   assert.equal(legacy.status,'NOT_RETAINED');assert.equal(legacy.reason,'LEGACY_RUN');assert.equal(legacy.rows,undefined);
   f.store.update('offline_sync_run',f.run.id,PROJECT,{status:'FAILED'});

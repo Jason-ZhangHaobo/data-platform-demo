@@ -229,6 +229,60 @@ test('interrupted and legacy failed runs lacking a new exact receipt are not rer
   assert.equal(f.manager.runTask(firstTask.id, requestFor(firstTask, failed.requestKey)).status, 'FAILED');
 });
 
+test('marked v1 archives require their exact execution receipt while authentic legacy archives remain readable', t => {
+  const f = setup(t), task = f.task(f.source()), request = requestFor(task);
+  const run = f.manager.runTask(task.id, request);
+  const archive = f.manager.previewRunSnapshot(task.id, run.id);
+  const receipt = f.landing.db.prepare('SELECT * FROM landing_run_receipts WHERE run_id=?').get(run.id);
+  f.landing.db.prepare('DELETE FROM landing_run_receipts WHERE run_id=?').run(run.id);
+  assert.throws(() => f.manager.previewRunSnapshot(task.id, run.id), { code: 'SYNC_LANDING_RECEIPT_MISSING' });
+  assert.throws(() => f.manager.taskRunRequest(task.id, request.requestKey), { code: 'SYNC_LANDING_RECEIPT_MISSING' });
+  f.landing.db.prepare('INSERT INTO landing_run_receipts VALUES(?,?,?,?)')
+    .run(receipt.run_id, receipt.target_table, receipt.payload, receipt.receipt_hash);
+  f.store.update('offline_sync_run', run.id, project, { standardReceiptVersion: undefined });
+  assert.throws(() => f.manager.previewRunSnapshot(task.id, run.id), { code: 'SYNC_LANDING_RECEIPT_MISMATCH' });
+  assert.throws(() => f.manager.runTask(task.id, request), { code: 'SYNC_LANDING_RECEIPT_MISMATCH' });
+  f.store.update('offline_sync_run', run.id, project, { standardReceiptVersion: 2, landingReceiptHash: undefined });
+  assert.throws(() => f.manager.previewRunSnapshot(task.id, run.id), { code: 'SYNC_LANDING_RECEIPT_MISMATCH' });
+  f.store.update('offline_sync_run', run.id, project, { standardReceiptVersion: undefined });
+  f.landing.db.prepare('DELETE FROM landing_run_receipts WHERE run_id=?').run(run.id);
+  assert.deepEqual(f.manager.previewRunSnapshot(task.id, run.id), archive);
+});
+
+test('a durable receipt prevents using a run with missing version markers as legacy after reopening SQLite', t => {
+  const f = setup(t), task = f.task(f.source()), request = requestFor(task);
+  const run = f.manager.runTask(task.id, request);
+  const archive = f.manager.previewRunSnapshot(task.id, run.id);
+  const originalProof = f.manager.taskRunRequest(task.id, request.requestKey).landingEvidence;
+  const { receiptHash } = originalProof;
+  f.store.update('offline_sync_run', run.id, project, { standardReceiptVersion: undefined, landingReceiptHash: undefined });
+  f.reopen();
+
+  assert.equal(f.landing.hasStandardRunReceipt(run.id), true);
+  assert.equal(f.landing.hasStandardRunReceiptForTarget(task.targetTable), true);
+  const before = f.store.get('offline_sync_run', run.id, project);
+  const mismatch = { status: 409, code: 'SYNC_LANDING_RECEIPT_MISMATCH' };
+  const assertBlocked = () => {
+    assert.throws(() => f.manager.taskRunRequest(task.id, request.requestKey), mismatch);
+    assert.throws(() => f.manager.settleTaskRunRequest(task.id, request.requestKey, { runId: run.id, receiptHash }), mismatch);
+    assert.throws(() => f.manager.runTask(task.id, request), mismatch);
+    assert.throws(() => f.manager.previewRunSnapshot(task.id, run.id), mismatch);
+    assert.deepEqual(f.store.get('offline_sync_run', run.id, project), before);
+    assert.equal(f.landing.inspectTarget(task.targetTable).targetHash, run.targetHash);
+  };
+  assertBlocked();
+
+  f.landing.db.prepare('UPDATE landing_run_receipts SET payload=? WHERE run_id=?').run('invalid JSON', run.id);
+  assert.equal(f.landing.hasStandardRunReceipt(run.id), true);
+  assertBlocked();
+
+  f.landing.db.prepare('DELETE FROM landing_run_receipts WHERE run_id=?').run(run.id);
+  assert.equal(f.landing.hasStandardRunReceipt(run.id), false);
+  assert.equal(f.landing.hasStandardRunReceiptForTarget(task.targetTable), false);
+  assert.equal(f.manager.taskRunRequest(task.id, request.requestKey).landingEvidence, undefined);
+  assert.deepEqual(f.manager.previewRunSnapshot(task.id, run.id), archive);
+});
+
 test('new execution receipt survives the archive byte cap and validates across state replay without reconstructing an archive', t => {
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'shuduo-standard-cap-'));
   t.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));

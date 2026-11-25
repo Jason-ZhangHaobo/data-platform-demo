@@ -310,6 +310,7 @@ export class QualityManager {
           config: rule.currentVersion.config,
         },
         currentInputStatus:rule.sourceFreshness?.status,
+        ...(rule.sourceFreshness?.evidenceCode?{currentInputEvidenceCode:rule.sourceFreshness.evidenceCode}:{}),
         latestRun:(()=>{const run=rule.runs.find(run=>run.id===rule.lastRunId);return run?{status:run.status,evaluatedCount:run.evaluatedCount,failedCount:run.failedCount}:undefined;})(),
       })),
     };

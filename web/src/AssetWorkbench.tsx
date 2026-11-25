@@ -29,6 +29,7 @@ import {
 import { ContractsPanel } from "./ContractsPanel";
 import {SqlColumnLineagePanel} from './SqlColumnLineagePanel';
 import {FrozenAssetQualityPanel} from "./FrozenAssetQualityPanel";
+import {unconfirmedSyncLandingEvidence} from "./sync-landing-evidence";
 import type{SqlValueLineage}from'./sql-column-lineage';
 
 type Api = <T>(path: string, body?: unknown, options?:{idempotencyKey?:string}) => Promise<T>;
@@ -53,7 +54,7 @@ type Asset = {
   tags: string[];
   evidenceHash: string;
   versionId?: string;
-  syncSource?: {status:"VERIFIED";runId:string;metadataVersionId:string;targetHash:string;mode:string} | {status:"UNCONFIRMED";targetHash:string};
+  syncSource?: {status:"VERIFIED";runId:string;metadataVersionId:string;targetHash:string;mode:string} | {status:"UNCONFIRMED";targetHash:string;evidenceCode?:string};
   executableMetrics: boolean;
   owner?: string;
   classification: string;
@@ -189,6 +190,8 @@ export function AssetWorkbench({
   const detail = "value" in detailRead ? detailRead.value : undefined, selectedId = detailRead.id;
   const catalogReady = catalogRead.state === "READY", detailReady = detailRead.state === "READY" && detail?.id === selectedId && (detail.annotation?.revision??0)>=(confirmedRevisions.current.get(selectedId)??0);
   const canWrite = originalCanWrite && detailReady;
+  const landingEvidenceProblem = unconfirmedSyncLandingEvidence(detail?.syncSource);
+  const canRunAssetRows = canWrite && !landingEvidenceProblem;
   const [knownKinds, setKnownKinds] = useState<string[]>([]);
   const [query, setQuery] = useState(""),
     [kind, setKind] = useState(""),
@@ -370,7 +373,7 @@ export function AssetWorkbench({
     return()=>{annotationSubmission.current?.controller.close();annotationSubmission.current=undefined;};
   },[api]);
   const createMetric = () =>
-    detail && canWrite && detail.executableMetrics && (aggregation === "COUNT_ROWS" || detail.fields.some(field => field.name === metricField)) && (!groupBy || detail.fields.some(field => field.name === groupBy)) &&
+    detail && canRunAssetRows && detail.executableMetrics && (aggregation === "COUNT_ROWS" || detail.fields.some(field => field.name === metricField)) && (!groupBy || detail.fields.some(field => field.name === groupBy)) &&
     action(
       "metric",
       () =>
@@ -386,13 +389,13 @@ export function AssetWorkbench({
       "指标定义已绑定当前资产证据",
     );
   const runMetric = (id: string) =>
-    canWrite && detail?.metrics.some(metric => metric.id === id) && action(
+    canRunAssetRows && detail?.metrics.some(metric => metric.id === id) && action(
       `metric-run:${id}`,
       () => api(`/metrics/${id}/run`, {}),
       "指标已在实际资产行上执行并保存结果摘要",
     );
   const createStandard = () =>
-    detail && canWrite && detail.executableMetrics && detail.fields.some(field => field.name === standardField) &&
+    detail && canRunAssetRows && detail.executableMetrics && detail.fields.some(field => field.name === standardField) &&
     action(
       "standard",
       () =>
@@ -407,7 +410,7 @@ export function AssetWorkbench({
       "数据标准已绑定当前字段",
     );
   const checkStandard = (id: string) =>
-    canWrite && detail?.standards.some(standard => standard.id === id) && action(
+    canRunAssetRows && detail?.standards.some(standard => standard.id === id) && action(
       `standard-check:${id}`,
       () => api(`/standards/${id}/check`, {}),
       "标准已在实际资产行上检查",
@@ -459,7 +462,9 @@ export function AssetWorkbench({
                 <strong>最近提交批次 {detail.syncSource.runId.slice(0,8)}</strong>
                 <p>原元数据 {detail.syncSource.metadataVersionId.slice(0,8)} · 落地摘要 {detail.syncSource.targetHash.slice(0,12)}
                   {detail.syncSource.mode === "INCREMENTAL_UPSERT" && " · 增量落地可包含此前保留行"}</p>
-              </div></> : <><AlertTriangle size={16}/><strong>同步批次与当前落地数据待核对</strong></>}
+              </div></> : <><AlertTriangle size={16}/><div><strong>同步批次与当前落地数据待核对</strong>
+                {landingEvidenceProblem && <p>{landingEvidenceProblem} 当前表的指标与标准执行已暂停。历史结果仍可查看。</p>}
+              </div></>}
             </div>}
             <div className="asset-tabs-v2" role="tablist" aria-label="资产详情视图">{[["overview", "概览"], ["fields", `字段 ${detail.fields.length}`], ["lineage", `血缘 ${detail.lineage.edges.length}`], ["governance", "指标、标准与契约"]].map(([id, label]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id as typeof tab)}>{label}</button>)}</div>
             {tab === "overview" && <div className="asset-overview-v2">
@@ -480,10 +485,10 @@ export function AssetWorkbench({
               <div className="lineage-edges-v2">{detail.lineage.edges.map((edge) => <article key={edge.id}><div><span>{kindLabels[nodeById.get(edge.from)?.kind ?? ""] ?? nodeById.get(edge.from)?.kind}</span><strong>{nodeById.get(edge.from)?.businessName ?? edge.from}</strong><code>{edge.from}</code></div><div className="lineage-arrow-v2"><span>{edge.type}</span><ArrowRight size={21} /><small>{edge.fieldMappings.length}字段映射</small></div><div><span>{kindLabels[nodeById.get(edge.to)?.kind ?? ""] ?? nodeById.get(edge.to)?.kind}</span><strong>{nodeById.get(edge.to)?.businessName ?? edge.to}</strong><code>{edge.to}</code></div></article>)}</div>
             </div>}
             {tab === "governance" && <div className="asset-governance-v2">
-              {!detail.executableMetrics && <div className="lineage-boundary-v2"><AlertTriangle size={16} /><div><strong>该资产首版只读</strong><p>指标与标准执行目前只对有实际本机行数据的落地表和实时状态表开放。</p></div></div>}
+              {!detail.executableMetrics && !landingEvidenceProblem && <div className="lineage-boundary-v2"><AlertTriangle size={16} /><div><strong>该资产首版只读</strong><p>指标与标准执行目前只对有实际本机行数据的落地表和实时状态表开放。</p></div></div>}
               <div className="governance-columns-v2">
-                <section><header><div><Gauge size={17} /><h4>指标定义</h4></div><span>{detail.metrics.length}</span></header>{detail.metrics.map((metric) => <article key={metric.id}><div><strong>{metric.name}</strong><code>{metric.aggregation}({metric.field ?? "*"}){metric.groupBy ? ` BY ${metric.groupBy}` : ""}</code><p>{metric.definition}</p></div><button className="button" onClick={() => runMetric(metric.id)} disabled={!canWrite || !!busy}><Play size={13} />执行</button>{metric.runs[0] && <div className="governance-result-v2"><CheckCircle2 size={13} />{metric.runs[0].values.map((value) => `${value.group}:${value.value}`).join(" · ")}</div>}</article>)}{detail.executableMetrics && <details><summary>新建指标</summary><div className="governance-form-v2"><label>名称<input value={metricName} onChange={(event) => setMetricName(event.target.value)} /></label><label>代码<input value={metricCode} onChange={(event) => setMetricCode(event.target.value)} /></label><label>聚合<select value={aggregation} onChange={(event) => setAggregation(event.target.value)}><option>SUM</option><option>COUNT_DISTINCT</option><option>COUNT_ROWS</option></select></label><label>字段<select value={metricField} onChange={(event) => setMetricField(event.target.value)}>{!detail.fields.some(field=>field.name===metricField)&&<option value={metricField}>原字段待重新选择：{metricField||"未选择"}</option>}{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label>分组<select value={groupBy} onChange={(event) => setGroupBy(event.target.value)}><option value="">不分组</option>{groupBy&&!detail.fields.some(field=>field.name===groupBy)&&<option value={groupBy}>原分组待重新选择：{groupBy}</option>}{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label className="wide">口径<input value={metricDefinition} onChange={(event) => setMetricDefinition(event.target.value)} /></label><button className="button" onClick={createMetric} disabled={!canWrite || !metricFieldsValid || !!busy}><Sparkles size={13} />创建指标</button></div></details>}</section>
-                <section><header><div><ShieldCheck size={17} /><h4>数据标准</h4></div><span>{detail.standards.length}</span></header>{detail.standards.map((standard) => <article key={standard.id}><div><strong>{standard.name}</strong><code>{standard.field} · {standard.semanticType}</code><p>{standard.description}</p></div><button className="button" onClick={() => checkStandard(standard.id)} disabled={!canWrite || !!busy}><Activity size={13} />检查</button>{standard.checks[0] && <div className={`governance-result-v2 ${standard.checks[0].status.toLowerCase()}`}>{standard.checks[0].status === "PASSED" ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}{standard.checks[0].passedCount}/{standard.checks[0].evaluatedCount}通过</div>}</article>)}{detail.executableMetrics && <details><summary>新建标准</summary><div className="governance-form-v2"><label>名称<input value={standardName} onChange={(event) => setStandardName(event.target.value)} /></label><label>代码<input value={standardCode} onChange={(event) => setStandardCode(event.target.value)} /></label><label>字段<select value={standardField} onChange={(event) => setStandardField(event.target.value)}>{!standardFieldValid&&<option value={standardField}>原字段待重新选择：{standardField||"未选择"}</option>}{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label>语义<select value={semanticType} onChange={(event) => setSemanticType(event.target.value)}><option>SECURITY_CODE</option><option>CLIENT_ID</option><option>DECIMAL_18_2</option><option>TRADE_DATE</option></select></label><label className="wide">说明<input value={standardDescription} onChange={(event) => setStandardDescription(event.target.value)} /></label><button className="button" onClick={createStandard} disabled={!canWrite || !standardFieldValid || !!busy}><Network size={13} />创建标准</button></div></details>}</section>
+                <section><header><div><Gauge size={17} /><h4>指标定义</h4></div><span>{detail.metrics.length}</span></header>{detail.metrics.map((metric) => <article key={metric.id}><div><strong>{metric.name}</strong><code>{metric.aggregation}({metric.field ?? "*"}){metric.groupBy ? ` BY ${metric.groupBy}` : ""}</code><p>{metric.definition}</p></div><button className="button" onClick={() => runMetric(metric.id)} disabled={!canRunAssetRows || !!busy}><Play size={13} />执行</button>{metric.runs[0] && <div className="governance-result-v2"><CheckCircle2 size={13} />{metric.runs[0].values.map((value) => `${value.group}:${value.value}`).join(" · ")}</div>}</article>)}{detail.executableMetrics && <details><summary>新建指标</summary><div className="governance-form-v2"><label>名称<input value={metricName} onChange={(event) => setMetricName(event.target.value)} /></label><label>代码<input value={metricCode} onChange={(event) => setMetricCode(event.target.value)} /></label><label>聚合<select value={aggregation} onChange={(event) => setAggregation(event.target.value)}><option>SUM</option><option>COUNT_DISTINCT</option><option>COUNT_ROWS</option></select></label><label>字段<select value={metricField} onChange={(event) => setMetricField(event.target.value)}>{!detail.fields.some(field=>field.name===metricField)&&<option value={metricField}>原字段待重新选择：{metricField||"未选择"}</option>}{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label>分组<select value={groupBy} onChange={(event) => setGroupBy(event.target.value)}><option value="">不分组</option>{groupBy&&!detail.fields.some(field=>field.name===groupBy)&&<option value={groupBy}>原分组待重新选择：{groupBy}</option>}{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label className="wide">口径<input value={metricDefinition} onChange={(event) => setMetricDefinition(event.target.value)} /></label><button className="button" onClick={createMetric} disabled={!canRunAssetRows || !metricFieldsValid || !!busy}><Sparkles size={13} />创建指标</button></div></details>}</section>
+                <section><header><div><ShieldCheck size={17} /><h4>数据标准</h4></div><span>{detail.standards.length}</span></header>{detail.standards.map((standard) => <article key={standard.id}><div><strong>{standard.name}</strong><code>{standard.field} · {standard.semanticType}</code><p>{standard.description}</p></div><button className="button" onClick={() => checkStandard(standard.id)} disabled={!canRunAssetRows || !!busy}><Activity size={13} />检查</button>{standard.checks[0] && <div className={`governance-result-v2 ${standard.checks[0].status.toLowerCase()}`}>{standard.checks[0].status === "PASSED" ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}{standard.checks[0].passedCount}/{standard.checks[0].evaluatedCount}通过</div>}</article>)}{detail.executableMetrics && <details><summary>新建标准</summary><div className="governance-form-v2"><label>名称<input value={standardName} onChange={(event) => setStandardName(event.target.value)} /></label><label>代码<input value={standardCode} onChange={(event) => setStandardCode(event.target.value)} /></label><label>字段<select value={standardField} onChange={(event) => setStandardField(event.target.value)}>{!standardFieldValid&&<option value={standardField}>原字段待重新选择：{standardField||"未选择"}</option>}{detail.fields.map((field) => <option key={field.name}>{field.name}</option>)}</select></label><label>语义<select value={semanticType} onChange={(event) => setSemanticType(event.target.value)}><option>SECURITY_CODE</option><option>CLIENT_ID</option><option>DECIMAL_18_2</option><option>TRADE_DATE</option></select></label><label className="wide">说明<input value={standardDescription} onChange={(event) => setStandardDescription(event.target.value)} /></label><button className="button" onClick={createStandard} disabled={!canRunAssetRows || !standardFieldValid || !!busy}><Network size={13} />创建标准</button></div></details>}</section>
               </div>
               <ContractsPanel api={api} canWrite={canWrite} asset={detail} />
             </div>}
