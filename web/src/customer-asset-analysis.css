@@ -1,0 +1,32 @@
+.wealth-batch-report {max-width:1120px;margin:0 auto;min-width:0;color:#193d33}
+.wealth-batch-report>header {margin:16px 0 22px}
+.wealth-batch-report>header h2 {font-size:clamp(25px,3vw,38px);line-height:1.15;margin:8px 0}
+.wealth-batch-report>header p {color:#526b61;margin:8px 0}
+.wealth-customer-analysis {background:#fff;border:1px solid #ccdad1;border-radius:14px;padding:clamp(16px,3vw,30px);margin:16px 0;color:#183b32;min-width:0}
+.wealth-analysis-head {display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+.wealth-analysis-head h3 {margin:0;font-size:clamp(19px,2vw,26px)}
+.wealth-analysis-head p {margin:4px 0;color:#66776f;font-size:13px}
+.wealth-analysis-head label {display:flex;align-items:center;gap:8px;font-size:13px}
+.wealth-analysis-head select {background:white;padding:8px 12px;border:1px solid #baccc1;border-radius:6px;color:#174a3c;min-width:120px}
+.wealth-balance {display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:20px 0;padding:clamp(14px,2vw,22px);border-radius:10px;background:#f0f6ed}
+.wealth-total>span,.wealth-breakdown dt {display:block;color:#446352;font-size:13px}
+.wealth-total strong {display:block;font-size:clamp(26px,3.7vw,42px);font-variant-numeric:tabular-nums;color:#155e42;line-height:1.25;margin-top:4px}
+.wealth-breakdown {display:flex;gap:clamp(14px,3vw,30px);flex-wrap:wrap;margin:0}
+.wealth-breakdown dd {font-size:clamp(16px,2vw,22px);margin:6px 0 0;font-variant-numeric:tabular-nums;font-weight:650}
+.wealth-breakdown small {font-size:12px;font-weight:400}
+.wealth-allocations {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:20px}
+.wealth-allocation {min-width:0}
+.wealth-allocation h4 {margin:0 0 9px;font-size:17px}
+.wealth-allocation table {width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.wealth-allocation th,.wealth-allocation td {padding:9px 3px;border-bottom:1px solid #e3eae4;font-size:13px;text-align:right}
+.wealth-allocation thead th {font-size:12px;color:#66776f;font-weight:500}
+.wealth-allocation th:first-child {text-align:left}
+.wealth-allocation td {white-space:nowrap}
+.wealth-ratio-track {display:block;height:4px;margin-top:5px;max-width:110px;background:#e3ede5;border-radius:4px}
+.wealth-ratio-track i {display:block;height:100%;background:#398262;border-radius:inherit}
+.wealth-definition,.wealth-origins {margin:15px 0 0;font-size:12px;line-height:1.65;color:#536a5e}
+.wealth-origins summary {cursor:pointer}
+.wealth-origins dl {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:8px;margin:8px 0}
+.wealth-origins dd {margin:0;color:#193d33;overflow-wrap:anywhere}
+.wealth-origins code {white-space:normal;overflow-wrap:anywhere}
+@media(max-width:520px){.wealth-customer-analysis{padding:13px}.wealth-balance{display:block}.wealth-breakdown{margin-top:16px;gap:14px}.wealth-allocations{grid-template-columns:1fr}.wealth-analysis-head label{align-self:flex-start}}

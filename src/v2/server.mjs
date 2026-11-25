@@ -3497,7 +3497,8 @@ export function createV2Server(options = {}) {
       if (path === "/api/v2/reports/overview" && method === "GET") {
         const overview = reports.overview(), datasets = overview.datasets.filter(canReadReportDataset),
           visible = overview.reports.filter(canReadReport);
-        return json(res, 200, {...overview,datasets,reports:visible,counts:{
+        const actor = syncSqlLocal && isLoopbackRequest(req) ? workspaceReadActor(req) : undefined;
+        return json(res, 200, {...overview,datasets,reports:actor ? publishedReports.withCustomerAnalysisLinks(visible,actor) : visible,counts:{
           datasets:datasets.length,readyDatasets:datasets.filter(item=>item.status==="READY").length,
           reports:visible.length,verifiedReports:visible.filter(item=>item.status==="VERIFIED_LOCAL").length,
           runs:visible.reduce((count,report)=>count+report.runs.length,0),
@@ -3567,15 +3568,21 @@ export function createV2Server(options = {}) {
         const { lineage, rows } = publishedReports.qualitySource(requestId, actor, releaseTimeUnitMs);
         return json(res, 200, fundReportQuality({ store, project: PROJECT, actor, quality, lineage, rows, confirmation }));
       }
-      const originalReportResult = path.match(/^\/api\/v2\/reports\/published\/requests\/([A-Fa-f0-9-]{36})\/(result|lineage|development|consumption|export)$/);
+      const originalReportResult = path.match(/^\/api\/v2\/reports\/published\/requests\/([A-Fa-f0-9-]{36})\/(result|lineage|development|consumption|export|customer-analysis)$/);
       if (originalReportResult && method === "GET") {
         if (!local) throw fail(403, "原发布报表结果仅在本机开发边界开放");
         const [ , requestId, view] = originalReportResult;
         const downloadDigest = url.searchParams.get("download_digest");
         if (url.searchParams.size && (view !== "lineage" || url.searchParams.size !== 1 ||
-            !/^[a-f0-9]{64}$/.test(downloadDigest ?? ""))) throw fail(422, "按原编号读取结果只接受确切溯源下载摘要");
+            !/^[a-f0-9]{64}$/.test(downloadDigest ?? ""))) throw fail(422, view==="customer-analysis"
+              ? "顾问范围和批次由原报表确定，请使用原请求编号读取分析" : "按原编号读取结果只接受确切溯源下载摘要");
         const actor = workspaceReadActor(req);
+        if (view === "customer-analysis") {
+          requireSyncSqlLocal(req);
+          if (!actor) throw fail(403,"请使用创建此报表的本机项目账号");
+        }
         requireFundAgentReportOwner(publishedReports.lookup(requestId, actor).source);
+        if (view === "customer-analysis") return json(res,200,publishedReports.readCustomerAnalysis(requestId,actor,ingestion));
         if (view === "export") {
           const { receipt } = publishedReports.readResult(requestId, actor);
           return json(res, 200, reports.exportReport(receipt.reportId, receipt.reportRunId));

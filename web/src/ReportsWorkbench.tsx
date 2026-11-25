@@ -3,6 +3,7 @@ import {distributionReportTemplate} from '../../src/v2/distribution-report-contr
 const ReportProvenancePanel=lazy(async()=>({default:(await import('./ReportProvenancePanel')).ReportProvenancePanel}));
 const DistributionReportResults=lazy(async()=>({default:(await import('./DistributionReportResults')).DistributionReportResults}));
 const WealthReportConsumptionPanel=lazy(()=>import('./WealthReportConsumptionPanel'));
+const CustomerAssetAnalysis=lazy(()=>import('./CustomerAssetAnalysis'));
 import { lazy,Suspense,useEffect, useMemo, useState } from "react";
 import { securitiesReportTemplate } from "./report-template";
 import { unconfirmedSyncLandingEvidence } from "./sync-landing-evidence";
@@ -25,7 +26,7 @@ import {
   TableProperties,
 } from "lucide-react";
 
-type Api = <T>(path: string, body?: unknown) => Promise<T>;
+type Api = <T>(path: string, body?: unknown, options?:{idempotencyKey?:string}) => Promise<T>;
 type Asset = {
   id: string;
   businessName: string;
@@ -72,6 +73,8 @@ type ReportRun = {
   status: string;
   widgets: WidgetResult[];outputContractId?:string;sourceEvidence?:ReportSourceEvidence;
   resultHash: string;
+  customerAnalysisRequestId?: string;
+  datasetSnapshotId?:string;
   datasetContentHash: string;
   durationMs: number;
   publicDeployed: boolean;
@@ -141,7 +144,17 @@ const pending = (status?: string) =>
 const colors = ["#2f7351", "#82a765", "#d3a555", "#5e8f8c", "#8c79a8", "#bb7962"];
 const numberValue = (value: string) => Number(value || 0);
 
-export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; canWrite: boolean; handoffMessage?: string }) {
+type WorkbenchProps={api:Api;canWrite:boolean;handoffMessage?:string;local?:boolean};
+const BatchWealthReport=lazy(()=>import('./BatchWealthReport'));
+
+export function ReportsWorkbench(props:WorkbenchProps) {
+  if(typeof window!=="undefined" && (new URLSearchParams(window.location.search).has("report_batch") || window.location.hash==="#customer-asset-report")) {
+    return <Suspense fallback={<p role="status">正在加载批次报表…</p>}><BatchWealthReport api={props.api} canCreate={props.canWrite} local={props.local===true}/></Suspense>;
+  }
+  return <ReportCatalog {...props}/>;
+}
+
+function ReportCatalog({ api, canWrite, handoffMessage }: WorkbenchProps) {
   const [overview, setOverview] = useState<Overview>(),
     [assets, setAssets] = useState<Asset[]>([]),
     [plans, setPlans] = useState<AgentPlan[]>([]),
@@ -356,6 +369,9 @@ export function ReportsWorkbench({ api, canWrite, handoffMessage }: { api: Api; 
           {selectedReport ? <>
             <header><div><span className="eyebrow">{selectedReport.code} · SNAPSHOT PINNED</span><h3>{selectedReport.name}</h3><p>{selectedReport.currentVersion.description}</p></div><div><button className="button primary" onClick={runReport} disabled={!canWrite || !!busy}>{busy === "run" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}实际运行</button><button className="button" onClick={download} disabled={!latestRun || !!busy}><Download size={14} />导出聚合CSV</button></div></header>
             <div className="reports-proof-v2"><div><span>状态</span><strong>{labels[selectedReport.status] ?? selectedReport.status}</strong></div><div><span>快照</span><code>{selectedReport.currentVersion.datasetSnapshotId.slice(0, 8)}</code></div><div><span>报表版本</span><strong>V{selectedReport.currentVersion.versionNumber}</strong></div><div><span>运行</span><strong>{selectedReport.runs.length}</strong></div><div><span>公网</span><strong>未部署</strong></div></div>
+            {latestRun?.customerAnalysisRequestId&&<Suspense fallback={<p role="status">正在加载客户资产分析…</p>}><CustomerAssetAnalysis key={latestRun.id} api={api}
+              selection={{requestId:latestRun.customerAnalysisRequestId,reportId:selectedReport.id,reportRunId:latestRun.id,versionId:latestRun.reportVersionId,
+                resultHash:latestRun.resultHash,reportSnapshotId:latestRun.datasetSnapshotId}}/></Suspense>}
             {latestRun&&<Suspense fallback={<p>正在加载溯源核对…</p>}><ReportProvenancePanel key={latestRun.id} api={api} reportId={selectedReport.id} versionId={latestRun.reportVersionId} runId={latestRun.id} resultHash={latestRun.resultHash}/></Suspense>}
             {datasets.some(dataset => dataset.id === selectedReport.datasetId && dataset.assetId === 'dataset:customer_assets_t1' &&
               !dataset.outputContractId && dataset.publishedSource?.kind !== 'AGENT') &&
