@@ -854,6 +854,74 @@ const stockConsumerRows=[
   {client_id:'CLIENT-002',holding_market_value:'750.00',available_cash:'200.00',total_assets:'950.00',security_count:1},
 ];
 
+test('owner reads exact cash-change amounts from both saved local Spark checkpoints',async t=>{
+  const actual=process.env.SHUDUO_TEST_LOCAL_SPARK_DERIVED_AMOUNTS==='true';
+  const f=await fixture(t,{startupPreflight:true,structuredRequirement:true,contextualModel:true,stableOrigin:true});
+  const fresh=liveLifecyclePlan(2,{contractId:currentLiveLifecycleContract.id}).selectedCases;
+  async function execute(body) {
+    const key=randomUUID();
+    f.env.V2_PUBLIC_DEVELOPMENT_REQUEST_DIGEST=developmentRequestDigest(sha256(key),sha256(JSON.stringify(body)));
+    await f.restart();
+    const created=await f.call('/agent/tasks',body,key);
+    assert.equal(created.status,202,created.body.message);
+    const path='/agent/tasks/'+created.body.id;
+    async function advance(task) {
+      const response=await f.call(path+'/advance',{expectedVersion:task.version});
+      assert.equal(response.status,200,response.body.message);
+      return response.body;
+    }
+    const waiting=await advance(await advance(created.body));
+    assert.equal(waiting.stage,'WAITING_FOR_RUN');
+    const prepared=f.store.get('run',waiting.runId,PROJECT).remoteSubmission.prepared;
+    const result=actual?await measuredSpark(t,f,prepared,body.contextId):undefined;
+    f.complete(prepared,result);
+    const task=await advance(waiting);
+    assert.equal(task.status,'SUCCEEDED');
+    const {body:run,status}=await f.call('/runs/'+task.runId);
+    assert.equal(status,200);
+    assert.deepEqual(run.rows,result?.rows??getContext(body.contextId).expected);
+    return {task,run};
+  }
+  const [base,cash]=fresh;
+  assert.equal(base.contextId,'holdings-t1');
+  assert.equal(cash.contextId,'cash-change');
+  const parent=await execute({message:base.request,sql:base.seedSql,contextId:base.contextId});
+  const nextWindow=Math.max(Date.now(),Date.parse(parent.task.createdAt)+1);
+  f.later(nextWindow-f.now());
+  f.env.V2_PUBLIC_DEVELOPMENT_STARTS_AT=new Date(nextWindow).toISOString();
+  f.env.V2_PUBLIC_DEVELOPMENT_EXPIRES_AT=new Date(nextWindow+3600000).toISOString();
+  const derivation={kind:'REGISTERED_CONTEXT_CHANGE',taskId:parent.task.id,runId:parent.run.id,
+    revisionId:parent.run.revisionId,revisionHash:parent.run.revisionHash};
+  const child=await execute(agentContextDerivationBody({message:cash.request,sql:parent.task.sql,contextId:cash.contextId,derivation}));
+  assert.notEqual(parent.run.id,child.run.id);
+  f.expire();
+  await f.restart();
+  const counts=f.counts();
+  const {body:report,status}=await f.call('/agent/tasks/'+child.task.id+'/derivation-comparison');
+  assert.equal(status,200);
+  assert.equal(report.state,'MATCHED',report.reason);
+  for(const [source,execution] of [[report.parent,parent],[report.child,child]]) {
+    assert.equal(source.taskId,execution.task.id);
+    assert.equal(source.runId,execution.run.id);
+    assert.equal(source.revisionId,execution.run.revisionId);
+    assert.equal(source.revisionHash,execution.run.revisionHash);
+  }
+  const metrics=(holding,cash,assets,count)=>({holding_market_value:holding,available_cash:cash,total_assets:assets,security_count:count});
+  for(const [i,client] of baseConsumerRows.entries()) {
+    const {client_id,...before}=client;
+    const {client_id:newClient,...after}=cashChangeConsumerRows[i];
+    assert.equal(client_id,newClient);
+    assert.deepEqual(report.rows.find(row=>row.clientId===client_id),{clientId:client_id,before,after,
+      delta:metrics('0.00',i===0?'500.00':'0.00',i===0?'500.00':'0.00',0)});
+  }
+  assert.equal(report.rows.length,2);
+  assert.deepEqual(report.totals,{before:metrics('2250.00','500.00','2750.00',3),after:metrics('2250.00','1000.00','3250.00',3),
+    delta:metrics('0.00','500.00','500.00',0)});
+  assert.deepEqual(f.counts(),counts);
+  assert.deepEqual(counts,{modelCalls:2,jobCreates:2});
+  t.diagnostic(JSON.stringify({spark:actual?'ACTUAL_LOCAL_SPARK':'SYNTHETIC_RUNNER',model:'SYNTHETIC_LOCAL_PROVIDER',httpStatus:status,...report}));
+});
+
 function fixtureSourceReview(directory) {
   const cwd=join(directory,'source-review-repo');
   mkdirSync(cwd);

@@ -1,0 +1,33 @@
+.derived-amount-panel {
+  min-width: 0;
+  margin: .6rem 0;
+  padding: .7rem;
+  border: 1px solid #d7e3db;
+  border-radius: .65rem;
+  background: #fafcf9;
+  color: #233c31;
+  overflow-wrap: anywhere;
+}
+.derived-amount-toolbar { display: flex; align-items: center; justify-content: space-between; gap: .45rem; flex-wrap: wrap; }
+.derived-amount-toolbar h4 { margin: 0; font-size: .88rem; }
+.derived-amount-panel .button { min-height: 2rem; padding: .3rem .6rem; }
+.derived-amount-panel .derived-amount-context, .derived-amount-panel .derived-amount-note,
+.derived-amount-panel .derived-amount-status { font-size: .78rem; line-height: 1.55; margin: .65rem 0; }
+.derived-amount-context strong, .derived-amount-note { color: #51675c; }
+.derived-amount-table-scroll { max-width: 100%; overflow-x: auto; }
+.derived-amount-table { width: 100%; border-collapse: collapse; table-layout: auto; font-size: .76rem; font-variant-numeric: tabular-nums; }
+.derived-amount-table caption { padding: .55rem 0 .35rem; font-size: .81rem; font-weight: 650; text-align: left; }
+.derived-amount-table th, .derived-amount-table td { padding: .35rem .17rem; border-bottom: 1px solid #dbe4dd; text-align: right; vertical-align: top; }
+.derived-amount-table thead { background: #eef4ed; }
+.derived-amount-table th:first-child { text-align: left; }
+.derived-amount-table tbody td { white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+.derived-amount-table tbody th { font-weight: 500; }
+.derived-amount-table tbody tr:first-child { font-weight: 650; }
+.derived-amount-sources { margin: .75rem 0; font-size: .76rem; }
+.derived-amount-sources summary { cursor: pointer; }
+.derived-amount-sources dl { display: grid; gap: .6rem; }
+.derived-amount-sources dt { font-weight: 600; }
+.derived-amount-sources dd { margin: .2rem 0 0; }
+.derived-amount-sources span, .derived-amount-sources code { display: block; }
+.derived-amount-sources span { color: #51675c; }
+.derived-amount-pages { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; margin: .5rem 0; font-size: .75rem; }
