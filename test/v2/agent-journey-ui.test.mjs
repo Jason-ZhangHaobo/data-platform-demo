@@ -7,6 +7,7 @@ import { developmentVerificationReport } from "../../src/v2/agent-development-wo
 import { referenceSql, validationContractId } from "../../src/v2/context.mjs";
 import { sha256 } from "../../src/v2/delivery.mjs";
 import {syncSqlContractId} from '../../src/v2/sync-sql-contract.mjs';
+import {checkedAgentPublication} from '../../web/src/agent-delivery-evidence-read.ts';
 
 const fixture = () => ({
   taskId: "synthetic-task", revisionId: "revision-one", runId: "run-one", dirty: false,
@@ -173,6 +174,113 @@ test("healthy label alone does not prove monitored publication or all scheduled 
   for(const mutate of changes){const f=fixture();mutate(f);assert.notEqual(stage(f,"monitoring"),"DONE");}
   assert.notEqual(stage({...fixture(),publicationReadable:false},"monitoring"),"DONE");
   assert.equal(stage({...fixture(),publicationReadable:false},"validation"),"DONE","monitoring read failure does not discard code evidence");
+});
+
+function registeredPair() {
+  const f=fixture();
+  const id=n=>"00000000-0000-4000-8000-"+String(n).padStart(12,"0");
+  Object.assign(f,{taskId:id(1),revisionId:id(2),runId:id(3)});
+  Object.assign(f.report,{taskId:f.taskId,revisionId:f.revisionId,runId:f.runId});
+  Object.assign(f.bundle,{id:id(4),digest:sha256("fictional cash-change package")});
+  f.verification.id=id(5);
+  Object.assign(f.delivery,{sourceRevisionId:f.revisionId,sourceRunId:f.runId,
+    packageId:f.bundle.id,packageDigest:f.bundle.digest,verificationId:f.verification.id});
+  const source={packageId:f.bundle.id,packageDigest:f.bundle.digest,sourceRunId:f.runId,
+    sourceAgentTaskId:f.taskId,reviewDigest:sha256("fictional cash-change review")};
+  Object.assign(f.release,source,{id:id(6),scope:"PRIVATE_CLOUD_TEST",sourceKind:"AGENT",
+    sourceRevisionId:f.revisionId,verificationId:f.verification.id,status:"WAITING_SCHEDULER",health:"OBSERVING"});
+  f.publicationReadable=true;
+  f.monitoringVerified=false;
+  f.batches=[1,2].map(sequence=>({
+    ...source,id:id(sequence+6),sequence,releaseId:f.release.id,
+    status:"SCHEDULED", schedulerTriggered:false,
+  }));
+  f.events=[];
+  checkedAgentPublication({release:f.release,runs:f.batches,events:f.events,alerts:f.alerts},
+    {taskId:f.taskId,scope:"PRIVATE_CLOUD_TEST",releaseId:f.release.id,selector:{
+      sourceKind:"AGENT",sourceRunId:f.runId,packageDigest:f.bundle.digest,verificationId:f.verification.id}});
+  return f;
+}
+
+test("registered batches guide the engineer to the original schedule as trigger evidence arrives", () => {
+  const f=registeredPair();
+  let journey=agentJourney(f);
+  assert.equal(journey.publicationCurrent,true);
+  assert.match(journey.next.detail,/0\s*\/\s*2/);
+  assert.match(journey.next.detail,/调度|触发/);
+  assert.doesNotMatch(journey.next.detail,/需审阅|重新发布/);
+  assert.notEqual(stage(f,"monitoring"),"DONE");
+
+  f.release.status="RUNNING_CLOUD_TEST";
+  for(const status of ["RUNNING","SUCCEEDED"]){
+    Object.assign(f.batches[0],{status,schedulerTriggered:true});
+    journey=agentJourney(f);
+    assert.match(journey.next.detail,/1\s*\/\s*2/,status);
+    assert.doesNotMatch(journey.next.detail,/需审阅|重新发布/);
+    assert.notEqual(stage(f,"monitoring"),"DONE");
+    assert.notEqual(stage(f,"services"),"DONE");
+  }
+});
+
+test("a closed publication window preserves the registered pair and two triggers still require monitoring evidence", () => {
+  const f=registeredPair();
+  f.publicationAvailable=false;
+  const waiting=agentJourney(f);
+  assert.equal(waiting.next.label,"查看原批次");
+  assert.match(waiting.next.detail,/0\/2.*入口已关闭/);
+  assert.equal(waiting.reviewedBatches.firstBatchId,f.batches[0].id);
+  assert.equal(waiting.reviewedBatches.secondBatchId,f.batches[1].id);
+  f.release.status="RUNNING_CLOUD_TEST";
+  for(const b of f.batches)Object.assign(b,{status:"RUNNING",schedulerTriggered:true});
+  assert.match(agentJourney(f).next.detail,/2\/2.*监控事件/);
+  f.batches[1].stage="WORKER_RESULT_UNCONFIRMED";
+  assert.match(agentJourney(f).next.detail,/2\/2.*核对原 Worker 结果/);
+  assert.notEqual(stage(f,"monitoring"),"DONE");
+  for(const batch of f.batches){batch.status="SUCCEEDED";delete batch.stage;}
+  f.events=f.batches.map(batch=>({type:"BATCH_SUCCEEDED",releaseId:f.release.id,releaseRunId:batch.id,packageDigest:f.bundle.digest}));
+  f.monitoringVerified=true;
+  f.release.health="HEALTHY";
+  assert.notEqual(stage(f,"monitoring"),"DONE","the registered release itself is still running");
+  f.release.status="COMPLETED_CLOUD_TEST";
+  assert.equal(stage(f,"monitoring"),"DONE");
+});
+
+test("the journey never guesses a trigger count from partial, mismatched or unread batch records", () => {
+  for(const change of [
+    f=>{f.batches.pop();},
+    f=>{f.batches[1].id=f.batches[0].id;},
+    f=>{f.batches[1].sequence=f.batches[0].sequence;},
+    f=>{f.batches[0].releaseId="another-release";},
+    f=>{f.batches[0].packageDigest="another-package";},
+    f=>{delete f.batches[0].schedulerTriggered;},
+    f=>{f.batches[0].schedulerTriggered=true;}, // Still SCHEDULED: fields do not agree.
+    f=>{f.publicationReadable=false;},
+    f=>{f.release.packageDigest="historical-package";},
+    f=>{f.release.verificationId="old-verification";},
+  ]){
+    const f=registeredPair();change(f);
+    const journey=agentJourney(f);
+    assert.doesNotMatch(journey.next.detail,/[012]\s*\/\s*2/);
+    assert.notEqual(stage(f,"monitoring"),"DONE");
+    assert.notEqual(stage(f,"services"),"DONE");
+  }
+});
+
+test("stopped or unresolved registered batches cannot prompt approval again or prove a successful run", () => {
+  const stopped=registeredPair();
+  stopped.release.status="CANCELLED";
+  for(const batch of stopped.batches)batch.status="CANCELLED";
+  assert.equal(stage(stopped,"publication"),"ATTENTION");
+  assert.match(agentJourney(stopped).next.detail,/停止|取消/);
+  assert.doesNotMatch(agentJourney(stopped).next.detail,/需审阅/);
+  const unconfirmed=registeredPair();
+  unconfirmed.release.status="RUNNING_CLOUD_TEST";
+  Object.assign(unconfirmed.batches[0],{status:"RUNNING",schedulerTriggered:true,stage:"WORKER_RESULT_UNCONFIRMED"});
+  for(const f of [stopped,unconfirmed]){
+    assert.notEqual(stage(f,"publication"),"DONE");
+    assert.notEqual(stage(f,"monitoring"),"DONE");
+    assert.notEqual(stage(f,"services"),"DONE");
+  }
 });
 test("actual local rollback, replacement and failure states cannot retain completed publication",()=>{
   for(const status of ["ROLLED_BACK_LOCAL","SUPERSEDED_LOCAL","FAILED_LOCAL"]){
