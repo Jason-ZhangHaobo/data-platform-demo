@@ -44,6 +44,21 @@ export function checkedExactPublicationReceipt(value:unknown, expected:ExactPubl
  return release.id as string;
 }
 
+export function reviewedBatchPair(release: unknown, runs: unknown[]) {
+ if (!record(release) || !id(release.id) || !id(release.packageId) || !hash(release.packageDigest) ||
+     !hash(release.reviewDigest) || !id(release.sourceRunId) || !id(release.sourceAgentTaskId) || runs.length !== 2) return;
+ const first = runs.find(b => record(b) && b.sequence === 1);
+ const second = runs.find(b => record(b) && b.sequence === 2);
+ if (!record(first) || !record(second) || !id(first.id) || !id(second.id) || first.id === second.id) return;
+ const pair = [first, second];
+ if (!pair.every(b => b.releaseId === release.id && ['reviewDigest','packageId','packageDigest','sourceAgentTaskId','sourceRunId'].every(k => b[k] === release[k]))) return;
+ const flagsKnown = pair.every(b => typeof b.schedulerTriggered === 'boolean' &&
+   (b.status !== 'SCHEDULED' || !b.schedulerTriggered) &&
+   (!['RUNNING','SUCCEEDED'].includes(String(b.status)) || b.schedulerTriggered));
+ return {firstBatchId:first.id as string, secondBatchId:second.id as string,
+   triggered:flagsKnown ? pair.filter(b => b.schedulerTriggered === true).length : undefined};
+}
+
 export function checkedAgentPublication(value:unknown,{taskId,scope,selector,releaseId,requireRelease=false}:{taskId:string;scope:'LOCAL_TEST_RELEASE'|'PRIVATE_CLOUD_TEST';selector?:PublicationSelector;releaseId?:string;requireRelease?:boolean}):Publication{
  if(!record(value)||!optional(value.monitoringVerified,v=>typeof v==='boolean'&&scope==='PRIVATE_CLOUD_TEST')||!optional(value.scope,v=>v===scope)||!optional(value.readMode,v=>v==='SAVED_HISTORY'&&scope==='PRIVATE_CLOUD_TEST')||
   !Array.isArray(value.runs)||!Array.isArray(value.alerts)||!Array.isArray(value.events))throw invalidPublication();
@@ -56,9 +71,7 @@ export function checkedAgentPublication(value:unknown,{taskId,scope,selector,rel
  if(!r&&(runs.length||alerts.length||events.length||releaseId||requireRelease))throw invalidPublication();
  if(scope==='PRIVATE_CLOUD_TEST'&&record(r)&&r.reviewDigest!==undefined&&(
   !hash(r.reviewDigest)||r.scope!==scope||r.sourceKind!=='AGENT'||r.sourceAgentTaskId!==taskId||!id(r.sourceRunId)||
-  runs.length!==2||![1,2].every(sequence=>runs.some(b=>record(b)&&b.sequence===sequence))||
-  !runs.every(b=>record(b)&&b.releaseId===r.id&&['reviewDigest','packageId','packageDigest','sourceAgentTaskId','sourceRunId']
-   .every(key=>b[key]===r[key]))))throw invalidPublication();
+  !reviewedBatchPair(r,runs)))throw invalidPublication();
  if(!runs.every(b=>record(b)&&id(b.id)&&(['SCHEDULED','QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED'].includes(String(b.status))||scope==='LOCAL_TEST_RELEASE'&&b.status==='INTERRUPTED')&&count(b.sequence)&&Number(b.sequence)>0&&
   optional(b.resultUnknown,v=>typeof v==='boolean'&&(v===false||scope==='LOCAL_TEST_RELEASE'&&b.status==='INTERRUPTED'&&b.schedulerTriggered===true))&&
   optional(b.schedulerTriggered,v=>typeof v==='boolean')&&optional(b.durationMs,v=>typeof v==='number'&&Number.isFinite(v)&&v>=0)&&['triggeredAt','finishedAt'].every(k=>optional(b[k],date))&&

@@ -2,6 +2,8 @@ import {distributionMetadataForContext} from '../../src/v2/output-contract-metad
 import {fundRequirementScope} from '../../src/v2/fund-requirement-contract.mjs';
 import { deliveryFilePresentation } from "./delivery-presentation.ts";
 import { publicationStopped } from "./publication-read.ts";
+import {reviewedBatchPair} from './agent-delivery-evidence-read.ts';
+import type {Release} from './agent-delivery-evidence-read.ts';
 import {validationFamilyForContextId,regressionsMatchFamily} from "./validation-family.ts";
 import {syncSqlContractId} from '../../src/v2/sync-sql-contract.mjs';
 export type JourneyState = "DONE" | "PENDING" | "ATTENTION" | "STALE";
@@ -56,20 +58,37 @@ export function manualConsumptionEntryMatches(entry:{releaseId?:string;sourceKin
   return typeof id==="string"&&id.length>0&&id!==developmentRunId&&matches.length===1&&matches[0].status==="SUCCEEDED"&&matches[0].schedulerTriggered===true;
 }
 type Evidence = {
-  taskId: string; contextId?:string; fund?: boolean; revisionId?: string; runId?: string; dirty: boolean; evidenceReadable?: boolean; publicationReadable?: boolean; monitoringVerified?: boolean;
+  taskId: string; contextId?:string; fund?: boolean; revisionId?: string; runId?: string; dirty: boolean; evidenceReadable?: boolean; publicationReadable?: boolean; publicationAvailable?: boolean; monitoringVerified?: boolean;
   report?: { taskId?: string; contextId?:string; validationContractId?:string; revisionId?: string; runId?: string; status: string; checks: { id: string; passed: boolean }[] };
   delivery?: { status: string; packageId?: string; packageDigest?: string; verificationId?: string; sourceRevisionId?: string; sourceRunId?: string };
   bundle?: { id: string; digest: string; files: Record<string, string> };
   verification?: { id: string; status: string; mainSqlExecuted?: boolean; testSqlValidation?: { passed: boolean }; validation?: { passed: boolean; contractId?:string; regressions?: { contextId: string; passed: boolean }[] } };
-  release?: { id: string; packageId?: string; packageDigest?: string; sourceKind?:string; sourceRevisionId?: string; status: string; health: string; runCount?: number };
-  batches?: { id: string; status: string; schedulerTriggered?: boolean }[];
+  release?: Release & {scope?:string};
+  batches?: { id: string; status: string; schedulerTriggered?: boolean; stage?:unknown; resultUnknown?:boolean }[];
   alerts?: { status: string }[];
   events?: { releaseId?: string; releaseRunId?: string; packageDigest?: string; type: string }[];
   consumption?: TaskConsumption;
 };
 
+function releaseGuidance(e: Evidence, current: boolean, pair: ReturnType<typeof reviewedBatchPair>) {
+  if (e.publicationReadable === false) return {label:"核对发布记录", detail:"当前发布记录尚未确认，请刷新原记录。"};
+  if (!e.release) return;
+  if (!current) return {label:"核对当前版本", detail:"当前读取的是历史发布，请核对本次交付版本。"};
+  if (publicationStopped(e.release.status)) return {label:"查看发布记录",detail:publicationEvidenceText(e.release,true,false)};
+  if (!pair) return {label:"核对原批次", detail:"发布记录已保存，请核对原批次的调度和运行记录。"};
+  const closed = e.publicationAvailable === false ? "当前任务的发布入口已关闭。" : "";
+  const progress = pair.triggered === undefined ? "触发进度待核对。" : `已触发 ${pair.triggered}/2 批。`;
+  const unknown = e.batches?.some(b => b.resultUnknown || b.stage === "WORKER_RESULT_UNCONFIRMED");
+  const label = !closed && pair.triggered === 0 ? "等待调度" : "查看原批次";
+  let action = "";
+  if (unknown) action = "请核对原 Worker 结果。";
+  else if (e.release.health === "CRITICAL" || e.alerts?.some(a => a.status === "OPEN")) action = "请查看批次异常及告警。";
+  else if (pair.triggered === 2) action = "请核对两批的运行结果和监控事件。";
+  return {label, detail:`发布已登记，${progress}${closed}${action}`};
+}
+
 // A display projection, not a replacement for server-side approval or an E2E score.
-export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: JourneyStep; current: boolean; fileVerified: boolean; publicationCurrent: boolean } {
+export function agentJourney(e: Evidence) {
   const contextId = e.contextId ?? e.report?.contextId;
   const fund = e.fund ? fundRequirementScope(contextId) : undefined;
   const family = fund && contextId ? { id: fund.id, contextIds: [contextId] } : validationFamilyForContextId(contextId,e.report?.validationContractId);
@@ -82,11 +101,23 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
   const codeFailed = current && e.report?.status === "NEEDS_ATTENTION" && !codeExecuted;
   const files = Boolean(current && e.bundle && e.delivery?.sourceRevisionId === e.revisionId && e.delivery?.sourceRunId === e.runId && e.delivery?.packageId === e.bundle.id && e.delivery.packageDigest === e.bundle.digest && deliveryFilePresentation(e.bundle.files, "").missing.length === 0);
   const fileVerified = Boolean(verified && files && e.delivery?.status === "SUCCEEDED" && e.delivery.verificationId === e.verification?.id && e.verification?.status === "SUCCEEDED" && e.verification.mainSqlExecuted === true && e.verification.testSqlValidation?.passed === true && regressionsMatchFamily(e.verification.validation,family));
-  const publicationCurrent = Boolean(fileVerified && e.release?.packageId === e.bundle?.id && e.release?.packageDigest === e.bundle?.digest && e.release?.sourceRevisionId === e.revisionId);
+  const publicationCurrent = Boolean(fileVerified && e.release && e.release.packageId === e.bundle?.id &&
+    e.release.packageDigest === e.bundle?.digest && e.release.sourceRevisionId === e.revisionId &&
+    (e.release.sourceRunId === undefined || e.release.sourceRunId === e.runId) &&
+    (e.release.verificationId === undefined || e.release.verificationId === e.verification?.id) &&
+    (e.release.sourceAgentTaskId === undefined || e.release.sourceKind !== "AGENT" || e.release.sourceAgentTaskId === e.taskId));
   const stopped = publicationStopped(e.release?.status);
   const batches = e.batches ?? [];
-  const executed = e.publicationReadable !== false && publicationCurrent && !stopped && batches.some(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true);
-  const healthy = e.monitoringVerified !== false && executed && e.release?.health === "HEALTHY" && Number.isSafeInteger(e.release.runCount) && e.release.runCount! > 0 && batches.length === e.release.runCount && new Set(batches.map(b => b.id)).size === batches.length && batches.every(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true && e.events?.some(event => event.type === "BATCH_SUCCEEDED" && event.releaseId === e.release?.id && event.releaseRunId === b.id && event.packageDigest === e.bundle?.digest)) && !(e.alerts ?? []).some(a => a.status === "OPEN");
+  const reviewedCloud = e.release?.scope === "PRIVATE_CLOUD_TEST" && e.release.sourceKind === "AGENT" && e.release.reviewDigest !== undefined;
+  const pair = publicationCurrent && e.publicationReadable === true && e.release && reviewedCloud &&
+    e.release.sourceAgentTaskId === e.taskId && e.release.sourceRunId === e.runId &&
+    e.release.verificationId === e.verification?.id && e.release.runCount === 2 ? reviewedBatchPair(e.release,batches) : undefined;
+  const guidance = releaseGuidance(e,publicationCurrent,pair);
+  const executionEvidence = !reviewedCloud || pair?.triggered !== undefined;
+  const executed = e.publicationReadable !== false && publicationCurrent && !stopped && executionEvidence && batches.some(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true);
+  const healthy = e.monitoringVerified !== false && executed && e.release?.health === "HEALTHY" &&
+    (!reviewedCloud || e.release.status === "COMPLETED_CLOUD_TEST") &&
+    Number.isSafeInteger(e.release.runCount) && e.release.runCount! > 0 && batches.length === e.release.runCount && new Set(batches.map(b => b.id)).size === batches.length && batches.every(b => b.status === "SUCCEEDED" && b.schedulerTriggered === true && e.events?.some(event => event.type === "BATCH_SUCCEEDED" && event.releaseId === e.release?.id && event.releaseRunId === b.id && event.packageDigest === e.bundle?.digest)) && !(e.alerts ?? []).some(a => a.status === "OPEN");
   const state = (done: boolean, failed = false): JourneyState => e.dirty ? "STALE" : done ? "DONE" : failed ? "ATTENTION" : "PENDING";
   const distribution=distributionMetadataForContext(e.contextId??e.report?.contextId);
   const distributionReceipt=Boolean(distribution&&e.consumption?.protocol==='shuduo-local-distribution-consumption/v1'&&e.consumption.outputContractId===distribution.id&&e.consumption.agentIndependentE2E===false);
@@ -107,10 +138,11 @@ export function agentJourney(e: Evidence): { steps: JourneyStep[]; next: Journey
     { id: "code", label: "代码与调试", state: state(codeExecuted, codeFailed), detail: e.dirty ? "未保存修改不继承旧结论。" : codeExecuted ? `代码版本 ${e.revisionId!.slice(0, 8)} 已完成实际执行；业务正确性另见独立结果核验。` : codeFailed ? "当前代码执行尚未通过，请查看报错并修正。" : e.revisionId ? `代码版本 ${e.revisionId.slice(0, 8)} 已生成，等待核对执行与调试回执。` : "等待生成代码，可随时人工接管。", target: "agent-code" },
     { id: "validation", label: "独立结果核验", state: state(verified, current && e.report?.status === "NEEDS_ATTENTION"), detail: verified ? (e.fund?"版本、真实执行和登记基金断言通过。":"版本、真实执行、结果和五场景断言通过。") : "查看未通过项；SQL跑通不等于完整核验。", target: "agent-verification" },
     { id: "files", label: "调度与部署文件", state: state(fileVerified, e.delivery?.status === "FAILED"), detail: fileVerified ? "同一版本的交付文件演练通过。" : files ? "文件已生成，仍需实际演练。" : "核验通过后准备版本化交付。", target: "agent-files" },
-    { id: "publication", label: "审阅与发布", state: state(executed, stopped), detail: executed ? `当前交付包已由调度器执行 · ${e.release?.id.slice(0, 8)}` : e.release && !publicationCurrent ? "保留历史发布，不替当前版本证明上线。" : "需审阅确切版本；不会自动代批。", target: "agent-publication" },
-    { id: "monitoring", label: "上线后监控", state: state(Boolean(healthy), publicationCurrent && (e.release?.health === "CRITICAL" || (e.alerts ?? []).some(a => a.status === "OPEN"))), detail: healthy ? "所有计划批次成功，无未解除告警。仅本次测试范围。" : "检查批次、告警与恢复记录；不凭健康标签判完成。", target: "agent-publication" },
+    { id: "publication", label: "审阅与发布", state: state(executed, publicationCurrent && stopped), detail: executed ? `当前交付包已由调度器执行 · ${e.release?.id.slice(0, 8)}` : guidance?.detail ?? "请审阅本次交付的代码、断言和文件。", target: "agent-publication" },
+    { id: "monitoring", label: "上线后监控", state: state(Boolean(healthy), publicationCurrent && (e.release?.health === "CRITICAL" || (e.alerts ?? []).some(a => a.status === "OPEN"))), detail: healthy ? "所有计划批次成功，无未解除告警。仅本次测试范围。" : "请核对批次结果、监控事件和告警。", target: "agent-publication" },
     { id: "services", label: "DAPI / XAPI消费", state: state(consumed, Boolean(consumptionCurrent && e.consumption?.services.some(s => s.status === "NEEDS_ATTENTION"))), detail: consumed ? "当前包的组合接口、历史授权调用与实际快照对照通过；不是外部系统验收。" : singleCustomerVerified ? "单客户授权调用已核验，批次消费验收待核对。" : "到同任务服务工作台核对来源、授权调用与日志；本视图尚未核验消费。", target: "agent-service-handoff" },
   ];
-  const next: JourneyStep = steps.find(step => step.state !== "DONE") ?? { id:"evidence",label:"查看完整证据",state:"DONE",detail:"当前任务的测试范围证据已齐；仍不代表自主E2E或公网验收。",target:"agent-service-handoff" };
-  return { steps, next, current, fileVerified, publicationCurrent };
+  const pending: JourneyStep = steps.find(step => step.state !== "DONE") ?? { id:"evidence",label:"查看完整证据",state:"DONE",detail:"当前任务的测试范围证据已齐；仍不代表自主E2E或公网验收。",target:"agent-service-handoff" };
+  const next = guidance && (pending.id === "publication" || pending.id === "monitoring") ? {...pending,...guidance} : pending;
+  return { steps, next, current, fileVerified, publicationCurrent, reviewedBatches:pair };
 }
