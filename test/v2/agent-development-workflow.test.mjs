@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MetadataStore } from "../../src/v2/store.mjs";
 import { LocalArtifactStore } from "../../src/v2/artifact-store.mjs";
-import { createDurableAgentDelivery, developmentVerificationReport } from "../../src/v2/agent-development-workflow.mjs";
+import { createDurableAgentDelivery, developmentVerificationReport, storedRehearsalSettlementEvidence } from "../../src/v2/agent-development-workflow.mjs";
+import { rehearsalWakeKey } from "../../src/v2/rehearsal-wake.mjs";
 import { getContext, contextIds, referenceSql, validationContractId } from "../../src/v2/context.mjs";
 import { sha256 } from "../../src/v2/delivery.mjs";
 import { createV2Server, PROJECT } from "../../src/v2/server.mjs";
@@ -30,6 +31,94 @@ function fixture(t) {
   const receipt = prepared => ({ status:"SUCCEEDED", engine:"Apache Spark", engineVersion:"3.5.9", mainSqlExecuted:true, testSqlValidation:{passed:true,sqlHash:sha256(prepared.input.testSql)}, validation:run.validation, rows:run.rows, log:"synthetic test receipt" });
   return {store,project,revision,run,agent,options,engine:createDurableAgentDelivery(options),submits,receipts,receipt,failNextSubmit:()=>{failSubmit=true;}};
 }
+
+async function pinnedRehearsal(t, immediateWake = false) {
+  const f=fixture(t), {store,project,engine,options:{runner}}=f;
+  const owner=store.create('auth_user',project,{status:'ACTIVE',memberships:[{projectId:project,role:'ENGINEER'}]});
+  const revision=store.update('revision',f.revision.id,project,{source:'LIVE_MODEL',author:owner.id});
+  const run=store.update('run',f.run.id,project,{mode:'DURABLE_REMOTE_SUBMISSION',contextId:'cash-change',
+    agentTaskId:f.agent.id,remoteSubmission:{prepared:{job:{jobId:f.run.id}}}});
+  const agent=store.update('agent',f.agent.id,project,{submittedBy:owner.id,usedTokens:1,sql:revision.sql});
+  runner.prepare=(input,id)=>{
+    const job={jobId:id,projectId:project};
+    return {job,serialized:JSON.stringify(job),input,resultKey:'test/results/'+id};
+  };
+  const result=(prepared)=>({...f.receipt(prepared),queueJobDigest:sha256(prepared.serialized),durationMs:10});
+  if(immediateWake) runner.read=async prepared=>result(prepared);
+  const task=await engine.create(agent,randomUUID(),{revisionId:revision.id,revisionHash:revision.hash,runId:run.id});
+  const binding={taskId:agent.id,actorId:owner.id,deliveryId:task.id,packageId:task.packageId,packageDigest:task.packageDigest};
+  const wake=store.deduplicate(rehearsalWakeKey(project,task.id),'test-wake',()=>store.create('rehearsal_wake',project,{binding}));
+  const select={packageId:task.packageId,packageDigest:task.packageDigest};
+  await engine.advance(task.id,task.version,select,{rehearsalWakeId:wake.id,assertWakeAuthority:()=>{}});
+  const delivery=()=>store.get('agent_delivery_task',task.id,project);
+  const prepared=delivery().remoteSubmission.prepared, id=delivery().verificationId;
+  const verification=()=>store.get('delivery_verification',id,project);
+  return {...f,owner,delivery,verification,prepared,result:result(prepared),
+    proof:()=>storedRehearsalSettlementEvidence(store,project,delivery(),verification()),
+    event:()=>engine.settleRehearsal({id,key:prepared.resultKey}),
+    settle:()=>engine.advance(task.id,delivery().version,{...select,verificationId:id},{ownerActor:owner.id})};
+}
+
+test("the first signed result event or signed initiating wake records the bound settlement once", async t=>{
+  for (const immediateWake of [false,true]) {
+    const f=await pinnedRehearsal(t,immediateWake);
+    if(!immediateWake){f.receipts.set(f.verification().id,f.result);await f.event();}
+    const before=f.proof();
+    assert.deepEqual(before,{trigger:immediateWake?'SIGNED_REHEARSAL_WAKE':'SIGNED_RESULT_EVENT',deliveryId:f.delivery().id,
+      packageId:f.delivery().packageId,packageDigest:f.delivery().packageDigest,verificationId:f.verification().id,
+      workerResultDigest:f.verification().workerResultDigest});
+    await f.settle();
+    assert.equal((await f.event()).state,'REHEARSAL_ALREADY_SETTLED');
+    assert.deepEqual(f.proof(),before);
+    assert.equal(f.submits.length,1);
+  }
+});
+
+test("an owner reconciliation that wins a race stays owner settled; missing or changed provenance is unconfirmed", async t=>{
+  const f=await pinnedRehearsal(t);
+  let signalRead, releaseRead;
+  const started=new Promise(resolve=>{signalRead=resolve;});
+  const resume=new Promise(resolve=>{releaseRead=resolve;});
+  let reads=0;
+  f.options.runner.read=async()=>{if(reads++===0){signalRead();await resume;}return f.result;};
+  const event=f.event();
+  await started;
+  await f.settle();
+  releaseRead();
+  await event;
+  const original=f.proof();
+  assert.equal(original.trigger,'OWNER_RECONCILIATION');
+  assert.equal(f.submits.length,1);
+  for(const settlementEvidence of [undefined,{...original,trigger:'SIGNED_RESULT_EVENT'},
+      {...original,verificationId:randomUUID()},{...original,workerResultDigest:'f'.repeat(64)}]){
+    f.store.update('delivery_verification',f.verification().id,f.project,{settlementEvidence});
+    assert.equal(f.proof(),undefined);
+    assert.equal(f.verification().status,'SUCCEEDED');
+  }
+});
+
+test("legacy Worker replies can be read by the original owner but cannot become signed event settlements", async t=>{
+  const f=await pinnedRehearsal(t);
+  const legacy={...f.result};delete legacy.queueJobDigest;
+  f.receipts.set(f.verification().id,legacy);
+  assert.equal((await f.event()).state,'REHEARSAL_RESULT_UNCONFIRMED');
+  assert.equal(f.proof(),undefined);
+  await f.settle();
+  assert.equal(f.proof().trigger,'OWNER_RECONCILIATION');
+  assert.equal((await f.event()).state,'REHEARSAL_ALREADY_SETTLED');
+  assert.equal(f.proof().trigger,'OWNER_RECONCILIATION');
+});
+
+test("a generic reconciliation records the result without inventing a settlement source", async t=>{
+  const f=await pinnedRehearsal(t);
+  f.receipts.set(f.verification().id,f.result);
+  await f.engine.reconcile(f.delivery().id,{passive:true});
+  assert.equal(f.verification().status,'SUCCEEDED');
+  assert.equal(f.proof(),undefined);
+  await f.event();
+  await f.settle();
+  assert.equal(f.proof(),undefined);
+});
 
 test("verification report rejects duplicate client rows, wrong amounts and stale code even with a green validation flag", t => {
   const f=fixture(t); assert.equal(developmentVerificationReport(f.agent,f.run,f.revision).status,"PASSED");

@@ -17,7 +17,7 @@ import { storedWorkerBatchResult, verifiedWorkerResultDigest } from "./worker-re
 import { isFundContext } from "./fund-contexts.mjs";
 import { createFundTestSql, fundDevelopmentBinding, fundRehearsalMatchesPlan, fundRunMatchesRegisteredResult, fundValidationMatches, recheckFundDevelopmentReceipt, verifiedFundRun } from "./fund-delivery.mjs";
 import { syncSqlColumnsMatch, syncSqlContractId, syncSqlRowsMatch } from "./sync-sql-input.mjs";
-import {rehearsalWakeFor,rehearsalWakeMatches} from './rehearsal-wake.mjs';
+import {rehearsalWakeFor,rehearsalWakeMatches,validRehearsalSettlementEvidence} from './rehearsal-wake.mjs';
 
 export const durableDeliveryMode = "DURABLE_AGENT_DELIVERY_V1";
 export const standaloneManualDeliveryMode='DURABLE_MANUAL_DELIVERY_V1';
@@ -26,7 +26,7 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 const fail = (status, message) => Object.assign(new Error(message), { status });
 export function publicDeliveryTask(task) {
   if (!task) return task;
-  const { remoteSubmission, submittedBy, preparationRequestId, rehearsalWakeId, ...visible } = task;
+  const { remoteSubmission, submittedBy, preparationRequestId, rehearsalWakeId, rehearsalSettlementTrigger, ...visible } = task;
   return visible;
 }
 
@@ -53,6 +53,14 @@ export function storedFileRehearsalResult(store,project,task,verification) {
   if (!storedFileRehearsal(task,verification) || verification.finishedAt !== task.finishedAt) return;
   return storedWorkerBatchResult(store,verification,task.remoteSubmission?.prepared?.job,
     `${project}:cloud-rehearsal-result:${verification.id}`);
+}
+
+export function storedRehearsalSettlementEvidence(store,project,task,verification) {
+  const evidence=verification?.settlementEvidence;
+  if (!evidence || task?.rehearsalSettlementTrigger!==evidence.trigger ||
+      !validRehearsalSettlementEvidence(evidence,task,verification)) return;
+  const result=storedFileRehearsalResult(store,project,task,verification);
+  if (result?.resultDigest===evidence.workerResultDigest) return evidence;
 }
 
 export function storedBackgroundRehearsalEvidence(store,project,task,verification) {
@@ -395,7 +403,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const task = get(dedup.id);
     return publicDeliveryTask(expected ? await persistDeliveryArtifact(task) : task);
   }
-  async function reconcile(id, {passive=false, resultEvent=false} = {}) {
+  async function reconcile(id, {passive=false, resultEvent=false, rehearsalWakeId, ownerReconciliationActor} = {}) {
     let task = get(id);
     if (terminal.has(task.status) || !task.remoteSubmission) return publicDeliveryTask(task);
     const verificationId = task.verificationId, prepared = task.remoteSubmission.prepared;
@@ -427,14 +435,24 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const workerResultDigest=!standaloneManual && (task.sourcePinned||task.rehearsalPinned) &&
       prepared?.job?.jobId===verification.id && prepared.job.projectId===project && storedFileRehearsal(task,verification)
       ? proof : undefined;
-    if (resultEvent && (!workerResultDigest || typeof prepared.serialized!=="string" ||
-        receipt.queueJobDigest!==hash(prepared.serialized))) return publicDeliveryTask(task);
+    const jobBound=typeof prepared.serialized==="string" && receipt.queueJobDigest===hash(prepared.serialized);
+    if (resultEvent && (!workerResultDigest || !jobBound)) return publicDeliveryTask(task);
     if (workerResultDigest && !(Number.isFinite(result.durationMs) && result.durationMs>0)) delete result.durationMs;
     const record = () => {
       const finishedAt=new Date().toISOString(), status=passed?"SUCCEEDED":"FAILED";
+      let trigger;
+      if (workerResultDigest) {
+        if (resultEvent) trigger='SIGNED_RESULT_EVENT';
+        else if (jobBound && rehearsalWakeId && rehearsalWakeId===task.rehearsalWakeId) trigger='SIGNED_REHEARSAL_WAKE';
+        else if (ownerReconciliationActor && ownerReconciliationActor===task.submittedBy) trigger='OWNER_RECONCILIATION';
+      }
+      const settlementEvidence=trigger && {trigger,deliveryId:task.id,packageId:task.packageId,
+        packageDigest:task.packageDigest,verificationId:verification.id,workerResultDigest};
       const saved=store.update("delivery_verification",verification.id,project,{...result,status,finishedAt,
-        ...(workerResultDigest?{workerResultDigest}:{}),mode:"CLOUD_ISOLATED_FILE_REHEARSAL",actualExecution:passed,published:false});
+        ...(workerResultDigest?{workerResultDigest}:{}),...(settlementEvidence?{settlementEvidence}:{}),
+        mode:"CLOUD_ISOLATED_FILE_REHEARSAL",actualExecution:passed,published:false});
       change(task,{status,stage:passed?"AWAITING_ENGINEER_REVIEW":"FILE_REHEARSAL_FAILED",actualExecution:passed,finishedAt,
+        ...(trigger?{rehearsalSettlementTrigger:trigger}:{}),
         ...(passed?{}:{error:"演练未通过真实执行、测试SQL或独立回归，请检查演练记录。"})});
       return saved;
     };
@@ -469,7 +487,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
     const settled=await reconcile(task.id,{passive:true,resultEvent:true});
     return {state:terminal.has(settled.status) ? "REHEARSAL_SETTLED" : "REHEARSAL_RESULT_UNCONFIRMED"};
   }
-  async function advance(id, expectedVersion, expectedRehearsal, {rehearsalWakeId,assertWakeAuthority}={}) {
+  async function advance(id, expectedVersion, expectedRehearsal, {rehearsalWakeId,assertWakeAuthority,ownerActor}={}) {
     let task = get(id);
     const wake=!standaloneManual && rehearsalWakeFor(store,project,task.id);
     if (rehearsalWakeId && (!assertWakeAuthority || wake?.id!==rehearsalWakeId || !rehearsalWakeMatches(wake,task) ||
@@ -490,7 +508,8 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       throw fail(409,"原交付包或演练批次尚未就绪");
     if (task.sourcePinned && isFundContext(store.get("agent",task.sourceAgentTaskId,project)?.contextId) && !expectedRehearsal)
       throw fail(422,"基金演练须确认原交付包及摘要");
-    if (protectedRehearsal && task.remoteSubmission) return reconcile(id,{passive:true});
+    if (protectedRehearsal && task.remoteSubmission) return reconcile(id,{passive:true,rehearsalWakeId,
+      ownerReconciliationActor:expectedRehearsal?.verificationId ? ownerActor : undefined});
     if (task.sourceKind === "MANUAL") task = await persistDeliveryArtifact(task);
     else if (task.stage === "PACKAGE_PERSISTING") return publicDeliveryTask(await persistDeliveryArtifact(task));
     if (terminal.has(task.status)) return publicDeliveryTask(task);
@@ -526,7 +545,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       if (protectedRehearsal) {
         if (task.stage !== "PACKAGE_READY" || task.verificationId) throw fail(409,"原演练批次待核对");
         const saved = store.deduplicate(`${project}:delivery-rehearsal:${task.id}`,item.digest,reserve);
-        if (saved.replayed) return reconcile(id,{passive:true});
+        if (saved.replayed) return reconcile(id,{passive:true,rehearsalWakeId});
         task = get(saved.id);
       } else {
         task = reserve();
@@ -543,7 +562,7 @@ export function createDurableAgentDelivery({ store, project, runner, artifactSto
       task = change(task, { stage: "FILE_REHEARSAL_RUNNING", remoteSubmission: { ...task.remoteSubmission, submitted: true } });
       await persist();
     }
-    return reconcile(id,{passive:protectedRehearsal});
+    return reconcile(id,{passive:protectedRehearsal,rehearsalWakeId});
   }
   async function cancel(id) {
     let task = get(id); if (terminal.has(task.status)) return publicDeliveryTask(task);

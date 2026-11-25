@@ -23,3 +23,13 @@ export function validBackgroundRehearsalEvidence(evidence,code,delivery,rehearsa
       deliveryId:delivery.id,packageId:delivery.packageId,packageDigest:delivery.packageDigest,verificationId:rehearsal.id,
       wakeId:evidence.wakeId,workerResultDigest:evidence.workerResultDigest});
 }
+
+export function validRehearsalSettlementEvidence(evidence,delivery,rehearsal,initiationEvidence) {
+  return ['SUCCEEDED','FAILED'].includes(rehearsal?.status) &&
+    [delivery?.id,delivery?.packageId,rehearsal.id].every(id) &&
+    digest(delivery.packageDigest) && digest(evidence?.workerResultDigest) &&
+    ['SIGNED_RESULT_EVENT','SIGNED_REHEARSAL_WAKE','OWNER_RECONCILIATION'].includes(evidence.trigger) &&
+    (initiationEvidence===undefined || initiationEvidence?.workerResultDigest===evidence.workerResultDigest) &&
+    isDeepStrictEqual(evidence,{trigger:evidence.trigger,deliveryId:delivery.id,packageId:delivery.packageId,
+      packageDigest:delivery.packageDigest,verificationId:rehearsal.id,workerResultDigest:evidence.workerResultDigest});
+}

@@ -44,7 +44,7 @@ import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,as
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
 import {clarificationAttribution} from './sql-clarification-contract.mjs';
 import { resolveAgentContextDerivation } from "./agent-context-derivation.mjs";
-import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, storedFundFileRehearsal, pinnedCloudDeliverySource,storedBackgroundRehearsalEvidence } from "./agent-development-workflow.mjs";
+import { createDurableAgentDelivery, createStandaloneManualDelivery, standaloneManualDeliveryMode, durableDeliveryMode, publicDeliveryTask, developmentVerificationReport, manualCloudDeliverySource, resolveEvidenceSource, storedFileRehearsal, storedFileRehearsalFailure, storedFundFileRehearsal, pinnedCloudDeliverySource,storedBackgroundRehearsalEvidence,storedRehearsalSettlementEvidence } from "./agent-development-workflow.mjs";
 import { createCloudPublication, createStandaloneManualPublication, validatePublicationSelector } from "./cloud-publication.mjs";
 import { exactPublicationReceipt, projectCloudReleaseBatchStage } from "./cloud-release-evidence.mjs";
 import{standaloneManualPublicationSource}from"./standalone-manual-publication-source.mjs";
@@ -1886,8 +1886,10 @@ export function createV2Server(options = {}) {
         const settledFailure = storedFileRehearsalFailure(store,PROJECT,item,verification);
         const preparationEvidence=storedBackgroundPreparationEvidence(store,PROJECT,item);
         const rehearsalInitiationEvidence=storedBackgroundRehearsalEvidence(store,PROJECT,item,verification);
+        const rehearsalSettlementEvidence=storedRehearsalSettlementEvidence(store,PROJECT,item,verification);
         return {...publicDeliveryTask(item),...rehearsalBackground(item),...(rehearsal?{rehearsal}:{}),...(settledFailure?{settledFailure}:{}),
-          ...(preparationEvidence?{preparationEvidence}:{}),...(rehearsalInitiationEvidence?{rehearsalInitiationEvidence}:{})};
+          ...(preparationEvidence?{preparationEvidence}:{}),...(rehearsalInitiationEvidence?{rehearsalInitiationEvidence}:{}),
+          ...(rehearsalSettlementEvidence?{rehearsalSettlementEvidence}:{})};
       };
       assertV2RequestScope(req, { env, local });
       const reportRoute = path === "/api/v2/reports" || path.startsWith("/api/v2/reports/");
@@ -6481,6 +6483,7 @@ export function createV2Server(options = {}) {
         }
         const {bundle, verification} = workflowDeliveryEvidence(delivery);
         if(delivery?.calendarSelection&&bundle&&!agentCalendarMatches(bundle,delivery.calendarSelection))throw fail(409,'交付日历与原包不一致');
+        const settlementEvidence=storedRehearsalSettlementEvidence(store,PROJECT,delivery,verification);
         let workerResult;
         if (!local && delivery?.mode===durableDeliveryMode && (delivery.sourcePinned||delivery.rehearsalPinned) && verification) {
           if (verification.status==="FAILED") {
@@ -6526,7 +6529,7 @@ export function createV2Server(options = {}) {
             !publicReadOnly && developmentSessionFor(scopeActor())?.readOnly===false ? {backgroundRehearsalAvailable:true}:{}),
           package: bundle ? { id: bundle.id, digest: bundle.digest, manifest: bundle.manifest, files: bundle.files } : undefined,
           verification: verification ? { id: verification.id, status: verification.status, engine: verification.engine, engineVersion: verification.engineVersion, mainSqlExecuted: verification.mainSqlExecuted, durationMs: verification.durationMs, error: verification.error, testSqlValidation: verification.testSqlValidation, validation: validationWithoutRawComparisons(verification.validation), finishedAt: verification.finishedAt,
-            ...(workerResult?{workerResult}:{}),
+            ...(workerResult?{workerResult}:{}), ...(settlementEvidence?{settlementEvidence}:{}),
             ...(fundReview ? {fundReview} : {}) } : undefined,
           publication: { available: requestedMissing ? false : agent.syncInput ? false : agent.fundPreparation ? (local ? localClassicSpark && releaseSchedulerMode === "LOCAL_TIMER" : fundPublicationAvailable) : (!getContext(agent.contextId)?.outputContractId||local&&releaseSchedulerMode==="LOCAL_TIMER") && !source.retainedFailure && (Boolean(privatePublicationConfig) || (local && releaseSchedulerMode === "LOCAL_TIMER")), scope: local ? "LOCAL_TEST_RELEASE" : "PRIVATE_CLOUD_TEST", reason: requestedMissing ? "原日历请求暂无回执，未采用其他交付作为结果。" : agent.syncInput ? "冻结持仓已接入本机文件演练与审阅。" : agent.fundPreparation ? (local ? "审阅文件后，确认同一冻结业务日的两批本机测试。发布后按原版本查看批次。" : (fundPublicationAvailable ? "审阅同一基金交付与签名演练后，可提交两个冻结业务日批次。" : "可核对原基金交付、演练与历史。提交发布需使用确切版本的独立发布窗口。")) : getContext(agent.contextId)?.outputContractId ? "仅本机测试：须明确批准此包与两个冻结虚构证券批次，不调用模型，不是公网或生产上线。" : source.retainedFailure ? "原失败记录仅供诊断；当前修正没有新的计算结果或可发布交付。" : local ? "审阅后可发布本机测试任务并观察实际计时批次。" : privatePublicationConfig ? "审阅此版本后创建两个云端测试批次，由受控定时器触发；使用冻结证券样例，运行与告警留在此页。" : "云端定时驱动未配置；交付演练通过后保留为待发布。" },
         });
@@ -6729,7 +6732,7 @@ export function createV2Server(options = {}) {
                 developmentBoundary:developmentBackgroundBoundary(developmentAccess,agent.id,developmentNow())});
               return json(res,202,deliveryReceipt(get('agent_delivery_task',item.id)));
             }
-            const advanced = await durableDelivery.advance(item.id,version,rehearsal);
+            const advanced = await durableDelivery.advance(item.id,version,rehearsal,{ownerActor:auth.sessionFromHeaders(req.headers)?.user?.id});
             return json(res,200,deliveryReceipt(get("agent_delivery_task",advanced.id)));
           }
           if (method === "POST" && agentDeliveryRecord[2] === "cancel") {
