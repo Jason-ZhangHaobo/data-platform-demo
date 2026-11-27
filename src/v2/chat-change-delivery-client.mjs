@@ -1,19 +1,9 @@
 import { verifiedDeliveryBytes } from './delivery-file-bytes.mjs';
-
-const uuid=value=>typeof value==='string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
-const digest=value=>typeof value==='string' && /^[a-f0-9]{64}$/.test(value);
-const changeKey=value=>typeof value==='string' && /^chat-derive-v1-[a-f0-9]{64}$/.test(value);
+import {chatChangeResourcePath,uuid,digest,validSource,sameSource} from './chat-change-resource.mjs';
 const states=new Set(['NOT_PREPARED','QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','INTERRUPTED']);
 const bad=()=>Error('派生交付回执与当前选定的任务、版本或文件未能核对，请重新读取原记录。');
 
-function pathFor({intentId,changeRequestId,sourceRunId,sourceTaskId}) {
-  if (!uuid(intentId) || !changeKey(changeRequestId) ||
-      (sourceRunId!==undefined && !uuid(sourceRunId)) || (sourceTaskId!==undefined && !uuid(sourceTaskId))) throw bad();
-  return `/agent/intents/${intentId}/development/changes/${changeRequestId}/delivery`;
-}
-const validSource=s=>uuid(s?.taskId) && uuid(s.revisionId) && uuid(s.runId) && digest(s.revisionHash) &&
-  typeof s.contextId==='string' && s.contextId.length>0;
-const sameSource=(a,b)=>['taskId','revisionId','revisionHash','runId','contextId'].every(key=>a?.[key]===b?.[key]);
+const pathFor=input=>chatChangeResourcePath(input,'delivery');
 
 async function checked(value,input) {
   if (value?.protocol!=='shuduo-chat-change-delivery/v1' || value.intentId!==input.intentId ||

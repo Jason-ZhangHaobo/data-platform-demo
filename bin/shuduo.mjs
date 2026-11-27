@@ -44,6 +44,7 @@ import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} from '../src/v2/agent-consumption-request.mjs';
 import {createContextDerivedTask,readChatScopeChanges,submitChatScopeChange} from "../src/v2/agent-derivation-client.mjs";
 import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-change-delivery-client.mjs";
+import {readChatChangePublication,reviewedChatChangeInput,publishChatChange} from "../src/v2/chat-change-publication-client.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -97,6 +98,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent change-chat-scope --id INTENT_ID --source-run-id ORIGINAL_RUN_ID --context CONTEXT_ID --message REQUEST --request-id NEXT_REQUEST_ID --confirm
   shuduo agent chat-delivery --id INTENT_ID --change-request-id CHANGE_ID
   shuduo agent prepare-chat-delivery --id INTENT_ID --change-request-id CHANGE_ID --source-run-id CHILD_RUN_ID --request-id PREPARATION_UUID --confirm
+  shuduo agent chat-publication --id INTENT_ID --change-request-id CHANGE_ID
+  shuduo agent publish-chat-change --review-file SAVED_PUBLICATION_JSON --attest-code --attest-assertions --attest-delivery-files --attest-local-scope --confirm
   shuduo agent cancel-intent --id INTENT_ID
   shuduo agent cancel-child --id INTENT_ID --destination MODULE_ID
   shuduo agent handoffs --id INTENT_ID
@@ -627,6 +630,19 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: { destinationId: required(parsed.options, "destination") },
         },
       );
+    else if(resource==="agent" && action==="chat-publication")
+      result=await readChatChangePublication(client,{intentId:required(parsed.options,"id"),changeRequestId:required(parsed.options,"change_request_id")});
+    else if(resource==="agent" && action==="publish-chat-change") {
+      const allowed=new Set(['review_file','attest_code','attest_assertions','attest_delivery_files','attest_local_scope','confirm','base_url']);
+      if (parsed.positionals.length!==2) throw Error('发布命令只接受审阅文件及已列出的确认项');
+      for (const token of argv.filter(value=>value.startsWith('--')))
+        if (!allowed.delete(token.slice(2).replaceAll('-','_'))) throw Error('发布命令含有未知或重复的参数');
+      const saved=jsonObject(readFileSync(required(parsed.options,"review_file"),"utf8"),"本机发布预检");
+      result=await publishChatChange(client,reviewedChatChangeInput(saved,{
+        code:parsed.options.attest_code===true,assertions:parsed.options.attest_assertions===true,
+        deliveryFiles:parsed.options.attest_delivery_files===true,localScope:parsed.options.attest_local_scope===true,
+      },parsed.options.confirm));
+    }
     else if (resource==="agent" && ["chat-delivery","prepare-chat-delivery"].includes(action)) {
       const selection={intentId:required(parsed.options,"id"),changeRequestId:required(parsed.options,"change_request_id")};
       result=action==="chat-delivery" ? await readChatChangeDelivery(client,selection)

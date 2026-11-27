@@ -129,10 +129,13 @@ export class LocalReleaseScheduler {
 
   start() {
     if (this.closed) return;
-    for (const run of this.store.list("release_run", this.project)) {
-      if (run.status === "SCHEDULED") this.schedule(run);
-      else if (run.status === "INTERRUPTED") this.#recordInterruptedResult(run);
-    }
+    const saved=this.store.list("release_run",this.project);
+    for (const run of saved) if (run.status==="INTERRUPTED") this.#recordInterruptedResult(run);
+    // Overdue timers all receive a zero delay. Restore them in scheduled order
+    // so the serial execution queue preserves the original batch sequence.
+    const scheduled=saved.filter(run=>run.status==="SCHEDULED").sort((a,b)=>
+      Date.parse(a.scheduledTriggerAt)-Date.parse(b.scheduledTriggerAt) || (a.sequence??0)-(b.sequence??0));
+    for (const run of scheduled) this.schedule(run);
   }
 
   #recordInterruptedResult(run) {
@@ -256,7 +259,7 @@ export class LocalReleaseScheduler {
       return;
     }
     const controller = new AbortController();
-    const scoped = Boolean(release.outputContract || release.fundLookthrough || release.syncInput);
+    const scoped = Boolean(release.outputContract || release.fundLookthrough || release.syncInput || release.chatPublication);
     const triggeredAt = new Date(triggerTime).toISOString();
     try { this.store.update("release_run", id, this.project, {
       status: "RUNNING",
@@ -268,8 +271,8 @@ export class LocalReleaseScheduler {
       ...(profile.leaseMs
         ? { leaseExpiresAt: new Date(this.now() + profile.leaseMs).toISOString() }
         : {}),
-    }, release.syncInput ? {expectedVersion:run.version} : undefined); }
-    catch (error) { if (release.syncInput && error.code === "STALE_DOCUMENT_VERSION") return; throw error; }
+    }, (release.syncInput || release.chatPublication) ? {expectedVersion:run.version} : undefined); }
+    catch (error) { if ((release.syncInput || release.chatPublication) && error.code === "STALE_DOCUMENT_VERSION") return; throw error; }
     this.controllers.set(run.id, controller);
     // A durable scheduler must persist the claim before any side effect. If the
     // process dies afterwards, a later tick can recover the expired lease.
@@ -298,14 +301,14 @@ export class LocalReleaseScheduler {
         expectedDigest: run.packageDigest,
         scheduledFor: run.businessScheduledFor,
         signal: controller.signal,
-        ...(packageItem.manifest?.source?.fundSignedExecution || release.syncInput
+        ...(packageItem.manifest?.source?.fundSignedExecution || release.syncInput || release.chatPublication
           ? { beforeRun: () => this.assertRunSource({run,release,packageItem}) }
           : {}),
       });
       if(scoped&&stopped())return await cancelBeforeRun();
       if (!terminal.has(output.status) || output.status === "INTERRUPTED")
         throw new Error("发布执行器返回无效状态");
-      if (release.syncInput) this.assertRunSource({run,release,packageItem});
+      if (release.syncInput || release.chatPublication) this.assertRunSource({run,release,packageItem});
       const result = this.assertRunResult({ packageItem, result:output, run }) ?? output;
       const finished = this.store.update("release_run", id, this.project, {
         ...result,

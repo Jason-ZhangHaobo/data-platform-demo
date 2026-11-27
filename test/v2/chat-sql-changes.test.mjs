@@ -260,3 +260,91 @@ test('signed chat delivery requires the original development write privilege eve
   assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
   assert.equal(f.store.list('delivery_verification',PROJECT).length,0);
 });
+
+async function readyChatPublication(t,options) {
+  const f=await fixture(t,options);
+  const changeId=(await f.call(f.path)).body.nextRequestId,child=(await f.submit(changeId)).body;
+  await f.poll('/agent/tasks/'+child.id,row=>row.status==='SUCCEEDED');
+  const deliveryPath=f.path+'/'+changeId+'/delivery',path=f.path+'/'+changeId+'/publication';
+  assert.equal((await f.call(path)).status,409);
+  const draft=(await f.call(deliveryPath)).body;
+  await f.call(deliveryPath,{source:draft.source,confirm:true},{headers:{'idempotency-key':draft.requestId}});
+  for(let n=0;;n++){
+    const saved=await f.call(deliveryPath);assert.equal(saved.status,200);
+    if(saved.body.status==='SUCCEEDED')break;
+    assert.ok(n<100);await new Promise(resolve=>setTimeout(resolve,10));
+  }
+  const initial=await f.call(path);assert.equal(initial.status,200,JSON.stringify(initial.body));
+  const ready=initial.body;
+  const body={source:ready.source,packageId:ready.packageId,packageDigest:ready.packageDigest,verificationId:ready.verificationId,
+    reviewDigest:ready.reviewDigest,confirm:true,attestations:{code:true,assertions:true,deliveryFiles:true,localScope:true}};
+  const publish=(args=body,key=ready.requestId,headers={})=>f.call(path,args,{headers:{'idempotency-key':key,...headers}});
+  return {...f,path,child,ready,body,publish};
+}
+
+test('one explicit reviewed chat publication allocates two timed child batches and recovers original evidence',async t=>{
+  const f=await readyChatPublication(t);
+  assert.equal(f.ready.phase,'READY');assert.equal(f.ready.canPublish,true);assert.deepEqual(f.ready.runs,[]);
+  assert.equal((await f.publish({...f.body,attestations:{...f.body.attestations,assertions:false}})).status,422);
+  assert.equal((await f.publish({...f.body,source:f.ready.parent})).status,409);
+  assert.equal((await f.publish({...f.body,verificationId:randomUUID()})).status,409);
+  assert.equal((await f.publish({...f.body,reviewDigest:'a'.repeat(64)})).status,409);
+  assert.equal((await f.publish(f.body,randomUUID())).status,409);
+  assert.equal((await f.call(f.path,undefined,{headers:{authorization:'Bearer unrelated'}})).status,403);
+  assert.equal(f.store.list('delivery_review',PROJECT).length,0);
+  const [first,replay]=await Promise.all([f.publish(),f.publish()]);
+  for(const v of [first,replay])assert.ok([200,201].includes(v.status),JSON.stringify(v.body));
+  assert.equal(first.body.release.id,replay.body.release.id);
+  assert.deepEqual(first.body.runs.map(r=>r.id),replay.body.runs.map(r=>r.id));
+  const done=await f.poll(f.path,row=>row.monitoringVerified);
+  assert.equal(done.phase,'PUBLISHED');assert.equal(done.release.health,'HEALTHY');
+  assert.equal(done.release.status,'ACTIVE_LOCAL');assert.equal(done.reviewActorScope,'LOCAL_DEVELOPER');
+  assert.deepEqual(done.runs.map(r=>[r.sequence,r.totalAssets,r.status,r.assertionCount,r.schedulerTriggered,r.testSqlPassed]),
+    [[1,'2250.00','SUCCEEDED',5,true,true],[2,'2250.00','SUCCEEDED',5,true,true]]);
+  assert.deepEqual(new Set(done.events.map(e=>e.releaseRunId)),new Set(done.runs.map(r=>r.id)));
+  assert.equal(done.events.filter(e=>e.type==='BATCH_SUCCEEDED').length,2);
+  for(const kind of ['release','release_approval','delivery_review'])assert.equal(f.store.list(kind,PROJECT).length,1);
+  assert.equal(f.store.list('release_run',PROJECT).length,2);
+  assert.equal((await f.publish()).body.monitoringVerified,true);
+  const original=f.store.get('release_run',done.runs[0].id,PROJECT);
+  f.store.update('release_run',original.id,PROJECT,{rows:f.parent.run.rows});
+  assert.equal((await f.call(f.path)).status,409);
+  assert.equal((await f.publish()).status,409);
+  f.store.update('release_run',original.id,PROJECT,{rows:original.rows});
+  const selection=new URLSearchParams({agent_task_id:f.child.id,package_digest:done.packageDigest,release_id:done.release.id});
+  const services=await f.call('/data-services/sources?'+selection);
+  assert.equal(services.status,200);
+  assert.deepEqual(new Set(services.body.map(s=>s.releaseRunId??s.id)),new Set(done.runs.map(r=>r.id)));
+
+  const readonly=createV2Server({root:f.root,store:f.store,env:{V2_LOCAL_DEVELOPMENT:'true',V2_EXECUTION_UNAVAILABLE:'true',V2_RELEASE_SCHEDULER_MODE:'DISABLED'}});
+  await new Promise(resolve=>readonly.server.listen(0,'127.0.0.1',resolve));
+  try {
+    const client=new V2Client({baseUrl:'http://127.0.0.1:'+readonly.server.address().port+'/api/v2'});
+    const reopened=await client.request(f.path);
+    assert.deepEqual(reopened,{...done,canPublish:false});
+    await assert.rejects(client.request(f.path,{method:'POST',body:f.body,idempotencyKey:done.requestId}),err=>err.status===503);
+  } finally {readonly.server.closeAllConnections();await new Promise(resolve=>readonly.server.close(resolve));readonly.dispose();}
+  assert.deepEqual(f.counts,{syntheticModel:1,syntheticSpark:4});
+});
+
+test('a read-only role, unrelated prior publication, or interrupted registration cannot authorize additional runs',async t=>{
+  const f=await readyChatPublication(t,{signed:true});
+  const actor=f.parent.actorId;
+  f.store.update('auth_user',actor,PROJECT,{memberships:[{projectId:PROJECT,role:'PRODUCT_MANAGER'}]});
+  assert.equal((await f.call(f.path)).body.canPublish,false);
+  assert.equal((await f.publish()).status,403);
+  f.store.update('auth_user',actor,PROJECT,{memberships:[{projectId:PROJECT,role:'ADMIN'}]});
+  assert.equal((await f.publish(f.body,f.ready.requestId,{'x-csrf-token':''})).status,403);
+  const create=f.store.create.bind(f.store);
+  f.store.create=(kind,project,data)=>{
+    if(kind==='release_run'&&data.sequence===2)throw Error('Injected transaction interruption');
+    return create(kind,project,data);
+  };
+  try {assert.equal((await f.publish()).status,500);} finally {f.store.create=create;}
+  for(const kind of ['release','release_run','release_approval','delivery_review'])assert.equal(f.store.list(kind,PROJECT).length,0);
+  assert.equal((await f.call(f.path)).body.phase,'READY');
+  const external=f.store.create('release',PROJECT,{packageId:f.ready.packageId,packageDigest:f.ready.packageDigest});
+  const blocked=await f.publish();assert.equal(blocked.status,409);assert.equal(blocked.body.code,'CHAT_PACKAGE_ALREADY_PUBLISHED');
+  assert.deepEqual(f.store.list('release',PROJECT).map(r=>r.id),[external.id]);
+  assert.deepEqual(f.counts,{syntheticModel:1,syntheticSpark:2});
+});

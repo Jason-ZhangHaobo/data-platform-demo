@@ -16,7 +16,7 @@ import { assertSyncSqlOutputSchema, syncSqlColumnDifferences, syncSqlColumnsMatc
 
 const fileHashes = bundle => Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, entry]) => [name, entry.sha256]));
 
-export function matchesStoredHoldingsRehearsal(plan, bundle, receipt, scheduledFor = receipt.scheduledFor) {
+function matchesStoredHoldingsExecution(plan, bundle, receipt, scheduledFor) {
   const family = { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) };
   const trace = plan.order.map(({id,kind}) => ({id,kind,status:"SUCCEEDED"}));
   let occurrence;
@@ -25,7 +25,6 @@ export function matchesStoredHoldingsRehearsal(plan, bundle, receipt, scheduledF
   if (receipt.status !== "SUCCEEDED" || receipt.testDouble === true || receipt.mainSqlExecuted !== true ||
       receipt.engine !== "Apache Spark" || receipt.engineVersion !== plan.deployment.runtime.version ||
       receipt.packageDigest !== plan.digest || !isDeepStrictEqual(receipt.source, plan.source) ||
-      receipt.published !== false || receipt.schedulerTriggered !== false || receipt.mode !== "LOCAL_FILE_REHEARSAL" ||
       occurrence.businessDate !== plan.fixtures.context.businessDate || !isDeepStrictEqual(receipt.occurrence, occurrence) ||
       !isDeepStrictEqual(receipt.workflowTrace, trace) ||
       !isDeepStrictEqual(receipt.fileHashes, fileHashes(bundle)) ||
@@ -33,6 +32,17 @@ export function matchesStoredHoldingsRehearsal(plan, bundle, receipt, scheduledF
       !validationMatchesFamily(receipt.validation, family) || !syncSqlRowsMatch(receipt.rows, plan.fixtures.context))
     return false;
   return true;
+}
+
+export function matchesStoredHoldingsRehearsal(plan,bundle,receipt,scheduledFor=receipt.scheduledFor) {
+  return receipt.published===false && receipt.schedulerTriggered===false && receipt.mode==='LOCAL_FILE_REHEARSAL' &&
+    matchesStoredHoldingsExecution(plan,bundle,receipt,scheduledFor);
+}
+
+export function matchesScheduledHoldingsBatch(plan,bundle,run) {
+  return run.published===true && run.schedulerTriggered===true && run.mode==='LOCAL_SCHEDULED_RELEASE' &&
+    run.clockMode==='WALL_CLOCK_TIMER' && run.publicDeployed===false &&
+    matchesStoredHoldingsExecution(plan,bundle,run,run.businessScheduledFor);
 }
 
 export function assertSyncSqlRehearsal(plan, bundle, receipt, scheduledFor = receipt.scheduledFor) {

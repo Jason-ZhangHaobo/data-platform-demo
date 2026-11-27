@@ -292,6 +292,8 @@ FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查�
 | GET /agent/intents/:id/development | 本人已关联 SQL 开发任务的对话编号 | 从同一任务、代码与批次读取 SQL、摘要、调试尝试和回归断言。来源不一致时返回 409。CLI 为 `agent chat-development --id`，MCP 为 `agent_chat_sql_development` |
 | GET /agent/intents/:id/development/changes | 本人原开发对话 | 读取绑定的原版本、登记口径、可用请求编号及已有派生任务。按 `requestId` 找回应答，读取不触发计算 |
 | GET /agent/intents/:id/development/changes/:changeId/delivery | 本机原开发会话及所选变更编号 | 返回父子来源、准备请求 UUID 和已保存的八文件交付、演练回执。对账使用只读查询 |
+| GET /agent/intents/:id/development/changes/:changeId/publication | 本机原开发会话和变更编号 | 读取已验子包的发布预检或同一发布的两批监控。返回准备好的审阅摘要、请求编号、实际批次和监控核验状态 |
+| POST /agent/intents/:id/development/changes/:changeId/publication | 原来源、包编号与摘要、演练编号、审阅摘要、四项明确确认、`confirm:true`，幂等键为预检给出的请求 UUID | 事务登记审阅、批准、发布和两个冻结样例批次。由既有本机调度器执行。原请求查询和重复提交均沿用同一发布。[GUI、CLI、MCP](agent-context-derivation.md#审阅派生版本并查看两批测试) |
 | POST /agent/intents/:id/development/changes/:changeId/delivery | `{source,confirm:true}`，幂等键为上述准备请求 UUID | 核对选定的派生任务、代码、开发批次后准备并演练该包。同一文件演练独立于开发和业务发布。[操作与示例](agent-context-derivation.md#在原对话准备派生版本的交付文件) |
 | POST /agent/tasks（对话口径变更） | `chatChange:{intentId}`、所审 `derivation`、原 SQL、目标口径、需求、SPARK_SQL 和服务端给出的幂等键 | 受理后原会话可读取同一子任务。任务运行可能调用模型和 Spark。相同编号、不同来源或需求会被拒绝。[界面、CLI、MCP 示例](agent-context-derivation.md#在原开发对话中提出修改) |
 | GET/POST /agent/intents/:id/approvals | 读取批准或destinationId + 幂等键 | REQUEST_APPROVAL持久化目标摘要哈希与风险；PLAN_ONLY拒绝。批准不执行工具，批准者内部标识不返回 |

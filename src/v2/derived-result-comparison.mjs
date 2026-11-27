@@ -2,7 +2,7 @@ import { agentContextDerivationRequest, checkedDeliveryDerivation, validStoredAg
 import { allContextIds, getContext } from "./context.mjs";
 import { verifiedStoredCloudDevelopment } from "./agent-development-workflow.mjs";
 import { liveEvidenceProvenance } from "./live-lifecycle-provenance.mjs";
-import { amountFields, formatCents } from "./derived-amounts.mjs";
+import { amountFields, formatCents, amountInCents as cents } from "./derived-amounts.mjs";
 
 const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
 const rowFields = ["client_id", ...amountFields, "security_count"];
@@ -10,14 +10,6 @@ const forbidden = () => Object.assign(new Error("仅可对照本人在当前项�
   status: 403, code: "AGENT_DERIVATION_COMPARISON_FORBIDDEN",
 });
 
-function cents(value) {
-  if (typeof value !== "number" && typeof value !== "string") return;
-  const match = /^(-?)(\d{1,38})(?:\.(\d{1,38}))?$/.exec(String(value));
-  if (!match || /[1-9]/.test((match[3] ?? "").slice(2))) return;
-  const magnitude = BigInt(match[2]) * 100n + BigInt((match[3] ?? "").slice(0, 2).padEnd(2, "0"));
-  if (typeof value === "number" && magnitude > maxSafe) return;
-  return match[1] ? -magnitude : magnitude;
-}
 
 function count(value) {
   if (typeof value !== "number" && typeof value !== "string") return;

@@ -41,6 +41,8 @@ import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelop
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { storedChatSqlDevelopment } from "./chat-sql-development.mjs";
 import { chatSqlChanges, acceptChatChange, validateChatChangeInput, chatChangeRequestKey, chatChangeLedger } from "./chat-sql-changes.mjs";
+import { chatPublicationBasis, checkChatPublicationConsent, activateChatPublication, assertChatRunClaim,
+  checkedChatRunResult, chatPublicationView } from "./chat-change-publication.mjs";
 import { selectChatChangeDelivery, checkChatDeliveryRequest, checkChatDeliveryBundle, storedChatChangeDelivery, retainChatChangeDelivery } from "./chat-change-delivery.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent, settleAgentDevelopmentResult } from "./durable-agent.mjs";
 import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,assertSqlRequirementPackageSource} from './sql-requirements.mjs';
@@ -980,6 +982,12 @@ export function createV2Server(options = {}) {
     runPackage: releaseRunner,
     fundExecutionEvidenceMode: options.releaseRunner || options.runner ? "TEST_HARNESS" : "LOCAL_SPARK_PROCESS",
     assertRunSource: ({run,release,packageItem})=>{
+      if (run.chatPublication || release.chatPublication || store.get('release_approval',release.approvalId,PROJECT)?.chatPublication) {
+        const fresh=get('release',run.releaseId);
+        const checked=verifiedChatReleaseAuthority(fresh,packageItem);
+        assertChatRunClaim({...checked,store,project:PROJECT,release:fresh,timeUnitMs:releaseTimeUnitMs},run);
+        return;
+      }
       if (packageItem.manifest?.source?.syncInput || release.syncInput) {
         packageItem = get("delivery_package", packageItem.id);
         const plan = validateAnyDeliveryPackage(packageItem);
@@ -1023,6 +1031,7 @@ export function createV2Server(options = {}) {
       if(!Number.isSafeInteger(run.sequence)||run.sequence<1||run.sequence>2||JSON.stringify(release.outputContract)!==JSON.stringify(packageItem.manifest.source.outputContract))throw fail(409,'分布批次超出已批准的冻结范围');
     },
     assertRunResult: ({packageItem, result, run}) => {
+      if(run.chatPublication) return checkedChatRunResult(packageItem,result,run.businessScheduledFor);
       if (!packageItem.manifest?.source?.syncInput ||
           result.status !== "SUCCEEDED" && result.errorCode !== syncSqlOutputSchemaCode) return;
       const plan = validateAnyDeliveryPackage(packageItem);
@@ -1493,6 +1502,25 @@ export function createV2Server(options = {}) {
   });
   const chatChangeState=(req,evidence)=>chatSqlChanges({store,project:PROJECT,actor:workspaceReadActor(req),evidence,
     authorizeChild:task=>requireDurableAgentOwner(task,req)});
+  // The scheduler has no HTTP identity. Reconstruct the exact reviewed source
+  // from its stored owner and graph before each scheduled execution.
+  function verifiedChatReleaseAuthority(release,bundle) {
+    if (!release?.chatPublication || release.status!=='ACTIVE_LOCAL' || !localClassicSpark || executionUnavailable() || releaseSchedulerMode!=='LOCAL_TIMER')
+      throw fail(409,'原本机发布授权或运行环境已变化');
+    const {intentId,changeRequestId}=release.chatPublication;
+    const intent=get('agent_intent',intentId),actor=intent.submittedBy,read=(kind,id)=>store.get(kind,id,PROJECT);
+    const own=task=>{if(task.submittedBy!==actor)throw fail(409,'发布源工程师未确认');};
+    const evidence=storedChatSqlDevelopment({intent,actor,step:agentIntentGraph(intent).steps.find(step=>step.destinationId==='development'),
+      read,authorize:own});
+    const state=chatSqlChanges({evidence,store,actor,project:PROJECT,authorizeChild:own});
+    const selected=selectChatChangeDelivery({state,changeRequestId,store,project:PROJECT,actor});
+    const delivery=storedChatChangeDelivery(selected,{store,project:PROJECT,artifacts:item=>({
+      bundle:read('delivery_package',item.packageId), verification:read('delivery_verification',item.verificationId),
+    })});
+    const basis=chatPublicationBasis(delivery,actor);
+    if (basis.packageId!==bundle.id || basis.packageDigest!==bundle.digest) throw fail(409,'调度源与已审交付包不匹配');
+    return {basis,bundle,actor};
+  }
   const publishedPlanContext=(source,actor,expectedHash)=>{
     if(!local)throw fail(403,'同源报表规划尚只在本机开发边界开放');
     const resolved=resolveLocalReportSource(source,actor);
@@ -6094,6 +6122,9 @@ export function createV2Server(options = {}) {
         }
         const artifact = await ensureDeliveryArtifact(item), plan = validateAnyDeliveryPackage(item);
         const latestApproval=get('release_approval',approval.id);
+        if(plan.source.derivation && store.list('release',PROJECT).some(r=>r.chatPublication && r.packageId===item.id &&
+            r.packageDigest===item.digest && r.approvalId!==approval.id))
+          throw Object.assign(fail(409,'此派生版本已有本机测试发布，请沿原会话查询两个已登记批次'),{code:'CHAT_PACKAGE_ALREADY_PUBLISHED'});
         if (plan.source.syncInput) {
           const parent = join(root, ".v2-artifacts", "releases");
           mkdirSync(parent, { recursive: true });
@@ -6186,7 +6217,7 @@ export function createV2Server(options = {}) {
             );
             for (const previous of store.list("release", PROJECT)) {
               if (
-                previous.id !== release.id &&
+                previous.id !== release.id && !previous.chatPublication &&
                 previous.status === "ACTIVE_LOCAL" &&
                 sameLocalPublicationLane(store.get("delivery_package",previous.packageId,PROJECT),item)
               ) {
@@ -6260,7 +6291,11 @@ export function createV2Server(options = {}) {
         }
         if(kind==='release'&&method==='POST'&&releaseRecord[3]==='cancel'){
           const body=await readBody(req);
-          if(!local||releaseSchedulerMode!=='LOCAL_TIMER'||(!item.outputContract&&!item.fundLookthrough&&!item.syncInput)||item.fundLookthrough&&!localClassicSpark)throw fail(422,'此停止入口仅用于本机受控测试发布');
+          if(item.chatPublication){
+            if(options.ingress||!isLoopbackRequest(req)||workspaceReadActor(req)!==get('agent',item.sourceAgentTaskId).submittedBy)throw deliveryDenied();
+            if(auth.sessionFromHeaders(req.headers)) auth.requireMutation(req.headers,'/api/v2/releases');
+          }
+          if(!local||releaseSchedulerMode!=='LOCAL_TIMER'||(!item.outputContract&&!item.fundLookthrough&&!item.syncInput&&!item.chatPublication)||item.fundLookthrough&&!localClassicSpark)throw fail(422,'此停止入口仅用于本机受控测试发布');
           if(body.packageDigest!==item.packageDigest)throw fail(409,'停止须绑定确切发布与包摘要');
           if(item.status==='CANCELLED')return json(res,200,expose(item));
           if(!['ACTIVE_LOCAL','DEPLOYING'].includes(item.status))throw fail(409,'只能停止当前生效的本机测试发布');
@@ -6278,6 +6313,7 @@ export function createV2Server(options = {}) {
           const body = await readBody(req),
             target = get("release", text(body.targetReleaseId, 1, 80));
           requireDeliveryEvidence("release", target);
+          if(item.chatPublication || target.chatPublication)throw fail(409,'此会话测试发布仅批准原两批，其他版本需单独审阅后发布');
           const currentBundle=get('delivery_package',item.packageId),targetBundle=get('delivery_package',target.packageId);
           if (currentBundle.manifest.source.syncInput || targetBundle.manifest.source.syncInput)
             throw fail(422, "冻结持仓的历史版本须重新审阅与批准后发布");
@@ -6822,6 +6858,53 @@ export function createV2Server(options = {}) {
           }
           return json(res, 200, get("agent_delivery_task", item.id));
         }
+      }
+      const chatPublicationRoute=path.match(/^\/api\/v2\/agent\/intents\/([a-f0-9-]{36})\/development\/changes\/(chat-derive-v1-[a-f0-9]{64})\/publication$/);
+      if (chatPublicationRoute && (method==='GET' || method==='POST')) {
+        if (!local || options.ingress || !isLoopbackRequest(req)) throw fail(403,'派生版本的测试发布仅在本机工作台开放');
+        if (url.searchParams.size) throw fail(422,'请直接选择原会话及变更版本');
+        const body=method==='POST' ? await readBody(req) : undefined;
+        const actor=workspaceReadActor(req), session=auth.sessionFromHeaders(req.headers);
+        if (!actor) throw fail(403,'请使用原会话账号');
+        const canPublish=()=>{
+          const fresh=auth.sessionFromHeaders(req.headers);
+          return localClassicSpark && releaseSchedulerMode==='LOCAL_TIMER' && !executionUnavailable() && workspaceReadActor(req)===actor &&
+            (!fresh || fresh.permissions.some(p=>p==='*'||p==='DELIVERY'));
+        };
+        const readBasis=()=>{
+          const evidence=chatDevelopmentEvidence(req,get('agent_intent',chatPublicationRoute[1]));
+          const selection=selectChatChangeDelivery({state:chatChangeState(req,evidence),changeRequestId:chatPublicationRoute[2],store,project:PROJECT,actor});
+          requireDevelopmentOwner('revision',selection.revision,req);
+          requireDevelopmentOwner('run',selection.run,req);
+          const delivery=storedChatChangeDelivery(selection,{store,project:PROJECT,artifacts:workflowDeliveryEvidence});
+          const basis=chatPublicationBasis(delivery,actor),bundle=get('delivery_package',basis.packageId);
+          return {store,project:PROJECT,basis,bundle,actor,canPublish:canPublish(),timeUnitMs:releaseTimeUnitMs};
+        };
+        let state=readBasis(),view=chatPublicationView(state);
+        if (method==='GET') return json(res,200,view);
+        const checkConsent=()=>{
+          if(!canPublish())throw fail(403,'请在已启用本机调度且具有发布权限的原工作台发布此版本');
+          if(session)auth.requireMutation(req.headers,'/api/v2/releases');
+          checkChatPublicationConsent(body,req.headers['idempotency-key'],state.basis);
+        };
+        checkConsent();
+        let created=false;
+        if(view.phase==='READY') {
+          const artifact=await ensureDeliveryArtifact(state.bundle);
+          state=readBasis();
+          checkConsent();
+          const reviewer=session?{id:actor,displayName:session.user.displayName,role:session.role}:{id:actor,displayName:'本机工程师',role:'LOCAL_DEVELOPMENT'};
+          const activated=activateChatPublication({...state,reviewer,artifact,now:options.now??Date.now,unpack:id=>{
+            const parent=join(root,'.v2-artifacts','releases');mkdirSync(parent,{recursive:true});
+            return unpackAnyDeliveryPackage(state.bundle,join(parent,id));
+          }});
+          created=!activated.replayed;
+          view=chatPublicationView(state);
+        }
+        for (const run of view.runs) {
+          if (run.status==='SCHEDULED') releaseScheduler.schedule(get('release_run',run.id));
+        }
+        return json(res,created?201:200,view);
       }
       const chatDeliveryRoute=path.match(/^\/api\/v2\/agent\/intents\/([a-f0-9-]{36})\/development\/changes\/(chat-derive-v1-[a-f0-9]{64})\/delivery$/);
       let selectedChatDelivery;
