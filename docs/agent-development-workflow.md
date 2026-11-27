@@ -1,5 +1,13 @@
 # Agent开发、核验与交付
 
+## 从受邀任务打开独立对话
+
+在受邀工作台打开本人创建的 SQL 任务，切到独立 Agent 对话。即便当初直接从编辑器或 API 创建任务，对话仍从该任务读取原需求、代码、运行批次和断言。需要修改时，点击“返回原任务编辑器”。链接固定任务、口径、代码摘要及当时关联的运行，刷新后重新核对。另起任务或查看平台规划是单独的用户操作。
+
+只读模式和受邀开发窗口共用 `GET /api/v2/agent/tasks/:taskId/chat-context`。接口核对当前项目和原创建者，可带 `request_id` 核对原创建请求。CLI 支持 `shuduo agent invited-task-context --id TASK_ID --request-id ORIGINAL_REQUEST_ID`，MCP 工具为 `agent_invited_task_context`。仅有任务编号时可省略请求编号。
+
+任务状态与独立断言分别展示。任务尚在运行时只显示已经保存的证据。测试执行标明来源；代码摘要、批次或断言无法对应时，界面显示“待核对”。重新读取不提交模型或 Spark 作业，也不推进 Worker。编辑和执行沿用原工作台已有的权限与运行窗口。
+
 ## 有界事件后台：代码开发阶段
 
 用户可显式委托一个持久Spark SQL任务的云后台（`background=true`）；读取状态、停止后续推进与人工接管共用API、CLI、MCP。GUI只观察状态，不承担后台触发责任。当前许可默认15分钟/最多20事件，SQL开发结束后停止，不自动审批或上线。许可状态包括ACTIVE、PAUSED、NEEDS_CONFIRMATION、EXPIRED、CANCELLED、COMPLETED；状态必须与任务实际成功/失败分别展示。

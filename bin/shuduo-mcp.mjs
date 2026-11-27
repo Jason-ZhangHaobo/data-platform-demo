@@ -37,6 +37,7 @@ import {createContextDerivedTask,readChatScopeChanges,submitChatScopeChange} fro
 import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-change-delivery-client.mjs";
 import {readChatChangePublication,publishChatChange} from "../src/v2/chat-change-publication-client.mjs";
 import {readChatChangeConsumption} from "../src/v2/chat-change-consumption-client.mjs";
+import {readInvitedSqlContext} from "../src/v2/invited-sql-context-client.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -145,6 +146,7 @@ const tools = [
   { name: "agent_intent_approval_create", description: "批准REQUEST_APPROVAL任务中的一个精确专业步骤；只生成版本绑定批准，不执行专业任务。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, destinationId: { type: "string" } }, required: ["intentId", "destinationId"] } },
   { name: "agent_intent_graph", description: "读取意图、逐步批准、专业任务绑定与状态组成的统一任务图；不返回原始任务描述、业务数据或批准者标识。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name:"agent_chat_sql_development", description:"读取本人对话所绑定的 SQL、代码版本、已保存的调试批次及断言。", inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"}},required:["intentId"],additionalProperties:false},annotations:{readOnlyHint:true} },
+  {name:"agent_invited_task_context",description:"按任务编号读取当前受邀创建者保存的 SQL 需求、版本和运行状态。可同时核对原创建请求编号。",inputSchema:{type:"object",properties:{taskId:{type:"string",format:"uuid"},requestId:{type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"}},required:["taskId"],additionalProperties:false},annotations:{readOnlyHint:true}},
   { name:"agent_chat_scope_changes", description:"查询原开发对话的来源、可选口径和已经提交的变更。", inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"}},required:["intentId"],additionalProperties:false},annotations:{readOnlyHint:true} },
   {name:"agent_chat_change_delivery",description:"从原会话读取指定口径变更的交付文件和已保存的演练记录。",inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"}},required:["intentId","changeRequestId"],additionalProperties:false},annotations:{readOnlyHint:true}},
   {name:"agent_chat_change_publication",description:"读取已演练子版本的本机发布预检、测试批次及调度监控证据。",inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"}},required:["intentId","changeRequestId"],additionalProperties:false},annotations:{readOnlyHint:true}},
@@ -493,6 +495,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/graph`);
   if (name === "agent_chat_sql_development")
     return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/development`);
+  if (name === "agent_invited_task_context") return readInvitedSqlContext(client,args);
   if (name === "agent_chat_scope_changes") return readChatScopeChanges(client,args);
   if (name === "agent_chat_change_delivery") return readChatChangeDelivery(client,args);
   if (name === "agent_chat_change_publication") return readChatChangePublication(client,args);

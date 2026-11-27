@@ -17,6 +17,13 @@ async function componentUrl(name) {
     source = source.replaceAll(`from "./${dependency}"`, `from ${JSON.stringify(new URL(`../../../web/src/${dependency}.ts`,import.meta.url).href)}`);
   source = source.replaceAll('from "../../src/v2/trading-calendar-client.mjs"', `from ${JSON.stringify(new URL('../../../src/v2/trading-calendar-client.mjs', import.meta.url).href)}`);
   source = source.replace('import "./sync-output-schema.css";', '');
+  if (name === 'InvitedTaskChat') {
+    for (const [specifier,target] of [
+      ['../../src/v2/invited-sql-context-client.mjs','../../../src/v2/invited-sql-context-client.mjs'],
+      ['./invited-task-location','../../../web/src/invited-task-location.ts'],
+    ]) source=source.replace(`from "${specifier}"`,`from ${JSON.stringify(new URL(target,import.meta.url).href)}`);
+    source=source.replace(/import ['"]\.\/invited-task-chat\.css['"];/,'');
+  }
   if (name === 'DeliveryWorkbench') for (const child of ['SyncOutputSchemaDetails','LocalSyncBatchConsumption','TradingCalendarPanel'])
     source = source.replace(`from "./${child}"`, `from ${JSON.stringify(await componentUrl(child))}`);
   return `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;

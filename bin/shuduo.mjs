@@ -46,6 +46,7 @@ import {createContextDerivedTask,readChatScopeChanges,submitChatScopeChange} fro
 import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-change-delivery-client.mjs";
 import {readChatChangePublication,reviewedChatChangeInput,publishChatChange} from "../src/v2/chat-change-publication-client.mjs";
 import {readChatChangeConsumption} from "../src/v2/chat-change-consumption-client.mjs";
+import {readInvitedSqlContext} from "../src/v2/invited-sql-context-client.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -95,6 +96,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent approve --id INTENT_ID --destination MODULE_ID
   shuduo agent graph --id INTENT_ID
   shuduo agent chat-development --id INTENT_ID
+  shuduo agent invited-task-context --id TASK_ID [--request-id ORIGINAL_REQUEST_ID]
   shuduo agent chat-changes --id INTENT_ID
   shuduo agent change-chat-scope --id INTENT_ID --source-run-id ORIGINAL_RUN_ID --context CONTEXT_ID --message REQUEST --request-id NEXT_REQUEST_ID --confirm
   shuduo agent chat-delivery --id INTENT_ID --change-request-id CHANGE_ID
@@ -632,6 +634,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: { destinationId: required(parsed.options, "destination") },
         },
       );
+    else if(resource==="agent" && action==="invited-task-context")
+      result=await readInvitedSqlContext(client,{taskId:required(parsed.options,"id"),
+        ...(parsed.options.request_id===undefined?{}:{requestId:required(parsed.options,"request_id")})});
     else if(resource==="agent" && action==="chat-batch-consumption")
       result=await readChatChangeConsumption(client,{intentId:required(parsed.options,"id"),changeRequestId:required(parsed.options,"change_request_id"),
         batchId:required(parsed.options,"batch_id"),...(parsed.options.release_id===undefined?{}:{releaseId:required(parsed.options,"release_id")})});

@@ -31,6 +31,7 @@ import {appliedChatReport, chatBatchLocation, chatBatchTarget, readWealthBatch, 
 const CustomerAssetAnalysis=lazy(()=>import('./CustomerAssetAnalysis'));
 const ChatSqlDevelopment=lazy(()=>import('./ChatSqlDevelopment'));
 const ChatScopeChange=lazy(()=>import('./ChatScopeChange'));
+const InvitedTaskChat=lazy(()=>import('./InvitedTaskChat'));
 type Api = <T>(path: string, body?: unknown, options?:{idempotencyKey?:string}) => Promise<T>;
 type Risk = "LOW" | "MEDIUM" | "HIGH";
 type Destination = { id: string; label: string; action: string; risk: Risk };
@@ -160,6 +161,7 @@ export function AgentCenter({
   api,
   canWrite,
   local=false,
+  invited,
   modelConfigured,
   contextId,
   currentSql,
@@ -171,6 +173,7 @@ export function AgentCenter({
   api: Api;
   canWrite: boolean;
   local?: boolean;
+  invited?: {authenticated:boolean;onLogin:()=>void;onEditor:(href:string)=>void};
   modelConfigured: boolean;
   contextId: string;
   currentSql: string;
@@ -195,6 +198,11 @@ export function AgentCenter({
     [childCancelBusy, setChildCancelBusy] = useState(""),
     [error, setError] = useState("");
 
+  const [invitedContext,setInvitedContext]=useState(()=>{
+    if(!invited||typeof window==='undefined')return false;
+    return [...new URLSearchParams(location.search).keys()].some(k=>k==='task'||k.startsWith('invited_'));
+  });
+  const startNewPlanning=useRef(false);
   const initialTarget=useMemo(()=>typeof window==='undefined'?undefined:chatBatchTarget(window.location.href),[]);
   const [target,setTarget]=useState<ChatTarget|null|undefined>(initialTarget);
   const selectionEpoch=useRef(0),readOrder=useRef(0),actionLock=useRef(false);
@@ -340,6 +348,7 @@ export function AgentCenter({
     await loadTask(saved,catalog);
   }
   useEffect(() => {
+    if(invitedContext)return;
     const ticket=selectionEpoch.current;
     void (async () => {
       try {
@@ -351,7 +360,7 @@ export function AgentCenter({
           throw new Error("专业Agent工具目录版本不兼容，请刷新或升级工作台");
         if(selectionEpoch.current!==ticket)return;
         setToolCatalog(catalog);
-        if(initialTarget!==undefined){
+        if(initialTarget!==undefined||startNewPlanning.current){
           const list=await api<IntentTask[]>('/agent/intents');
           if(selectionEpoch.current!==ticket)return;
           setTasks(list);
@@ -364,7 +373,7 @@ export function AgentCenter({
         if(ticket===selectionEpoch.current)setError((cause as Error).message);
       }
     })();
-  }, []);
+  }, [invitedContext]);
   useEffect(() => {
     if (!pending(task?.status)) return;
     const timer = setInterval(() => {
@@ -425,6 +434,7 @@ export function AgentCenter({
   }, [activities,task?.id]);
 
   const resetTask = () => {
+    if(invitedContext){startNewPlanning.current=true;setInvitedContext(false);}
     selectionEpoch.current++;readOrder.current++;originalSubmission.current=undefined;setNotFound(false);setTarget(undefined);setBatchRead(undefined);
     history.replaceState(null,'',location.pathname+'?module=agent-center#agent-chat');
     setTask(undefined);
@@ -714,13 +724,14 @@ export function AgentCenter({
     );
 
   return (
-    <div className="agent-os-v2" data-wealth-chat={Boolean(wealthSource)||undefined} data-sql-chat={Boolean(readableSqlId)||undefined}>
+    <div className="agent-os-v2" data-invited-context={invitedContext||undefined} data-wealth-chat={Boolean(wealthSource)||undefined} data-sql-chat={Boolean(readableSqlId)||undefined}>
       <aside className="agent-os-history-v2">
         <header><div><Sparkles size={17} /><strong>数舵 Data Agent</strong></div><button aria-label="新建Agent任务" disabled={busy||actionBusy} onClick={resetTask}><Plus size={16} /></button></header>
         <button className="agent-os-new-v2" disabled={busy||actionBusy} onClick={resetTask}><MessageSquare size={15} />新任务</button>
         <span className="agent-os-section-label-v2">任务历史</span>
         <div className="agent-os-task-list-v2">
-          {tasks.length ? tasks.map((item) => (
+          {invitedContext?<><div className="invited-chat-selection"><FileCheck2 size={14}/><strong>当前 SQL 开发任务</strong></div>
+            <a className="button" href="?module=agent-center#agent-chat">打开任务规划<ArrowRight size={13}/></a></>:tasks.length ? tasks.map((item) => (
             <button key={item.id} className={item.id === task?.id ? "selected" : ""} disabled={busy||actionBusy} onClick={() => selectHistory(item).catch((cause) => setError((cause as Error).message))}>
               <span>{pending(item.status) ? <LoaderCircle className="spin" size={13} /> : <MessageSquare size={13} />}</span>
               <div><strong>{taskTitle(item)}</strong><small>{new Date(item.createdAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</small></div>
@@ -731,6 +742,7 @@ export function AgentCenter({
       </aside>
 
       <section className="agent-os-chat-v2">
+        {invitedContext&&invited?<Suspense fallback={<p role="status">正在打开已有任务…</p>}><InvitedTaskChat api={api} {...invited}/></Suspense>:<>
         <header className="agent-os-chat-head-v2"><div><span className="eyebrow">INDEPENDENT AGENT WORKSPACE</span><h2>{task ? taskTitle(task) : "你想完成什么数据工作？"}</h2></div><div className="agent-os-head-meta-v2"><span>证券数据实验室</span><span>{modelConfigured ? "模型已连接" : "模型待连接"}</span></div></header>
         {local&&<div className="agent-chat-batch-context">
           {target===null?<p role="alert">批次链接不完整。请新建会话并重新选择报表批次。</p>:
@@ -821,16 +833,16 @@ export function AgentCenter({
           <textarea aria-label="向数舵 Data Agent 描述目标" placeholder={wealthSource?"描述这次资产报表的需求…":"描述你希望完成的目标，例如：接入持仓数据，生成T+1资产任务并发布服务…"} value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && sendAllowed) { event.preventDefault(); submit(); } }} maxLength={2000} />
           <div>{!wealthSource&&<div className="agent-os-context-v2"><span>@ 证券数据实验室</span><span><Code2 size={11} />{contextId}</span><span>{developmentLanguage === "PYTHON" ? "受限Python" : "Spark SQL"}</span><span>{approvalMode === "PLAN_ONLY" ? "只规划" : "请求批准"}</span></div>}<div className="agent-os-send-v2">{!wealthSource&&<select aria-label="数据开发语言" value={developmentLanguage} onChange={(event) => onDevelopmentLanguageChange(event.target.value as "SQL" | "PYTHON")}><option value="SQL">Spark SQL</option><option value="PYTHON">受限Python</option></select>}<select aria-label="Agent审批模式" value={approvalMode} onChange={(event) => setApprovalMode(event.target.value as typeof approvalMode)}><option value="REQUEST_APPROVAL">请求批准</option><option value="PLAN_ONLY">仅规划</option></select><button aria-label="发送给Data Agent" onClick={()=>void submit()} disabled={!sendAllowed}>{busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button></div></div>
           <small>Agent可以调用所有经典中台能力；读操作、草稿、发布和权限变更按风险分级，生产上线仍需独立批准。</small>
-        </footer>}
+        </footer>}</>}
       </section>
 
-      <aside className="agent-os-inspector-v2">
+      {!invitedContext&&<aside className="agent-os-inspector-v2">
         <header><strong>能力与上下文</strong><span>{toolCatalog?.tools.length ?? 10}个专业域</span></header>
         <section><span className="agent-os-section-label-v2">当前上下文</span><div className="agent-os-context-card-v2"><Database size={16} /><div><strong>证券数据实验室</strong><small>虚构数据 · 项目权限继承</small></div></div><div className="agent-os-context-card-v2"><Code2 size={16} /><div><strong>{contextId}</strong><small>{developmentLanguage === "PYTHON" ? "受限Python" : "Spark SQL"} · 当前编辑版本</small></div></div></section>
         <section><span className="agent-os-section-label-v2">专业能力</span>{capabilityGroups.map((group) => { const Icon = group.icon; return <div className="agent-os-capability-v2" key={group.label}><div><Icon size={14} /><strong>{group.label}</strong></div>{group.ids.map((id) => <span key={id}>{byDestination.get(id)?.label}</span>)}</div>; })}</section>
         <section className="agent-os-governance-v2"><span className="agent-os-section-label-v2">治理边界</span><p><ShieldCheck size={14} />继承用户权限，不向模型发送凭证或业务明细。</p><p><Clock3 size={14} />长任务后台运行，状态与证据可恢复。</p><p><FileCheck2 size={14} />发布、授权和高成本操作必须确认。</p></section>
         <footer><Activity size={13} />GUI / API / CLI / MCP 同源 · {toolCatalog?.version ?? "工具目录加载中"}</footer>
-      </aside>
+      </aside>}
     </div>
   );
 }
