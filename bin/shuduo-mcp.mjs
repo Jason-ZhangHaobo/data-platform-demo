@@ -239,8 +239,9 @@ const tools = [
   { name: "data_service_recovery", description: "使用当前平台身份读取私有服务启动标识、快照完整性和恢复对照；不执行计算、不发凭证，单份报告不代表冷启动验收。", inputSchema: { type: "object", additionalProperties: false, properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string", format: "uuid" } }, required: ["type", "serviceId"] } },
   { name: "data_service_calls", description: "读取数据服务调用日志，可按服务过滤。", inputSchema: { type: "object", properties: { serviceId: { type: "string" } } } },
   { name: "service_application_list", description: "列出调用应用与授权，不返回令牌或令牌哈希。", inputSchema: { type: "object", properties: {} } },
-  { name: "service_application_create", description: "创建调用应用并仅显示一次令牌。可为客户资产服务限定单一客户并脱敏指定字段。该操作创建持久访问能力，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: {
+  { name: "service_application_create", description: "创建调用应用并仅显示一次令牌。可为客户资产服务限定单一客户并脱敏指定字段。请先取得用户对服务范围和有效期的明确确认。", inputSchema: { type: "object", properties: {
     name: { type: "string" }, serviceIds: { type: "array", items: { type: "string" } },
+    ttlSeconds: {type:"integer",minimum:1,maximum:3600,description:"本机调用应用的有效秒数；既有更早的强制到期时间优先。"},
     customerAccess: { type: "object", additionalProperties: false, properties: {
       clientId: { type: "string" }, maskedFields: { type: "array", items: { type: "string", enum: ["client_id","holding_market_value","available_cash","total_assets","security_count"] } },
     }, required: ["clientId","maskedFields"] },

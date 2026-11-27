@@ -6,7 +6,7 @@ import {agentConsumptionTarget} from "./agent-consumption-view";
 const AgentConsumptionPanel=lazy(()=>import('./AgentConsumptionPanel'));
 import { isFundContext } from "../../src/v2/fund-contexts.mjs";
 import { compositionChoices, fundContractId } from "./service-composition";
-import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
+import { applicationLifetimeOptions, applicationStatusText, confirmedApplicationClosed, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from "./service-consumption-scope";
 import type { ConsumptionScope } from "./service-consumption-scope";
 import {validServiceSourceBinding,serviceSourceKey,sourceBindingEnvironmentMatches,serviceSourcesPath,serviceReturnLocation,serviceReadCurrent,sourceRunMatches,sourceRunEligible,sourceBoundServices,sourceBoundCalls,sourceBoundSwitches,sourceBindingScopeCompatible,defaultBoundSourceRun} from "./service-source-binding";
 import type {ServiceSourceBinding} from "./service-source-binding";
@@ -286,6 +286,17 @@ export function DataServicesWorkbench({
     [issuedToken, setIssuedToken] = useState("");
   const [customerDraft,setCustomerDraft]=useState<{serviceId:string;versionId:string;clientId:string;maskedFields:string[]}>();
   const [tokenVisible,setTokenVisible]=useState(false),[issuedAppId,setIssuedAppId]=useState("");
+  const lifetimeOptions=applicationLifetimeOptions(runtimeMode,privateCloud,consumptionScope);
+  const [applicationLifetime,setApplicationLifetime]=useState('default');
+  const nextAppExpiry=lifetimeOptions.length?applications.reduce((next,app)=>{
+    const at=Date.parse(app.expiresAt??'');
+    return app.status==='ACTIVE'&&at>scopeClock?Math.min(next,at):next;
+  },Infinity):Infinity;
+  useEffect(()=>{
+    if(!Number.isFinite(nextAppExpiry))return;
+    const timer=setTimeout(()=>setScopeClock(Date.now()),Math.max(0,nextAppExpiry-Date.now()));
+    return()=>clearTimeout(timer);
+  },[nextAppExpiry,scopeClock]);
   const [recoveryReport,setRecoveryReport]=useState<RecoveryReport>();
   const [showVersionEditor,setShowVersionEditor]=useState(false),[versionProfile,setVersionProfile]=useState<keyof typeof fieldProfiles>("full"),[versionRate,setVersionRate]=useState("60"),[versionTimeout,setVersionTimeout]=useState("1500");
   const [versionReview,setVersionReview]=useState<VersionReview>(),[switchHistory,setSwitchHistory]=useState<VersionSwitchReceipt[]>([]);
@@ -419,7 +430,7 @@ export function DataServicesWorkbench({
     finally{if(plannerCurrent(key))setBusy('');}
   }
   const currentTestValid=Boolean(selected?.currentVersion && testReceipt?.test.status==="PASSED" && testReceipt.test.versionId===selected.currentVersion.id && testReceipt.test.configHash===selected.currentVersion.configHash);
-  const requestKeys=useRef<Record<string,{signature:string;key:string}>>({});
+  const requestKeys=useRef<Record<string,{signature:string;key:string;localTimed?:boolean;issuedId?:string}>>({});
   const keyFor=(action:string,body:unknown)=>{const signature=JSON.stringify(body),old=requestKeys.current[action];if(old?.signature===signature)return old.key;const key=crypto.randomUUID();requestKeys.current[action]={signature,key};return key;};
 
   const reload = async () => {
@@ -714,13 +725,26 @@ export function DataServicesWorkbench({
     setError("");
     setIssuedToken("");
     try {
-      const body=consumptionScope?consumptionApplicationInput(consumptionScope,services):{name:"证券财富分析演示系统",serviceIds:[selected.id],
+      const lifetime=lifetimeOptions.find(option=>option.value===applicationLifetime);
+      const body=consumptionScope?consumptionApplicationInput(consumptionScope,services):{name:"证券财富分析演示系统",serviceIds:[selected.id],...lifetime?.grant,
         ...(customerAccess?{customerAccess:{clientId:customerAccess.clientId.trim(),maskedFields:customerAccess.maskedFields}}:{})};
+      const action=consumptionScope?"scoped-app":"app:"+selected.id;
+      const previous=requestKeys.current[action];
+      const timed=Boolean(lifetime&&lifetime.value!=='default');
+      if(timed&&previous?.issuedId&&previous.signature===JSON.stringify(body)){
+        const latest=await api<Application[]>("/data-services/applications");
+        if(activeServiceRef.current!==selected.id||sourceContext.current!==scopeKey)return;
+        if(confirmedApplicationClosed(latest,previous.issuedId,selected.id)&&requestKeys.current[action]===previous)
+          delete requestKeys.current[action];
+      }
+      const key=keyFor(action,body);
+      if(timed)requestKeys.current[action].localTimed=true;
       const issued = await api<{
         application: Application;
         token: string | null;
         tokenShownOnce: boolean;
-      }>("/data-services/applications", body,{idempotencyKey:keyFor(consumptionScope?"scoped-app":"app:"+selected.id,body)});
+      }>("/data-services/applications", body,{idempotencyKey:key});
+      if(timed&&requestKeys.current[action]?.key===key)requestKeys.current[action].issuedId=issued.application.id;
       setIssuedToken(issued.token ?? "");
       setIssuedAppId(issued.application.id);setTokenVisible(false);
       await reload();
@@ -1170,6 +1194,12 @@ LIMIT :limit OFFSET :offset`}</pre>
                 </fieldset>}
                 </div>
               </section>}
+              {canWrite&&selected.status==='PUBLISHED'&&lifetimeOptions.length>0&&<div className="service-form-grid">
+                <label>调用凭证有效期<select value={applicationLifetime} disabled={!!busy}
+                  onChange={event=>setApplicationLifetime(event.currentTarget.value)}>
+                  {lifetimeOptions.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}
+                </select></label>
+              </div>}
               <div className="service-actions">
                 <button className="button" onClick={testService} disabled={!canWrite || !!busy}>
                   {busy === "test" ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}
@@ -1341,7 +1371,7 @@ LIMIT :limit OFFSET :offset`}</pre>
           {scopedApplications.filter(app=>consumptionScope||!selected||app.serviceIds.includes(selected.id)).map(app=><div key={app.id}><span>{app.name} · {applicationStatusText(serviceApplicationStatus(app,scopeClock))}
             {app.customerAccess&&<small>仅 {app.customerAccess.clientId} · {app.customerAccess.maskedFields.length
               ? `已遮盖 ${app.customerAccess.maskedFields.map(field=>customerMaskFields.find(item=>item[0]===field)?.[1]??field).join('、')}` : '字段按接口版本返回'}</small>}
-            {app.expiresAt&&<small>到期：{new Date(app.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}</small>}</span><button className="button" disabled={!canWrite||serviceApplicationStatus(app,scopeClock)!=="ACTIVE"||!!busy} onClick={async()=>{if(!canWrite||!scopedApplications.some(a=>a.id===app.id))return;setBusy("revoke");try{await api(`/data-services/applications/${app.id}/revoke`,{});for(const id of app.serviceIds)delete requestKeys.current["app:"+id];setIssuedToken("");await reload();setNotice("凭证已撤销，旧令牌不能继续调用");}catch(e){setError((e as Error).message);}finally{setBusy("");}}}>撤销凭证</button></div>)}
+            {app.expiresAt&&<small>到期：{new Date(app.expiresAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}</small>}</span><button className="button" disabled={!canWrite||serviceApplicationStatus(app,scopeClock)!=="ACTIVE"||!!busy} onClick={async()=>{if(!canWrite||!scopedApplications.some(a=>a.id===app.id))return;setBusy("revoke");try{await api(`/data-services/applications/${app.id}/revoke`,{});for(const id of app.serviceIds){const slot="app:"+id;if(!requestKeys.current[slot]?.localTimed)delete requestKeys.current[slot];}setIssuedToken("");await reload();setNotice("凭证已撤销，旧令牌不能继续调用");}catch(e){setError((e as Error).message);}finally{setBusy("");}}}>撤销凭证</button></div>)}
           {privateCloud&&agentTarget&&
             <Suspense fallback={<p role="status">正在打开 Agent 消费核验…</p>}>
               <AgentConsumptionPanel key={scopeKey} api={api} target={agentTarget} applicationStatus={activeApplicationStatus}

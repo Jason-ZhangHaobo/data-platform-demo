@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applicationStatusText, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from '../../web/src/service-consumption-scope.ts';
+import { applicationLifetimeOptions, applicationStatusText, confirmedApplicationClosed, consumptionApplicationInput, consumptionDapiInput, consumptionPlanAvailable, consumptionServices, consumptionWindowOpen, consumptionXapiInput, serviceApplicationStatus } from '../../web/src/service-consumption-scope.ts';
 const now=Date.parse('2026-10-28T04:00:00Z');
 function fixture(){
  const plan={taskId:'task-fixture',packageDigest:'package-fixture',sourceReleaseRunId:'release-run-fixture',dapis:[{name:'合成持仓',slug:'fixture-holdings',fields:['client_id','holding_market_value','security_count'],timeoutMs:1500,rateLimitPerMinute:10},{name:'合成现金',slug:'fixture-cash',fields:['client_id','available_cash','total_assets'],timeoutMs:1500,rateLimitPerMinute:10}],xapi:{name:'合成资产',slug:'fixture-assets',timeoutMs:2500,rateLimitPerMinute:5,steps:[{alias:'positions',dapiSlug:'fixture-holdings'},{alias:'cash',dapiSlug:'fixture-cash'}]},applicationName:'合成应用'};
@@ -37,6 +37,24 @@ test('the one application requires all three published services but grants only 
  assert.throws(()=>consumptionApplicationInput(scope,services.slice(0,2)));
  const draft=structuredClone(services);draft[2].status='DRAFT';assert.throws(()=>consumptionApplicationInput(scope,draft));
  assert(!consumptionApplicationInput(scope,services).serviceIds.includes('service-1'));
+});
+test('only ordinary local application grants can choose a shorter credential lifetime',()=>{
+ const {scope}=fixture();
+ const choices=applicationLifetimeOptions('LOCAL_DEVELOPMENT',false);
+ assert.deepEqual(choices.map(option=>option.grant),[{}, {ttlSeconds:300}, {ttlSeconds:3600}]);
+ for(const args of [['PUBLIC_INVITATION',false],['LOCAL_DEVELOPMENT',true],[undefined,false],['LOCAL_DEVELOPMENT',false,scope],['LOCAL_DEVELOPMENT',false,{}]]){
+   assert.deepEqual(applicationLifetimeOptions(...args),[]);
+ }
+});
+test('explicit reissue needs the matching application and grant with a server-confirmed terminal status',()=>{
+ const app={id:'sample-app',serviceIds:['service-1'],status:'ACTIVE',expiresAt:'2000-01-01T00:00:00Z'};
+ assert.equal(confirmedApplicationClosed([app],app.id,'service-1'),false);
+ for(const status of ['EXPIRED','REVOKED']){
+   assert.ok(confirmedApplicationClosed([{...app,status}],app.id,'service-1'));
+   assert.ok(!confirmedApplicationClosed([{...app,status}],'unknown','service-1'));
+   assert.ok(!confirmedApplicationClosed([{...app,status}],app.id,'service-2'));
+ }
+ assert.ok(!confirmedApplicationClosed([],app.id,'service-1'));
 });
 test('expired credentials preserve historical evidence wording without claiming current authority',()=>{
  assert.equal(serviceApplicationStatus({status:'ACTIVE',expiresAt:new Date(now).toISOString()},now),'EXPIRED');

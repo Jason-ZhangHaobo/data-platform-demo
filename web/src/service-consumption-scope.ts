@@ -6,6 +6,18 @@ export type ConsumptionPlan = {
   applicationName: string;
 };
 export type ConsumptionScope = { pilotId?: string; taskId?: string; manualDeliveryTaskId?:string; plan?: ConsumptionPlan; startsAt?: string; expiresAt?: string };
+const localLifetimes=[
+  {value:'default',label:'沿用服务策略',grant:{}},
+  {value:'300',label:'5 分钟',grant:{ttlSeconds:300}},
+  {value:'3600',label:'1 小时',grant:{ttlSeconds:3600}},
+] as const;
+export function applicationLifetimeOptions(runtimeMode:string|undefined, privateCloud:boolean, scope?:ConsumptionScope) {
+  return runtimeMode==='LOCAL_DEVELOPMENT'&&!privateCloud&&!scope ? localLifetimes : [];
+}
+export function confirmedApplicationClosed(apps:{id:string;status:string;serviceIds:string[]}[],appId:string,serviceId:string) {
+  return apps.some(app=>app.id===appId&&app.serviceIds.length===1&&app.serviceIds[0]===serviceId&&
+    (app.status==='EXPIRED'||app.status==='REVOKED'));
+}
 type Version = { id: string; sourceReleaseRunId?: string; sourcePackageDigest?: string; fields?: string[];
   timeoutMs: number; rateLimitPerMinute: number; steps?: { alias: string; dapiId: string; dapiVersionId: string }[] };
 type Service = { id: string; name: string; slug: string; serviceType: string; status: string; pilotId?: string; currentVersion?: Version; publishedVersion?: Version };

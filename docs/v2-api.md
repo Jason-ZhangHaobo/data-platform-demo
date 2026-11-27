@@ -338,7 +338,7 @@ FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查�
 | POST /data-services/{dapis\|xapis}/:id/activate | versionId | 切换到该服务已测试发布过的历史版本 |
 | GET /data-services/{dapis\|xapis}/:id/openapi | 当前或已发布版本 | OpenAPI 3.1、Bearer、参数及错误响应 |
 | GET /data-services/calls | 可选service_id | 版本、应用、参数、耗时、结果摘要及结果状态 |
-| GET/POST /data-services/applications | 列表或创建 | 列表不返回哈希；创建令牌仅显示一次 |
+| GET/POST /data-services/applications | 列表或创建。本机创建可选 `ttlSeconds`（1 到 3600 的整数） | 创建时只显示一次令牌。服务端根据签发时间计算到期时间，保留既有更早的期限；同一请求回读原应用不会续期。CLI 可传 `--ttl-seconds 300` |
 | POST /data-services/applications/:id/revoke | 空对象 | 立即撤销应用令牌 |
 | GET /open/dapis/:slug | Bearer + client_id/page/page_size | 参数化业务查询、分页、限流、超时及调用ID |
 | GET /open/xapis/:slug | Bearer + client_id/page/page_size | 固定子版本组合结果及调用ID |

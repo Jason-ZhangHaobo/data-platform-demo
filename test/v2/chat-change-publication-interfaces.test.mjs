@@ -8,6 +8,24 @@ import {runV2Cli} from '../../bin/shuduo.mjs';
 import {handleV2Mcp} from '../../bin/shuduo-mcp.mjs';
 import {readChatChangePublication,publishChatChange,reviewedChatChangeInput} from '../../src/v2/chat-change-publication-client.mjs';
 
+test('the CLI and MCP request a short-lived consumer grant only when selected',async()=>{
+  const grants=[];
+  const client={request:async(path,options)=>{
+    assert.equal(path,'/data-services/applications');assert.equal(options.method,'POST');
+    grants.push(options.body);return {tokenShownOnce:false};
+  }};
+  const cli=flags=>runV2Cli(['apps','create','--name','虚构测试方','--service-ids','a,b',...flags],{},
+    {client,output:()=>{},error:()=>{}});
+  assert.equal(await cli([]),0);
+  assert.equal(await cli(['--ttl-seconds','300']),0);
+  assert.equal(await cli(['--ttl-seconds','3601']),1);
+  const grant={name:'虚构测试方',serviceIds:['a','b']};
+  const reply=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',
+    params:{name:'service_application_create',arguments:{...grant,ttlSeconds:300}}},{client}));
+  assert.equal(reply.error,undefined);
+  assert.deepEqual(grants,[grant,{...grant,ttlSeconds:300},{...grant,ttlSeconds:300}]);
+});
+
 test('explicit CLI review, MCP publication and read-only monitoring share a single frozen publication',async t=>{
   const ref=contextId=>({taskId:randomUUID(),contextId,runId:randomUUID(),revisionId:randomUUID(),revisionHash:'c'.repeat(64)});
   const base={protocol:'shuduo-chat-change-publication/v1',scope:'LOCAL_TEST_RELEASE',publicDeployed:false,

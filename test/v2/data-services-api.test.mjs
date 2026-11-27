@@ -401,3 +401,38 @@ test("Data Agent plans a governed DAPI and only creates a draft after apply", as
     store.close();
   }
 });
+
+test("a local application TTL is enforced by the HTTP query path and replay cannot extend it", async t => {
+  const store = new MetadataStore(":memory:"), businessStore = new BusinessQueryStore();
+  const source = store.create("release_run",PROJECT,{releaseId:"ttl-fixture",status:"SUCCEEDED",published:true,publicDeployed:false,
+    schedulerTriggered:true,engine:"Apache Spark",engineVersion:"3.5.9",mainSqlExecuted:true,testSqlValidation:{passed:true},
+    rows:getContext("holdings-t1").expected,validation:{passed:true}});
+  const {app,base} = await listen({store,businessStore});
+  t.after(async () => {
+    app.server.closeAllConnections(); await new Promise(resolve => app.server.close(resolve));
+    app.dispose(); store.close(); businessStore.close();
+  });
+  const service=await createAndPublishDapi(base,{name:"短时应用查询",slug:"short-lived-assets",sourceReleaseRunId:source.id,
+    fields:["client_id","total_assets"]},"ttl-service");
+  const path="/api/v2/data-services/applications",key="one-short-lived-grant";
+  const grant={name:"短时样例客户端",serviceIds:[service.id],ttlSeconds:1};
+  const invalid=await request(base,path,{key,body:{...grant,ttlSeconds:"1"}});
+  assert.equal(invalid.status,400);assert.equal(invalid.body.code,"APPLICATION_TTL_INVALID");
+  const before=Date.now(), first=await request(base,path,{key,body:grant});
+  assert.equal(first.status,201);
+  const {id,expiresAt}=first.body.application, boundary=Date.parse(expiresAt);
+  assert.ok(boundary>=before+1000 && boundary<=Date.now()+1000);
+  const query=()=>request(base,"/api/v2/open/dapis/short-lived-assets?client_id=CLIENT-001",{headers:{Authorization:"Bearer "+first.body.token}});
+  // This check uses the server's actual clock; the manager test also exercises
+  // the exact last allowed millisecond independently of OS scheduling.
+  await new Promise(resolve=>setTimeout(resolve,Math.max(0,boundary-Date.now()+2)));
+  const expired=await query();
+  assert.equal(expired.status,401);assert.equal(expired.body.code,"TOKEN_EXPIRED");
+  const replay=await request(base,path,{key,body:grant});
+  assert.equal(replay.status,200);assert.equal(replay.body.token,null);
+  assert.deepEqual([replay.body.application.id,replay.body.application.expiresAt,replay.body.application.status],[id,expiresAt,"EXPIRED"]);
+  assert.equal((await request(base,path,{key,body:{...grant,ttlSeconds:300}})).status,409);
+  assert.equal((await request(base,path+"/"+id+"/revoke",{key:"revoke-expired-grant",body:{}})).status,200);
+  assert.equal((await query()).status,401);
+  assert.equal(store.list("service_app",PROJECT).length,1);
+});

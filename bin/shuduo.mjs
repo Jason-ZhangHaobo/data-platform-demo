@@ -226,7 +226,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services calls [--id ID]
   shuduo services invoke --type dapi|xapi --slug path [--client-id CLIENT-001 | --portfolio-id ID --trade-date YYYY-MM-DD --asset-class 类别] [--page N --page-size N]
   shuduo apps list
-  shuduo apps create --name 名称 --service-ids ID,ID [--customer-id CLIENT-001 --mask-fields client_id,available_cash]
+  shuduo apps create --name 名称 --service-ids ID,ID [--ttl-seconds 300] [--customer-id CLIENT-001 --mask-fields client_id,available_cash]
   shuduo apps revoke --id ID
   shuduo sources list
   shuduo sources create --name 名称 --file positions_baseline.csv
@@ -1210,10 +1210,17 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "apps" && action === "create") {
       const customer = parsed.options.customer_id, masks = parsed.options.mask_fields;
       if (masks !== undefined && customer === undefined) throw new Error("--mask-fields 需要 --customer-id");
+      let ttlSeconds;
+      if (parsed.options.ttl_seconds!==undefined) {
+        const seconds=required(parsed.options,"ttl_seconds");
+        if (!/^[1-9]\d{0,3}$/.test(seconds) || Number(seconds)>3600) throw Error("临时应用有效期须为 1 到 3600 秒");
+        ttlSeconds=Number(seconds);
+      }
       result = await client.request("/data-services/applications", {
         method: "POST",
         body: {
           name: required(parsed.options, "name"),
+          ...(ttlSeconds===undefined?{}:{ttlSeconds}),
           serviceIds: list(
             required(parsed.options, "service_ids"),
             "--service-ids",

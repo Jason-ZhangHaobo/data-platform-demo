@@ -748,6 +748,9 @@ export class DataServiceManager {
   createApplication(input, { expiresAt } = {}) {
     const name = text(input.name, "应用名称", 2, 80),
       serviceIds = input.serviceIds;
+    const ttl = input.ttlSeconds;
+    if (Object.hasOwn(input, "ttlSeconds") && (!Number.isInteger(ttl) || ttl < 1 || ttl > 3600))
+      throw fail(400, "临时应用有效期须为 1 至 3600 秒的整数", "APPLICATION_TTL_INVALID");
     if (
       !Array.isArray(serviceIds) ||
       !serviceIds.length ||
@@ -777,15 +780,18 @@ export class DataServiceManager {
         grants.push({id,versionId:version.id,evidence:children[0].sourceEvidence});
       } else if (proof) grants.push({ id, versionId: version.id, evidence: proof.sourceEvidence });
     }
+    const now = this.now();
     if (grants.length) {
       if (grants.length !== serviceIds.length || grants.some(grant => !sameSyncEvidence(grant.evidence, grants[0].evidence)))
         throw fail(409, "应用须授权同一确切发布批次的服务版本", "SYNC_SERVICE_MIXED_GRANTS");
-      expiresAt ??= new Date(this.now() + 3600000).toISOString();
+      expiresAt ??= new Date(now + 3600000).toISOString();
     }
     if (expiresAt !== undefined && (typeof expiresAt !== "string" ||
-        !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= this.now() ||
-        Date.parse(expiresAt) - this.now() > 2 * 3600000))
+        !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= now ||
+        Date.parse(expiresAt) - now > 2 * 3600000))
       throw fail(400, "临时应用有效期必须在未来两小时内", "APPLICATION_EXPIRY_INVALID");
+    if (ttl !== undefined && (expiresAt === undefined || now + ttl * 1000 < Date.parse(expiresAt)))
+      expiresAt = new Date(now + ttl * 1000).toISOString();
     const token = (this.scope === "PRIVATE_CLOUD_TEST" ? "sz_private_" : "sz_local_") + randomBytes(24).toString("base64url"),
       app = this.store.create("service_app", this.project, {
         name,
