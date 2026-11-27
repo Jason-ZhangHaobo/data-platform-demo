@@ -982,7 +982,8 @@ export function createV2Server(options = {}) {
     runPackage: releaseRunner,
     fundExecutionEvidenceMode: options.releaseRunner || options.runner ? "TEST_HARNESS" : "LOCAL_SPARK_PROCESS",
     assertRunSource: ({run,release,packageItem})=>{
-      if (run.chatPublication || release.chatPublication || store.get('release_approval',release.approvalId,PROJECT)?.chatPublication) {
+      if (run.chatPublication || release.chatPublication ||
+          (typeof release.approvalId==='string' && store.get('release_approval',release.approvalId,PROJECT)?.chatPublication)) {
         const fresh=get('release',run.releaseId);
         const checked=verifiedChatReleaseAuthority(fresh,packageItem);
         assertChatRunClaim({...checked,store,project:PROJECT,release:fresh,timeUnitMs:releaseTimeUnitMs},run);
