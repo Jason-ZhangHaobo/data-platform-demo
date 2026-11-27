@@ -27,7 +27,7 @@ import { createAssetAnnotationRequests } from "./asset-annotation-requests.mjs";
 import { serveV2Static } from "./static-response.mjs";
 import { publicCapabilityStatus } from "./public-status.mjs";
 import { modelFailure } from "./model-diagnostics.mjs";
-import { publicDevelopmentConfig, developmentRequestDigest, developmentSession, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow, assertDevelopmentTargetTask, developmentBackgroundBoundary, assertDevelopmentBackgroundScope } from "./public-development-access.mjs";
+import { publicDevelopmentConfig, developmentRequestDigest, developmentSession, developmentWindowTasks, assertDevelopmentMutation, assertDevelopmentTaskCreation, assertDevelopmentRecord, developmentBackgroundWindow, assertDevelopmentExecutionWindow, assertDevelopmentTargetTask, developmentBackgroundBoundary, assertDevelopmentBackgroundScope } from "./public-development-access.mjs";
 import { publicPublicationConfig, publicationSession, assertPublicationMutation, assertPublicationTarget, assertPublicationExecutionWindow, assertPublicationResultTarget } from "./public-publication-access.mjs";
 import { publicServiceConfig, serviceSession, assertServiceMutation } from "./public-service-access.mjs";
 import { readFile, readdir } from "node:fs/promises";
@@ -193,7 +193,7 @@ import{compareSqlRuns}from'./run-comparison.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
 import { storedAgentReviewEvidence } from "./agent-review-evidence.mjs";
 import { storedAgentExecutionEvidence } from "./agent-execution-evidence.mjs";
-import { invitedTaskContext } from "./invited-task-context.mjs";
+import { invitedTaskContext, supportsInvitedSqlContext } from "./invited-task-context.mjs";
 import { storedBackgroundPreparationEvidence } from "./delivery-preparation-evidence.mjs";
 import { storedDevelopmentDrivers } from "./agent-execution-drivers.mjs";
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
@@ -2175,6 +2175,13 @@ export function createV2Server(options = {}) {
         const identity = {user: body.user, role: body.role}, now = options.now?.() ?? Date.now();
         const constrained = {...body, ...(serviceSession(serviceAccess, identity, now) ?? publicationSessionFor(identity) ?? developmentSessionFor(identity) ??
           (executionUnavailable() ? {permissions:["SESSION"],readOnly:true} : {}))};
+        if (constrained.developmentOnly && !constrained.readOnly && !constrained.developmentTaskOnly &&
+            !constrained.developmentRequestOnly && body.user?.id) {
+          const tasks=developmentWindowTasks(developmentAccess,body.user.id,store,PROJECT);
+          if (tasks.length) constrained.developmentWindowUsed=true;
+          if (tasks.length===1 && tasks[0].projectId===PROJECT && supportsInvitedSqlContext(tasks[0]) && validationFamilyForContext(tasks[0].contextId))
+            constrained.developmentWindowTaskId=tasks[0].id;
+        }
         if(privateServices?.consumptionWake&&constrained.consumptionPlan&&constrained.readOnly===false)
           constrained.consumptionPlan={...constrained.consumptionPlan,agentConsumptionAvailable:true};
         // The scope projection only exposes these identifiers to the selected
@@ -2322,6 +2329,7 @@ export function createV2Server(options = {}) {
                 },
           publicReady: false,
           agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery),
+            invitedSqlStartSupported:!local && options.ingress?.status.publicHttpEnabled===true,
             requestBindingSupported:Boolean(durableAgent),derivationBindingSupported:Boolean(durableAgent),
             ...(fundPilotAvailable ? {fundPilotAvailable:true} : {}),
             ...(canReadFundContexts ? {fundContexts:invitedFundContexts()} : {}),

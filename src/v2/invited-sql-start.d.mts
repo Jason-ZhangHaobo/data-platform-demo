@@ -1,0 +1,10 @@
+type Draft={message:string;contextId:string};
+type Client={request(path:string,options?:{method:'POST';idempotencyKey:string;body:unknown}):Promise<unknown>};
+type Selection={taskId:string;requestId:string};
+export const emptyAgentDraftSql:'SELECT 1 AS pending';
+export function agentTaskReceiptValid(task:unknown):boolean;
+export function acceptsInvitedSqlContext(context:{id:string;capabilities?:{agentDevelopment?:boolean;scope?:string;fundPreparation?:boolean}}):boolean;
+export function invitedSqlStartBody(draft:Draft):Draft & {sql:string;background:true};
+export function bindInvitedSqlStart(client:Client,task:unknown,requestId:string,expected?:Draft):Promise<Selection>;
+export function recoverInvitedSqlStart(client:Client,args:{requestId:string}):Promise<Selection>;
+export function submitInvitedSqlStart(client:Client,args:Draft & {requestId:string;confirm:true}):Promise<Selection>;

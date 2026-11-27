@@ -66,6 +66,10 @@ export function assertDevelopmentMutation(config, session, method, path, now = D
   if (method !== 'POST' || (!targetedResume && !routes.some(rule => rule.test(path))))
     throw fail('PUBLIC_DEVELOPMENT_SCOPE_DENIED', '当前仅开放 SQL 开发和交付文件准备；发布、其他模块写入及账号凭证管理未开放。');
 }
+export function developmentWindowTasks(config, actorId, store, project) {
+  return store.list('agent', project).filter(t => t.submittedBy === actorId && Date.parse(t.createdAt) >= config.startsAt);
+}
+
 export function assertDevelopmentTaskCreation(config, session, store, project, key, language, now = Date.now(), body) {
   if (!config) return;
   assertDevelopmentMutation(config, session, 'POST', '/api/v2/agent/tasks', now);
@@ -86,7 +90,7 @@ export function assertDevelopmentTaskCreation(config, session, store, project, k
       throw requestDenied();
   }
   const id = store.deduplicatedId(`${project}:durable-agent:${session.user.id}:${key}`);
-  const tasks = store.list('agent', project).filter(t => t.submittedBy === session.user.id && Date.parse(t.createdAt) >= config.startsAt);
+  const tasks = developmentWindowTasks(config, session.user.id, store, project);
   if (id && tasks.some(t => t.id === id)) return; // Original idempotent request, not another task.
   if (id || tasks.length >= 1) throw fail('PUBLIC_DEVELOPMENT_TASK_LIMIT', '本次窗口仅允许一条新 Agent 任务；请查看或恢复原任务，不要重新创建。');
 }

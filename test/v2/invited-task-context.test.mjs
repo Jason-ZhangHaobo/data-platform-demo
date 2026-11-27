@@ -88,6 +88,30 @@ for(const [label,readOnly] of [['FC read-only',true],['development-only FC',fals
   });
 }
 
+test('the invited creator can reopen the single task that already occupies the active window',async t=>{
+  const f=await fixture(t,false);
+  const session=async cookie=>(await f.call('/auth/session',cookie)).body;
+  assert.equal((await session(f.cookie)).developmentWindowUsed,undefined);
+  const a=f.seed('holdings-t1');
+  assert.equal((await session(f.cookie)).developmentWindowTaskId,a.task.id);
+  const startup=(await f.call('/status?include=session',f.cookie)).body;
+  assert.equal(startup.status.agentDevelopment.invitedSqlStartSupported,true);
+  assert.equal(startup.session.developmentWindowTaskId,a.task.id);
+  assert.equal(startup.session.developmentWindowUsed,true);
+  for(const cookie of [f.other,undefined]){
+    const other=await session(cookie);
+    assert.equal(other.developmentWindowUsed,undefined);
+    assert.equal(other.developmentWindowTaskId,undefined);
+  }
+  f.store.update('agent',a.task.id,PROJECT,{sourceKind:'MANUAL'});
+  const manual=await session(f.cookie);
+  assert.equal(manual.developmentWindowUsed,true);
+  assert.equal(manual.developmentWindowTaskId,undefined);
+  f.seed('stock-cash-t1');
+  assert.equal((await session(f.cookie)).developmentWindowTaskId,undefined);
+  assert.deepEqual(f.effects,[]);
+});
+
 test('unlinked, ambiguous and failed runs remain distinct; a mismatched revision cannot supply any SQL',async t=>{
   const f=await fixture(t,true),a=f.seed('holdings-t1'),b=f.seed('stock-cash-t1');
   const current=async()=>(await f.call(a.path,f.cookie)).body;

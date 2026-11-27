@@ -122,7 +122,7 @@ type Capability = {
 type Status = {
   dataServices?: { privateEnabled: boolean; localSourcesEnabled?: boolean; sourceBoundAgentPlansEnabled?:boolean; sourceBoundAgentContextEnabled?:boolean; durableServiceAgentEnabled?:boolean;durableServiceAgentReadEnabled?:boolean;scope: string };
   site?: { registeredName: string; icpNumber: string; icpUrl: string };
-  agentDevelopment?: { durableEnabled: boolean; eventBackgroundAvailable?: boolean; fundPilotAvailable?: boolean; fundContexts?: Context[] };
+  agentDevelopment?: { durableEnabled: boolean; eventBackgroundAvailable?: boolean; invitedSqlStartSupported?:boolean; fundPilotAvailable?: boolean; fundContexts?: Context[] };
   validationContract?: { id: string; fixtureCount: number };
   mode: string;
   projectId: string;
@@ -450,11 +450,20 @@ function App() {
   const [session, setSession] = useState<AuthSession>({ authenticated: false });
   const [publicationClock, setPublicationClock] = useState(Date.now);
   useEffect(() => {
+    if(session.developmentOnly&&!session.readOnly){
+      const end=Math.min(Date.parse(session.developmentExpiresAt??''),Date.parse(session.expiresAt??''));
+      setPublicationClock(Date.now());
+      if(Number.isFinite(end)&&end>Date.now()){
+        const timer=setTimeout(()=>setPublicationClock(Date.now()),end-Date.now()+1);
+        return ()=>clearTimeout(timer);
+      }
+      return;
+    }
     if (!session.publicationOnly && !session.consumptionOnly) return;
     setPublicationClock(Date.now());
     const timer = setInterval(() => setPublicationClock(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [session.publicationOnly, session.publicationStartsAt, session.publicationExpiresAt, session.consumptionOnly, session.consumptionStartsAt, session.consumptionExpiresAt]);
+  }, [session.developmentOnly,session.readOnly,session.developmentExpiresAt,session.expiresAt,session.publicationOnly, session.publicationStartsAt, session.publicationExpiresAt, session.consumptionOnly, session.consumptionStartsAt, session.consumptionExpiresAt]);
   const [agentWorkspaceMode, setAgentWorkspaceMode] = useState(()=>{
     if(typeof window==='undefined')return 'development';
     const query=new URL(window.location.href).searchParams;
@@ -469,6 +478,10 @@ function App() {
       url.hash=next==='platform'?'agent-chat':'agent-code';
       const comparison=next==='platform'&&invitedChatLink.current?new URL(invitedChatLink.current):undefined;
       history.replaceState(null,'',comparison&&comparison.searchParams.get('task')===url.searchParams.get('task')?comparison:url);
+    } else if (!privatePreview && status?.mode==='PUBLIC_INVITATION' && url.searchParams.get('module')==='agent-center') {
+      if (next==='platform') url.hash='agent-chat';
+      else url.hash='agent-code';
+      history.replaceState(null,'',url);
     }
     setAgentWorkspaceMode(next);
   }
@@ -1015,7 +1028,13 @@ function App() {
           {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} initialContextId={openingContextId} contexts={contexts.concat(status?.agentDevelopment?.fundContexts??[])} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} fundPilotAvailable={status?.agentDevelopment?.fundPilotAvailable} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedManualSource={sourceBinding?.manualDeliveryTaskId?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"&&!sourceBinding.manualDeliveryTaskId?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} invitedChatLink={invitedChatLink} onReturnToInvitedChat={()=>changeAgentTab("platform")} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
           <AgentCenter
             key={viewEpoch} api={api} local={localWorkbench&&!privatePreview}
-            invited={!privatePreview&&workbench.runtimeMode==='PUBLIC_INVITATION'?{authenticated:session.authenticated,onLogin:()=>setAuthOpen(true),onEditor:href=>{history.replaceState(null,'',href);setAgentWorkspaceMode('development');}}:undefined}
+            invited={!privatePreview&&workbench.runtimeMode==='PUBLIC_INVITATION'?{authenticated:session.authenticated,
+              start:{developmentOnly:session.developmentOnly===true,taskOnly:session.developmentTaskOnly===true,requestOnly:session.developmentRequestOnly===true,
+                canWrite,ready:coreReady&&contextsReady&&agentDevelopmentReadiness(status).ready&&status?.agentDevelopment?.invitedSqlStartSupported===true,startsAt:session.developmentStartsAt,
+                expiresAt:session.developmentExpiresAt,sessionExpiresAt:session.expiresAt,windowTaskId:session.developmentWindowTaskId,used:session.developmentWindowUsed,backgroundAvailable:status?.agentDevelopment?.eventBackgroundAvailable===true,contexts},
+              observeDevelopment:session.authenticated&&session.developmentOnly===true&&!session.readOnly&&status?.agentDevelopment?.eventBackgroundAvailable===true&&
+                publicationClock>=Date.parse(session.developmentStartsAt??'')&&publicationClock<Math.min(Date.parse(session.developmentExpiresAt??''),Date.parse(session.expiresAt??'')),
+              onDirtyChange:setAgentDraftDirty,onLogin:()=>setAuthOpen(true),onEditor:href=>{history.replaceState(null,'',href);setAgentWorkspaceMode('development');}}:undefined}
             canWrite={canWrite && !session.developmentOnly}
             modelConfigured={Boolean(status?.model.configured)}
             contextId={contextId}

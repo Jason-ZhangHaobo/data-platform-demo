@@ -11,6 +11,11 @@ const pending=status=>status==='QUEUED'||status==='RUNNING';
 const invalid=()=>Object.assign(Error('原开发任务的登记信息尚未核实'),{status:409,code:'INVITED_TASK_CONTEXT_UNCONFIRMED'});
 const missing=()=>Object.assign(Error('没有找到本人在当前项目的原生 SQL 开发任务'),{status:404,code:'INVITED_TASK_CONTEXT_NOT_FOUND'});
 
+export function supportsInvitedSqlContext(task) {
+  return task?.executionMode==='DURABLE_SQL_AGENT_V1' && task.language==='SPARK_SQL' && task.mode==='LIVE_MODEL' &&
+    [undefined,'AGENT'].includes(task.sourceKind) && !task.manualProvenance && !task.sourceAttribution && !task.syncInput;
+}
+
 // This read deliberately does not call the development run endpoint: that path
 // can reconcile outstanding Worker results. SQL and checks are only projected
 // from the task's own saved revision and run.
@@ -18,8 +23,7 @@ export function invitedTaskContext({store,project,actorId,taskId,requestId}) {
   const read=(kind,id)=>store.get(kind,id,project);
   const task=read('agent',taskId);
   if (!actorId || !task || task.id!==taskId || task.submittedBy!==actorId || task.projectId!==project ||
-      task.executionMode!=='DURABLE_SQL_AGENT_V1' || task.language!=='SPARK_SQL' || task.mode!=='LIVE_MODEL' ||
-      ![undefined,'AGENT'].includes(task.sourceKind) || task.manualProvenance || task.sourceAttribution || task.syncInput ||
+      !supportsInvitedSqlContext(task) ||
       (requestId!==undefined && store.deduplicatedId(project+':durable-agent:'+actorId+':'+requestId)!==taskId)) throw missing();
   const family=validationFamilyForContext(task.contextId);
   if (!family || !taskStatuses.has(task.status) || !Array.isArray(task.attempts) || task.attempts.length>3 ||

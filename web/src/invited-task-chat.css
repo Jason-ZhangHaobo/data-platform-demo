@@ -16,4 +16,12 @@
 .invited-chat-evidence h4{margin-bottom:5px}.invited-chat-evidence p{margin:6px 0}
 .invited-chat-checks{padding:0;list-style:none}.invited-chat-checks li{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid #dce6dc;font-size:13px;overflow-wrap:anywhere}
 .invited-chat-checks strong{white-space:nowrap}
+.invited-sql-compose form{display:grid;gap:10px;max-width:720px;margin-top:24px}
+.invited-sql-compose label{font-size:14px;font-weight:650;color:#294b3a}
+.invited-sql-compose textarea,.invited-sql-compose select{width:100%;min-width:0;box-sizing:border-box;border:1px solid #bbcfc1;border-radius:7px;background:white;color:#183b2c;font:inherit;padding:10px 12px}
+.invited-sql-compose textarea{resize:vertical;min-height:100px;line-height:1.6}
+.invited-sql-compose textarea:focus-visible,.invited-sql-compose select:focus-visible{outline:2px solid #377756;outline-offset:2px}
+.invited-sql-compose form p,.invited-sql-compose>p{font-size:14px;line-height:1.6;margin:4px 0;overflow-wrap:anywhere}
+.invited-sql-compose .invited-scope-definition{margin:0 0 12px;color:#506659}
+.invited-sql-compose form .button{justify-self:start}.invited-start-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 @media(max-width:600px){.agent-os-v2[data-invited-context]{grid-template-columns:minmax(0,1fr)}.invited-task-chat{padding:12px}.invited-chat-demand,.invited-chat-evidence{padding:10px}.invited-chat-evidence dl{gap:8px 15px}}

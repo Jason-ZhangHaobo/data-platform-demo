@@ -1,4 +1,5 @@
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+export {agentTaskReceiptValid,emptyAgentDraftSql} from '../../src/v2/invited-sql-start.mjs';
 export function agentSubmissionRequest(href:string){
   const query=new URL(href).searchParams,value=query.get("agent_request");
   return query.getAll("agent_request").length===1&&value&&uuid.test(value)?value:undefined;
@@ -13,12 +14,6 @@ export function agentDevelopmentReadiness(status?:{mode?:string;model?:{configur
   if(status.model?.configured!==true)return {ready:false,reason:"模型尚未配置，请到平台设置连接个人项目的模型服务；历史任务仍可读取。"};
   if(status.spark?.available!==true)return {ready:false,reason:"Spark 执行环境尚未就绪；历史任务仍可读取。"};
   return {ready:true,reason:"可以提交任务，实际连接与结果以本次执行为准。"};
-}
-export function agentTaskReceiptValid(task:{id?:unknown;version?:unknown;message?:unknown;contextId?:unknown;attempts?:unknown;language?:unknown;runId?:unknown}){
-  return typeof task.id==="string"&&uuid.test(task.id)&&Number.isSafeInteger(task.version)&&Number(task.version)>0&&
-    typeof task.message==="string"&&typeof task.contextId==="string"&&task.contextId.length>0&&Array.isArray(task.attempts)&&
-    task.attempts.every(attempt=>attempt&&typeof attempt==="object"&&Number.isSafeInteger(attempt.attempt)&&attempt.attempt>0&&typeof attempt.status==="string")&&
-    (task.language===undefined||task.language==="SPARK_SQL")&&(task.runId===undefined||(typeof task.runId==="string"&&uuid.test(task.runId)));
 }
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
 export function createAgentSubmission<T extends {id:string}>({api,initialKey,onPending,makeKey=()=>crypto.randomUUID()}:{api:Api;initialKey?:string;onPending:(key:string|undefined)=>void;makeKey?:()=>string}){

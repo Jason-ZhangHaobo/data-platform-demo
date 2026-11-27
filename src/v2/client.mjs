@@ -56,6 +56,8 @@ export const V2_OPERATIONS = Object.freeze([
   "agent_intent_graph",
   "agent_chat_sql_development",
   "agent_invited_task_context",
+  "agent_invited_sql_start",
+  "agent_invited_sql_start_request",
   "agent_chat_scope_changes",
   "agent_chat_change_delivery",
   "agent_chat_change_publication",
