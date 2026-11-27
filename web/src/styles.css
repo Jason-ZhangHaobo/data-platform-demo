@@ -1870,6 +1870,13 @@ kbd {
 .development-language-v2 button { border:0; border-radius:8px; background:transparent; color:var(--muted); padding:8px 14px; font-weight:700; cursor:pointer; }
 .development-language-v2 button.active { color:#fff; background:#176d50; box-shadow:0 4px 12px rgba(23,109,80,.18); }
 .development-language-v2 span { margin:0 8px; color:var(--muted); font-size:12px; }
+.development-language-v2[aria-label="Agent 工作台范围"] button[aria-selected="true"] { background:#176d50;color:white; }
+.consumption-window-notice p { margin:4px 0; }
+.consumption-window-notice summary { cursor:pointer;width:fit-content;color:#285d46; }
+@media(max-width:600px) {
+  .development-language-v2[aria-label="Agent 工作台范围"] { width:auto;max-width:100%;gap:2px;margin:8px 6px 0;padding:3px; }
+  .development-language-v2[aria-label="Agent 工作台范围"] button { flex:1;min-width:0;padding:6px 3px;font-size:12px;line-height:1.35; }
+}
 .python-workbench-v2 { padding:18px 24px 28px; }
 .python-head-v2 { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; margin-bottom:16px; }
 .python-head-v2 h1 { margin:4px 0 6px; font-size:24px; }

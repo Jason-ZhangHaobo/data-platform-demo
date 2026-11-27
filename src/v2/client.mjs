@@ -110,6 +110,7 @@ export const V2_OPERATIONS = Object.freeze([
   "service_test",
   "service_publish",
   "service_openapi",
+  "data_service_batch_openapi",
   "service_recovery",
   "service_detail",
   "service_version_create",

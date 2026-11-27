@@ -1,6 +1,6 @@
 import {isDeepStrictEqual as same} from 'node:util';
 import {createSignedTaskWakeDriver,signedTaskWakeView} from './signed-task-wake.mjs';
-import {agentConsumptionQuery} from './agent-consumption-request.mjs';
+import {agentConsumptionQuery, readAgentConsumption} from './agent-consumption-request.mjs';
 import {consumerDigest,consumerParametersDigest,consumerWireQueryDigest} from './consumer-source.mjs';
 import {serviceHash} from './data-services.mjs';
 
@@ -34,12 +34,29 @@ export function storedAgentConsumptionCall(store,project,binding,wakeId,type) {
   return call;
 }
 
-export function readAgentConsumptionReceipt(store,project,actorId,requestId) {
+function originalWake(store,project,actorId,requestId) {
   const key=wakeKey(project,actorId,requestId),id=store.deduplicatedId(key),wake=id&&store.get(kind,id,project);
   if(!wake||wake.binding.actorId!==actorId||wake.binding.requestId!==requestId)
     throw fail(404,'AGENT_CONSUMPTION_NOT_FOUND','当前账号没有该原委托');
   if(store.deduplicatedId(key,consumerDigest(JSON.stringify(wake.binding)))!==id)
     throw fail(409,'AGENT_CONSUMPTION_RECEIPT_MISMATCH','原委托的绑定与登记摘要不一致');
+  return wake;
+}
+
+export function savedBatchConsumptionRequests(store,project,actorId,sourceBinding) {
+  const wakes=store.list(kind,project).filter(wake=>wake.binding?.actorId===actorId&&same(wake.binding.sourceBinding,sourceBinding));
+  const limit=20;
+  const agentConsumptionRequests=wakes.slice(0,limit).map(wake=>{
+    const {requestId,sourceBinding,applicationId,dapiVersionId,xapiVersionId}=wake.binding;
+    if(originalWake(store,project,actorId,requestId).id!==wake.id)
+      throw fail(409,'AGENT_CONSUMPTION_RECEIPT_MISMATCH','原委托与登记编号不一致');
+    return {requestId,...readAgentConsumption({sourceBinding,applicationId,dapiVersionId,xapiVersionId},requestId)};
+  });
+  return {agentConsumptionRequests,agentConsumptionRequestsTruncated:wakes.length>limit};
+}
+
+export function readAgentConsumptionReceipt(store,project,actorId,requestId) {
+  const wake=originalWake(store,project,actorId,requestId);
   const {sourceBinding,applicationId,dapiVersionId,xapiVersionId}=wake.binding;
   const calls=types.flatMap(type=>{
     const call=storedAgentConsumptionCall(store,project,wake.binding,wake.id,type);

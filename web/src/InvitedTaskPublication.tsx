@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import {lazy,Suspense,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {RefreshCw,ShieldCheck} from 'lucide-react';
 import {publicationHistoryPath,publicationPreflightPath,publicationRequestReceiptPath} from '../../src/v2/publication-request.mjs';
 import {privateReleasePendingLabel} from '../../src/v2/private-release-stage.mjs';
@@ -17,6 +17,7 @@ import type {PublicationTarget} from './AuthDialog';
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
 type Source=InvitedEditorSource & {runId:string};
 type Props={source:Source;workflow:Workflow;access:InvitedStartWindow;verified:boolean;api:Api};
+const InvitedBatchConsumption=lazy(()=>import('./InvitedBatchConsumption'));
 type SavedApproval=ReturnType<typeof checkedExactPublicationApproval>;
 type Saved={history:Publication;approval?:SavedApproval;requestFound:boolean};
 type Review={preflight:CloudPublicationPreflight;window:PublicationTarget};
@@ -125,6 +126,9 @@ export default function InvitedTaskPublication({api,source,workflow,access,verif
   useEffect(()=>{mounted.current=true;void load();return()=>{mounted.current=false;readEpoch.current++;};},[load]);
 
   const release=saved?.history.release,queued=approval?.background?.state==='QUEUED'||saved?.approval?.background?.state==='QUEUED';
+  const consumptionSource=useMemo(()=>release?{sourceKind:'AGENT' as const,scope:'PRIVATE_CLOUD_TEST' as const,
+    taskId,revisionId,runId,packageDigest,releaseId:release.id}:undefined,[release?.id,taskId,revisionId,runId,packageDigest]);
+  const monitor=saved&&invitedPublicationMonitor(saved.history);
   const observe=Boolean(target)&&(queued||Boolean(release&&['WAITING_SCHEDULER','RUNNING_CLOUD_TEST','ACTIVE_CLOUD_TEST'].includes(release.status)));
   useEffect(()=>{
     if(!observe||error)return;
@@ -177,6 +181,10 @@ export default function InvitedTaskPublication({api,source,workflow,access,verif
       {mayReview&&!review&&<button ref={reviewButton} type="button" className="button primary" onClick={()=>void openReview()}>审阅并发布两个测试批次</button>}
       {!review&&!activeWindow()&&<p>{verified?'发布操作须进入此包及演练的受邀发布窗口。':'原开发或签名演练依据尚待核对。'}</p>}
     </>}
+    {consumptionSource&&access.consumptionSupported&&monitor?.complete&&monitor.pair&&<Suspense fallback={<p role="status">正在打开批次接口记录…</p>}>
+      <InvitedBatchConsumption key={consumptionSource.releaseId} api={api} source={consumptionSource} access={access}
+        verified={verified&&!reading&&!busy} fund={source.contextId.startsWith('fund-')} batchIds={[monitor.pair.firstBatchId,monitor.pair.secondBatchId]}/>
+    </Suspense>}
     {review&&!release&&activeWindow()&&review.preflight.approvalRequestId&&<>
       <AgentPublicationReview cloud packageDigest={packageDigest} revisionId={revisionId} runId={runId} verificationId={verificationId}
         preflight={review.preflight} confirmed={checked} disabled={reading||busy} approvalSaved={Boolean(approval)} headingRef={reviewHeading}

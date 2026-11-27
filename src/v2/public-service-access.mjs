@@ -86,7 +86,7 @@ export function assertServiceMutation(config, session, method, path, now = Date.
 // revoke, compute or return a token. Creation guards belong inside dedup callbacks.
 export function createServicePilotGuard({ config, store, project, source, detail, now = Date.now }) {
   if (!config) return { assertCreate: () => {}, assertService: item => item,
-    assertApplicationCreate: () => {}, assertApplication: item => item, recordTags: {}, applicationTags: {} };
+    assertApplicationCreate: () => {}, assertApplication: item => item, assertApplicationGrant: item => item, recordTags: {}, applicationTags: {} };
   const open = () => check(inWindow(config, now()), 'PUBLIC_SERVICE_CLOSED', '数据服务窗口已关闭；不会新增接口、版本或凭证。');
   const allowed = (value, message = '数据服务必须绑定本次允许的任务、发布批次和计划。') => check(value, 'PUBLIC_SERVICE_TARGET_MISMATCH', message);
   const sourceMatches = () => {
@@ -172,7 +172,18 @@ export function createServicePilotGuard({ config, store, project, source, detail
       '只能操作本次数据服务试点的调用应用。');
     return value;
   };
-  return { assertCreate, assertService, assertApplicationCreate, assertApplication,
+  const assertApplicationGrant = value => {
+    open();
+    assertApplication(value);
+    const app=store.get('service_app',value.id,project);
+    // Older grants contain the original deadline and creation time. New grants
+    // additionally pin the exact opening time, even for overlapping windows.
+    allowed(Date.parse(app.expiresAt)===config.expiresAt &&
+      (app.pilotStartsAt===undefined ? Date.parse(app.createdAt)>=config.startsAt && Date.parse(app.createdAt)<config.expiresAt :
+        app.pilotStartsAt===config.startsAt),'调用应用的签发窗口与当前消费窗口不一致');
+    return app;
+  };
+  return { assertCreate, assertService, assertApplicationCreate, assertApplication, assertApplicationGrant,
     recordTags: Object.freeze({ pilotId: config.pilotId }),
-    applicationTags: Object.freeze({ pilotId: config.pilotId, expiresAt: new Date(config.expiresAt).toISOString() }) };
+    applicationTags: Object.freeze({ pilotId: config.pilotId, pilotStartsAt:config.startsAt, expiresAt: new Date(config.expiresAt).toISOString() }) };
 }

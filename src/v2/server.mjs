@@ -1319,6 +1319,7 @@ export function createV2Server(options = {}) {
   let serviceAgentEvents;
   const savedServiceEvidenceEnabled = privateSmokeEnabled && options.ingress?.status.publicReadOnly === true;
   const privateServiceRoutes = privateDataServicesEnabled || savedServiceEvidenceEnabled ? createPrivateDataServices({ store, businessStore, project: PROJECT, auth, now: options.now, origin: env.V2_PUBLIC_ORIGIN, bootId: privateRuntimeBootId, pilotConfig: serviceAccess, persist: persistDevelopment,
+    ownerOnlyReviewedSources:Boolean(serviceAccess||savedServiceEvidenceEnabled),
     consumptionTransport:serviceAccess&&agentWakeTransport&&!options.ingress?.status.publicReadOnly?{transport:agentWakeTransport,config:agentEventConfig}:undefined,
     agentConfig:serviceAgentAccess,planner:input=>servicePlanner(input),assertModelBudget:reservation=>budget.assertCanStartServiceModel(reservation),budgetOverview:()=>budget.overview(),modelLeaseMs:options.serviceAgentModelLeaseMs,
     waitForModel:serviceAgentAccess?start=>statefulRequests.waitForProvider(start):undefined,

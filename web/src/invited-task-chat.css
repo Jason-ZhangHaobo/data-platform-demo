@@ -44,3 +44,14 @@
 .invited-sql-compose .invited-scope-definition{margin:0 0 12px;color:#506659}
 .invited-sql-compose form .button{justify-self:start}.invited-start-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 @media(max-width:600px){.agent-os-v2[data-invited-context]{grid-template-columns:minmax(0,1fr)}.invited-task-chat{padding:12px}.invited-chat-demand,.invited-chat-evidence{padding:10px}.invited-chat-evidence dl{gap:8px 15px}}
+.invited-consumption{min-width:0;margin-top:20px;padding-top:16px;border-top:1px solid #dce6dc}
+.invited-consumption>header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.invited-consumption h4,.invited-consumption h5{font-size:14px;margin:12px 0}
+.invited-consumption button[aria-pressed="true"]{background:#244b37;color:white;border-color:#244b37}
+.invited-consumption label{display:block;font-size:13px;margin:12px 0}
+.invited-consumption input[type=checkbox]{vertical-align:middle;margin-inline-end:6px}
+.invited-consumption>details,.invited-revoke{margin-top:12px}
+.invited-consumption code{overflow-wrap:anywhere}
+.invited-service-records{list-style:none;margin:6px 0 16px;padding:0}
+.invited-service-records>li{border-left:2px solid #cedfce;padding:4px 12px;margin:12px 0}
+.invited-service-records>li>strong{font-size:14px}.invited-service-records>li>p{margin:5px 0}

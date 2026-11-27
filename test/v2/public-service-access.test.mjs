@@ -136,6 +136,9 @@ test('one short-term application has only a nonempty subset of the three pilot s
     assert.throws(() => f.guard.assertApplicationCreate({ ...application, ...change }));
   const app = f.store.create('service_app', f.project, { ...application, scope: 'PRIVATE_CLOUD_TEST', status: 'ACTIVE', ...f.guard.applicationTags });
   assert.equal(app.expiresAt, new Date(f.config.expiresAt).toISOString()); assert.doesNotThrow(() => f.guard.assertApplication(app));
+  assert.doesNotThrow(()=>f.guard.assertApplicationGrant(app));
+  const shifted=createServicePilotGuard({config:{...f.config,startsAt:f.config.startsAt+1},store:f.store,project:f.project,now:()=>now});
+  assert.throws(()=>shifted.assertApplicationGrant(app),{code:'PUBLIC_SERVICE_TARGET_MISMATCH'});
   f.store.update('service_app', app.id, f.project, { status: 'REVOKED' });
   assert.throws(() => f.guard.assertApplicationCreate(application), { code: 'PUBLIC_SERVICE_APPLICATION_USED' });
   f.expire(); assert.doesNotThrow(() => f.guard.assertApplication(app));

@@ -13,7 +13,8 @@ import {createDurableServiceAgent} from './durable-service-agent.mjs';
 import {assertServiceAgentMutation} from './private-service-agent-policy.mjs';
 import {consumerCredentialProof,consumerDigest} from './consumer-source.mjs';
 import {storedServiceCallAttribution} from './service-consumption-attribution.mjs';
-import {createAgentConsumptionWake,readAgentConsumptionReceipt} from './agent-consumption-wake.mjs';
+import {invitedBatchPages,invitedBatchApplications} from './invited-batch-consumption.mjs';
+import {createAgentConsumptionWake,readAgentConsumptionReceipt,savedBatchConsumptionRequests} from './agent-consumption-wake.mjs';
 import {agentConsumptionPath,readAgentConsumption} from './agent-consumption-request.mjs';
 const uuid="[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
 const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(new Error(message),{status,code});
@@ -21,7 +22,7 @@ const fail=(status,message,code="PRIVATE_SERVICE_ACCESS_DENIED")=>Object.assign(
 // One shared allowlist for the private transport, temporary preview and router.
 export { privateServiceRoute } from "./private-service-routes.mjs";
 
-export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,pilotConfig,persist=async()=>{},consumptionTransport,
+export function createPrivateDataServices({store,businessStore,project,auth,now,origin,bootId,pilotConfig,ownerOnlyReviewedSources=Boolean(pilotConfig),persist=async()=>{},consumptionTransport,
   agentConfig,planner,assertModelBudget=()=>{throw Error('Model budget not configured');},budgetOverview=()=>{throw Error('Budget not configured');},modelLeaseMs,waitForModel,backgroundView,dispatchPlan,cancelPlan}) {
   const get=(kind,id)=>typeof id==="string"?store.get(kind,id,project):undefined;
   const source=id=>readPrivateReleaseBatch(store,project,id).batch;
@@ -36,7 +37,13 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
         release.submittedBy===a.user.id && release.sourceAgentTaskId===attribution.originAgentTaskId &&
         release.sourceKind==="AGENT" && get("agent",release.sourceAgentTaskId)?.submittedBy===a.user.id);
     const manual=attribution!==undefined||[release,bundle].some(item=>item.sourceKind==="MANUAL"||item.sourceAttribution==="ENGINEER_ASSISTED");
-    if(!manual)return [undefined,"AGENT"].includes(release.sourceKind)&&[undefined,"AGENT"].includes(bundle.sourceKind);
+    if(!manual) {
+      if(ownerOnlyReviewedSources && release.sourceKind==="AGENT" && release.reviewDigest) {
+        const owner=a?.user?.id;
+        if(!owner || release.submittedBy!==owner || get("agent",release.sourceAgentTaskId)?.submittedBy!==owner)return false;
+      }
+      return [undefined,"AGENT"].includes(release.sourceKind)&&[undefined,"AGENT"].includes(bundle.sourceKind);
+    }
     if(attribution?.kind==='ENGINEER_AUTHORED')return Boolean(a?.user?.id&&attribution.actorId===a.user.id&&release.submittedBy===a.user.id&&release.manualDeliveryTaskId===bundle.manualDeliveryTaskId&&release.sourceAgentTaskId===undefined&&get('manual_delivery_task',release.manualDeliveryTaskId)?.submittedBy===a.user.id&&release.sourceKind==='MANUAL'&&release.sourceAttribution==='ENGINEER_AUTHORED'&&release.agentIndependentE2E===false&&bundle.digest===release.packageDigest&&bundle.sourceRunId===origin.runId&&release.sourceRunId===origin.runId&&release.sourceRevisionId===origin.revisionId&&release.sourceCodeHash===origin.sqlHash);
     const owner=a?.user?.id;
     return Boolean(typeof owner==="string"&&owner&&release.sourceKind==="MANUAL"&&release.sourceAttribution==="ENGINEER_ASSISTED"&&release.agentIndependentE2E===false&&
@@ -155,10 +162,10 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     const batch=source(s.sourceReleaseRunId),release=get('release',s.releaseId),owner=get('agent',s.taskId);
     if(
       release?.sourceKind!=='AGENT'||release.sourceAgentTaskId!==s.taskId||release.submittedBy!==binding.actorId||owner?.submittedBy!==binding.actorId||
-      batch.releaseId!==s.releaseId||batch.packageDigest!==s.packageDigest)
+      !release.reviewDigest||batch.reviewDigest!==release.reviewDigest||batch.releaseId!==s.releaseId||batch.packageDigest!==s.packageDigest)
       throw fail(403,'原委托与消费窗口或发布批次不一致','AGENT_CONSUMPTION_SCOPE_DENIED');
     const app=get('service_app',binding.applicationId);
-    pilot.assertApplication(app);
+    pilot.assertApplicationGrant(app);
     if(app?.createdBy!==binding.actorId||app.status!=='ACTIVE'||Object.hasOwn(app,'customerAccess')||!(Date.parse(app.expiresAt)>nowMs)||!app.issuanceEvidence||
       serviceHash(app.issuanceEvidence)!==binding.issuanceDigest)
       throw fail(403,'原应用授权已失效','AGENT_CONSUMPTION_GRANT_INVALID');
@@ -207,7 +214,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       throw fail(422, "需提供任务编号、确切包摘要及合法发布选择", "INVALID_CONSUMPTION_INPUT");
     const { taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId } = selection;
     const task = get(manualDeliveryTaskId ? "manual_delivery_task" : "agent", manualDeliveryTaskId ?? taskId);
-    if (!task || ((task.fundPreparation || manualDeliveryTaskId || verifySavedRelease || a.role !== "ADMIN") && task.submittedBy !== owner))
+    if (!task || ((task.fundPreparation || manualDeliveryTaskId || batchId || verifySavedRelease || a.role !== "ADMIN") && task.submittedBy !== owner))
       throw fail(403, "无权读取此任务消费证据");
     const releases = store.list("release", project).filter(release =>
       (manualDeliveryTaskId
@@ -215,8 +222,11 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
         : release.sourceAgentTaskId === taskId && release.manualDeliveryTaskId === undefined) &&
       release.packageDigest === packageDigest && (releaseId === undefined || release.id === releaseId));
     if (releases.some(release => !manualReleaseOwned(a, release)))
-      throw fail(403, "人工消费记录仅属于原任务工程师和发布者");
+      throw fail(403, "仅原任务创建者与发布者可读取该来源的消费记录");
     if (batchId) {
+      const selectedRun = get('release_run',batchId);
+      if (releases.length !== 1 || releases[0].submittedBy !== owner || selectedRun?.releaseId !== releaseId)
+        throw fail(409, "消费记录与所选原发布批次不一致", "CONSUMPTION_PUBLICATION_UNCONFIRMED");
       const batch = source(batchId);
       sourceOwner(a,batch);
       if (releases.length !== 1 || releases[0].sourceKind !== "AGENT" || !releases[0].reviewDigest ||
@@ -236,7 +246,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
             return {id:verified.id,sourceEvidence:verified.fundSource?.evidence};
           })});
     }
-    return privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId,
+    const report=await privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId,
       now,
       getPackage: id => get("delivery_package", id),
       services: manager.list().filter(item => owned(a, item)), ownedService: id => service(a, id),
@@ -252,6 +262,14 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
         return manager.recheckCall(id, callId, options);
       },
     });
+    if (!batchId || callIdDigest) return report;
+    const calls=manager.listCalls();
+    for (const entry of report.services) {
+      const pages=await invitedBatchPages({store,project,manager,entry,calls,owner});
+      if (pages) Object.assign(entry,pages);
+    }
+    return {...report,...invitedBatchApplications({store,project,manager,report,owner,batchId}),
+      ...savedBatchConsumptionRequests(store,project,owner,{taskId,packageDigest,releaseId,sourceReleaseRunId:batchId})};
   }
   function readReleaseSources(req, params, verifySavedRelease) {
     const a=actor(req),selection=privateServiceSourceSelection(params);
@@ -266,7 +284,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
       verifySavedRelease(taskId,selected,a.user.id);
     }
     if(selected&&(manualDeliveryTaskId?selected.manualDeliveryTaskId===manualDeliveryTaskId:selected.sourceAgentTaskId===taskId)&&selected.packageDigest===packageDigest&&!manualReleaseOwned(a,selected))
-      throw fail(403,"人工发布仅属于原任务工程师和发布者");
+      throw fail(403,"仅原任务创建者与发布者可读取该发布来源");
     const rows=[];
     for(const r of store.list("release_run",project)){
       if(releaseId&&r.releaseId!==releaseId)continue;
@@ -301,7 +319,7 @@ export function createPrivateDataServices({store,businessStore,project,auth,now,
     if(!privateServiceRoute(method,url.pathname+url.search,{agentRead:true,agentPlanning:Boolean(agentConfig)}))throw fail(404,"私有数据服务接口未开放");
     const open=path.match(/^\/api\/v2\/open\/(dapis|xapis)\/([a-z][a-z0-9-]{2,47})$/);
     if(open){if(queries>=8)throw fail(429,"私有查询队列已满","PRIVATE_SERVICE_QUEUE_FULL");queries++;const query=queryTail.then(async()=>{try{return {status:200,body:await manager.invoke(open[1]==="dapis"?"DAPI":"XAPI",open[2],req.headers.authorization,Object.fromEntries(url.searchParams),{ingress,assertAccess:input=>{
-      pilot?.assertService(input.service);pilot?.assertApplication(input.application);assertApplicationVersion(input);
+      pilot?.assertService(input.service);pilot?.assertApplicationGrant(input.application);assertApplicationVersion(input);
     }})};}finally{await persist();}});queryTail=query.catch(()=>{});try{return await query;}finally{queries--;}}
     const a=actor(req),owner=a.user.id;
     assertServiceMutation(pilotConfig,a,method,path,now?.()??Date.now());

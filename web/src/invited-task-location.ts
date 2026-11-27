@@ -5,7 +5,8 @@ const pins = ['invited_context','invited_revision','invited_hash','invited_run']
 const deliveryFields=['invited_package_request','invited_rehearsal'];
 const approvalFields=['invited_approval','invited_review','invited_starts','invited_expires'];
 const publicationFields=[...approvalFields,'invited_release'];
-const pinnedFields=[...pins,...deliveryFields,...publicationFields];
+const consumptionFields=['invited_batch','invited_consume_request'];
+const pinnedFields=[...pins,...deliveryFields,...publicationFields,...consumptionFields];
 const allowedFields=['module','task','invited_request',...pinnedFields];
 export type InvitedApprovalPin={requestId:string;reviewDigest:string;startsAt:string;expiresAt:string};
 export function invitedPublicationPin(href:string):{approval?:InvitedApprovalPin;releaseId?:string}|null {
@@ -45,7 +46,8 @@ export function invitedEditorSource(href:string):InvitedEditorSource|null|undefi
   if(!pinnedFields.some(k=>q.has(k)))return;
   const selected=selectedTask(q),contextId=q.get('invited_context'),revisionId=q.get('invited_revision'),revisionHash=q.get('invited_hash'),runId=q.get('invited_run');
   if(!selected||[...q.keys()].some(k=>!allowedFields.includes(k))||
-    !invitedPublicationPin(href)||
+    !invitedPublicationPin(href)||consumptionFields.some(k=>q.has(k)&&!uuid.test(q.get(k)??''))||
+    q.has('invited_batch')&&!q.has('invited_release')||q.has('invited_consume_request')&&!q.has('invited_batch')||
     deliveryFields.some(k=>q.has(k)&&(!runId||!uuid.test(q.get(k)??'')))||
     !contextId||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(contextId)||
     !revisionId||!uuid.test(revisionId)||!revisionHash||!hash.test(revisionHash)||(runId!==null&&!uuid.test(runId)))return null;
@@ -63,7 +65,7 @@ export function invitedEditorLocation(href:string,selection:InvitedTaskSelection
     if(old&&old.taskId===source.taskId&&old.requestId===source.requestId&&old.contextId===source.contextId&&
       old.revisionId===source.revisionId&&old.revisionHash===source.revisionHash&&old.runId===source.runId){
       const original=new URL(href).searchParams;
-      for(const k of [...deliveryFields,...publicationFields]){const value=original.get(k);if(value)url.searchParams.set(k,value);}
+      for(const k of [...deliveryFields,...publicationFields,...consumptionFields]){const value=original.get(k);if(value)url.searchParams.set(k,value);}
     }
   }
   if(!invitedTaskSelection(url.href))throw Error('受邀任务链接不完整');
@@ -71,6 +73,20 @@ export function invitedEditorLocation(href:string,selection:InvitedTaskSelection
 }
 export function clearInvitedEditorSource(url:URL){
   for(const p of [...pinnedFields,'invited_request'])url.searchParams.delete(p);
+  return url;
+}
+
+export function pinInvitedBatch(href:string,releaseId:string,batchIds:string[],batchId:string,requestId?:string){
+  const url=new URL(href),q=url.searchParams;
+  if(!invitedTaskSelection(href)||!uuid.test(releaseId)||q.get('invited_release')!==releaseId||
+    batchIds.length!==2||new Set(batchIds).size!==2||!batchIds.every(id=>uuid.test(id))||!batchIds.includes(batchId)||
+    requestId!==undefined&&!uuid.test(requestId))throw Error('所选批次或消费请求与原发布不符。');
+  if(q.get('invited_batch')!==batchId)q.delete('invited_consume_request');
+  q.set('invited_batch',batchId);
+  if(requestId){
+    if(q.has('invited_consume_request')&&q.get('invited_consume_request')!==requestId)throw Error('请先核对已保存的原消费请求。');
+    q.set('invited_consume_request',requestId);
+  }
   return url;
 }
 

@@ -133,6 +133,15 @@ test("DAPI uses a real scheduled release result, versioned tests and OpenAPI", a
       "超过版本限流",
     );
     assert.equal(spec["x-shuduo-scope"], "LOCAL_TEST_ONLY");
+    const operation=spec.paths["/api/v2/open/dapis/customer-assets"].get;
+    const envelope=operation.responses[200].content['application/json'].schema;
+    assert.deepEqual(envelope.properties.data.items.required,['client_id','total_assets']);
+    const money=envelope.properties.data.items.properties.total_assets.oneOf;
+    assert.equal(new RegExp(money[0].pattern).test('1800.00'),true);
+    assert.equal(money[1].const,'******');
+    assert.equal(envelope.properties.service.properties.versionId.const,detail.publishedVersion.id);
+    assert.deepEqual(envelope.properties.pagination.required,['page','pageSize','total','totalPages']);
+    assert.equal(operation.parameters.find(p=>p.name==='page_size').schema.maximum,100);
     const version2 = app.manager.createDapiVersion(service.id, {
       sourceReleaseRunId: app.releaseRun.id,
       fields: ["client_id", "holding_market_value"],
@@ -314,6 +323,16 @@ test("XAPI pins published DAPI versions and composes holdings with cash", async 
       );
     assert.equal(response.data[0].positions.holding_market_value, "750.00");
     assert.equal(response.data[0].cash.total_assets, "950.00");
+    const specification=app.manager.openApi(published.id);
+    const schema=specification.paths['/api/v2/open/xapis/'+published.slug].get.responses[200].content['application/json'].schema;
+    const row=schema.properties.data.items.properties;
+    assert.deepEqual(Object.keys(row).sort(),Object.keys(response.data[0]).sort());
+    assert.deepEqual(Object.keys(row.cash.properties).sort(),Object.keys(response.data[0].cash).sort());
+    assert.deepEqual(Object.keys(row.positions.properties).sort(),Object.keys(response.data[0].positions).sort());
+    assert.equal(row.positions.properties.security_count.oneOf[0].type,'integer');
+    assert.equal(schema.properties.service.properties.versionId.const,response.service.versionId);
+    assert.deepEqual(schema.properties.service.properties.steps.prefixItems.map(item=>item.properties.dapiVersionId.const),
+      response.service.steps.map(step=>step.dapiVersionId));
     assert.equal(response.service.type, "XAPI");
     assert.equal(response.service.version, 2);
     assert.equal(app.manager.listCalls(published.id)[0].outcome, "SUCCEEDED");

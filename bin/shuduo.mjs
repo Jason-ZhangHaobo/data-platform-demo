@@ -41,6 +41,7 @@ import {readCloudV3Run} from "../scripts/cloud-v3-run.mjs";
 import {cloudWindowCheckpointBinding} from "../scripts/first-cloud-v3-window.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
+import {readBatchServiceDocument} from '../src/v2/batch-service-document.mjs';
 import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} from '../src/v2/agent-consumption-request.mjs';
 import {createContextDerivedTask,readChatScopeChanges,submitChatScopeChange} from "../src/v2/agent-derivation-client.mjs";
 import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-change-delivery-client.mjs";
@@ -229,6 +230,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo services publish --type dapi|xapi --id ID [--config-hash SHA256]
   shuduo services sources [--agent-task-id ID | --manual-delivery-task-id ID] [--package-digest SHA256 --release-id RELEASE_ID]
   shuduo services openapi --type dapi|xapi --id ID
+  shuduo services batch-openapi --task-id TASK --package-digest SHA256 --release-id RELEASE --batch-id BATCH --service-id SERVICE --version-id VERSION [--out-file NEW_JSON]
   shuduo services recovery --type dapi|xapi --id ID
   shuduo services show|history --type dapi|xapi --id ID
   shuduo services new-version --type dapi|xapi --id ID [--source-run-id ID] [--fields client_id,total_assets] [--rate-limit 60] [--timeout 1500]
@@ -1185,6 +1187,18 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       );
     else if (resource === "releases" && action === "monitor")
       result = await client.request("/monitoring/overview");
+    else if(resource==='services' && action==='batch-openapi'){
+      const fields={task_id:'taskId',package_digest:'packageDigest',release_id:'releaseId',batch_id:'batchId',service_id:'serviceId',version_id:'versionId'};
+      const allowed=new Set([...Object.keys(fields),'out_file','base_url']),flags=parsed.options;
+      if(parsed.positionals.length!==2||argv.filter(a=>a.startsWith('--')).some(a=>!allowed.delete(a.slice(2).replaceAll('-','_'))))
+        throw Error('请核对接口文档的版本和来源参数。');
+      const selection=Object.fromEntries(Object.entries(fields).map(([key,name])=>[name,required(flags,key)]));
+      const path=flags.out_file!==undefined?required(flags,'out_file'):undefined;
+      if(path&&lstatSync(path,{throwIfNoEntry:false}))throw Error('目标文件已存在，原文件未覆盖');
+      const document=await readBatchServiceDocument(client,selection);
+      if(path){saveNewAttachment(path,JSON.stringify(document,null,2)+'\n');result={saved:true,serviceId:selection.serviceId,versionId:selection.versionId,batchId:selection.batchId};}
+      else result=document;
+    }
     else if (resource === "services" && ["sources","task-evidence"].includes(action))
       result=await client.request(serviceSourceReadPath(action,serviceReadCliOptions(argv,parsed.options,action)));
     else if (resource === "services" && action === "list") {
