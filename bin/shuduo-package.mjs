@@ -43,7 +43,9 @@ try {
       const read=path=>{
         const info=statSync(path);
         if(!info.isFile() || info.size>maxReviewJsonBytes)throw Error("请选择不超过 6 MiB 的交付包 JSON 文件");
-        return JSON.parse(readFileSync(path,"utf8"));
+        const content=readFileSync(path,"utf8");
+        try{return JSON.parse(content);}
+        catch{throw Error("无法解析所选文件，请选择数舵导出的交付包 JSON");}
       };
       console.log(JSON.stringify(await comparePublicationFiles(read(baseline),read(target),
         {baselineDigest:option("--baseline-digest"),currentDigest:digest}),null,2));

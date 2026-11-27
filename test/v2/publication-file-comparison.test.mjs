@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawnSync} from 'node:child_process';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -35,6 +35,10 @@ test('local review compares all eight original files and identifies precisely wh
   const cli=JSON.parse(execFileSync(process.execPath,['bin/shuduo-package.mjs','compare',second,'--baseline',first,
     '--baseline-digest',prior.digest,'--digest',current.digest],{encoding:'utf8'}));
   assert.deepEqual(cli,result);
+  writeFileSync(first,'fictional-private-input');
+  const invalid=spawnSync(process.execPath,['bin/shuduo-package.mjs','compare',second,'--baseline',first],{encoding:'utf8'});
+  assert.equal(invalid.status,1);
+  assert.match(invalid.stderr,/无法解析/);assert.doesNotMatch(invalid.stderr,/fictional-private-input/);
 });
 
 test('corrupt package bytes, unrelated projects and stale reviewer digests cannot become a comparison',async t=>{
