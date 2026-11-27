@@ -107,6 +107,25 @@ node scripts/verify-local-reference.mjs readback http://127.0.0.1:3131
 
 已有留存的基金发布可按[签名基金发布复核](company-replication-playbook.md#复核带-worker-签名的基金发布)交接，离线核对原 SQL、独立断言、签名演练、双批调度及历史授权消费。
 
+### 从本机文件演练继续到发布与消费
+
+在刚通过 `readback` 的同一检出目录，停止只读复核服务，再用同一端口开启本机调度。保留 `.v2-artifacts/reference-reproduction.json` 和 `.data/` 原记录。这个步骤仅处理虚构持仓参考 SQL 演练生成的交付包。
+
+```bash
+env -i PATH="$PATH" V2_HOST=127.0.0.1 V2_PORT=3131 V2_LOCAL_DEVELOPMENT=true \
+  V2_RELEASE_SCHEDULER_MODE=LOCAL_TIMER node src/v2/server.mjs
+```
+
+在同一目录的另一终端运行：
+
+```bash
+node scripts/reproduce-local-wealth-release.mjs http://127.0.0.1:3131 --confirm-local-test
+```
+
+脚本核对原代码、运行及八文件演练，再对虚构包登记合成测试审阅和批准。两批由本机墙钟调度，使用真实 Spark 执行包内 SQL 并生成监控事件。随后在第一批发布持仓和现金 DAPI 及组合 XAPI，核对全量和分页金额、未授权访问以及应用撤销后的 401，从同一批次生成客户资产报表。
+
+通过时，`.v2-artifacts/reference-wealth-release.json` 保留原包摘要、两批编号、报表与调用编号。三个临时应用各限一个接口，完整令牌只用于本次进程中的调用。若响应丢失，先核对该文件中的请求编号和已有记录。脚本遇到已有发布记录或已有检查点会停止，以保留原批次和应用。停止服务后，按复刻手册的财富案例命令从 SQLite 副本独立核对。[交接与离线核验](company-replication-playbook.md#在新目录走查本机留存证据)
+
 ## 3. 配置真实 Data Agent
 
 通过 [阿里云百炼 API Key 页面](https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key) 获取北京地域的模型服务密钥；入口和地域对应关系见 [官方说明](https://help.aliyun.com/zh/model-studio/get-api-key)。
