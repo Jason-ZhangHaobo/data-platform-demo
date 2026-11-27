@@ -1,0 +1,6 @@
+.invited-service-contract{margin:12px 0;min-width:0;padding-top:10px;border-top:1px solid #e0e7de;overflow-wrap:anywhere}
+.invited-service-contract summary{cursor:pointer;font-weight:600}
+.invited-service-contract table{border-collapse:collapse;width:100%;font-size:13px}
+.invited-service-contract caption{text-align:left;font-weight:600}
+.invited-service-contract th,.invited-service-contract td{padding:6px;text-align:left;border-bottom:1px solid #e0e7de}
+.invited-service-contract pre{max-width:100%;overflow:auto;white-space:pre-wrap;background:#152c23;color:#f5faf7;padding:10px;border-radius:6px}

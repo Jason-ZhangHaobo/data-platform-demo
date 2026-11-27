@@ -1,8 +1,8 @@
 import { serviceVersionConfigValid } from "./data-services.mjs";
+import {assetQueryContract,assetQueryFields as assetFields} from './asset-query-contract.mjs';
 import {validateDeliveryPackage} from "./delivery.mjs";
 import {consumerDigest,validateConsumerSource} from "./consumer-source.mjs";
 
-const assetFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 // Private, owner-authorized projection of persisted calls. No tokens, rows,
 // parameters, rematerialization, model invocation or new consumer calls.
 export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId, includeRetiredBatchVersions = false, registeredBatchCatalog = false, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, callAttribution, scope = "PRIVATE_CLOUD_TEST",now=Date.now }) {
@@ -111,6 +111,10 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
       entry.sourceVersions = children.map((version,index)=>({serviceId:version.serviceId,versionId:version.id,configHash:version.configHash,
         releaseId:sourceReleases[index].id,sourceReleaseRunId:sources[index],packageDigest:version.sourcePackageDigest,
         sourceKind:sourceReleases[index].sourceKind??"AGENT",fields:assetFields.filter(field=>version.fields.includes(field))}));
+      if(scope==='PRIVATE_CLOUD_TEST' && batchId && entry.source?.sourceKind==='AGENT' && entry.source.sourceReleaseRunId===batchId){
+        const contract=assetQueryContract(service,root,children);
+        if(contract)entry.queryContract=contract;
+      }
       const fields = new Set(children.flatMap(v => v.fields ?? []));
       entry.fullAssetComposition = root.serviceType === "XAPI" && assetFields.every(field => fields.has(field));
       // A later restricted receipt should remain readable by exact ID, but

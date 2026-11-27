@@ -683,6 +683,32 @@ async function consumeOriginalBatch(f,cli,{taskId,releaseId,packageDigest,batchI
   if(agentConsumption||withAgentEvidence){
     assert.equal((await f.call('/auth/session')).body.consumptionPlan.agentConsumptionAvailable,true);
     f.alignWallClock();
+    const exactHistory='/data-services/task-evidence?'+new URLSearchParams({agent_task_id:taskId,package_digest:packageDigest,
+      release_id:releaseId,release_batch_id:batchId});
+    const initialBatch=await f.call(exactHistory);
+    assert.equal(initialBatch.status,200,initialBatch.body.message);
+    const {id:applicationId,name,createdAt,expiresAt,serviceIds}=app.body.application;
+    assert.deepEqual(initialBatch.body.applications,[{applicationId,name,status:'ACTIVE',createdAt,expiresAt,serviceIds}]);
+    assert.equal(initialBatch.body.applicationsTruncated,false);
+    assert.ok(initialBatch.body.services.every(entry=>entry.call===undefined));
+    if (agentConsumption) {
+      f.store.update('service_app',applicationId,PROJECT,{serviceIds:[holdings.id]});
+      assert.deepEqual((await f.call(exactHistory)).body.applications,[],'changed grant cannot appear as originally issued');
+      f.store.update('service_app',applicationId,PROJECT,{serviceIds});
+      f.env.V2_FC_PUBLIC_READ_ONLY='true';
+      f.env.V2_PRIVATE_DATA_SERVICES_ENABLED='false';
+      delete f.env.V2_FC_PUBLIC_WRITE_SCOPE;
+      await f.restart();
+      const beforeAnyCall=await f.call(exactHistory);
+      assert.equal(beforeAnyCall.status,200);
+      assert.deepEqual(beforeAnyCall.body.applications,initialBatch.body.applications);
+      assert.deepEqual(beforeAnyCall.body.agentConsumptionRequests,[]);
+      assert.equal((await f.call('/data-services/applications/'+applicationId+'/revoke',{})).status,403);
+      f.env.V2_FC_PUBLIC_READ_ONLY='false';
+      f.env.V2_PRIVATE_DATA_SERVICES_ENABLED='true';
+      f.env.V2_FC_PUBLIC_WRITE_SCOPE='SERVICE_CONSUMPTION_ONLY';
+      await f.restart();
+    }
     const path='/data-services/agent/consumption-jobs',requestId=randomUUID(),receiptPath=path+'/'+requestId;
     const binding={sourceBinding:{taskId,releaseId,packageDigest,sourceReleaseRunId:batchId},applicationId:app.body.application.id,
       dapiVersionId:holdings.currentVersion.id,xapiVersionId:xapi.currentVersion.id};
@@ -1905,6 +1931,51 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   const originalSources=await f.call(sourcesPath);
   assert.equal(originalSources.status,200);
   assert.deepEqual(originalSources.body.map(row=>row.id).sort(),[...batchIds].sort());
+  const batchEvidence=id=>'/data-services/task-evidence?'+selection+'&release_batch_id='+id;
+  let openBatchHistory;
+  if (withAgentEvidence) {
+    // The second batch window is active. Each original task/batch still returns
+    // its own saved first request, including when its application was revoked.
+    openBatchHistory=[];
+    for (const [index,batchId] of batchIds.entries()) {
+      const result=await f.call(batchEvidence(batchId));
+      assert.equal(result.status,200,result.body.message);
+      const proof=result.body, agent=consumed[index].bound.consumption.agent;
+      assert.deepEqual(proof.agentConsumptionRequests,[{requestId:agent.requestId,
+        sourceBinding:{taskId:created.body.id,packageDigest:bundle.digest,releaseId,sourceReleaseRunId:batchId},
+        applicationId:agent.applicationId,dapiVersionId:agent.dapi.versionId,xapiVersionId:agent.xapi.versionId}]);
+      assert.equal(proof.agentConsumptionRequestsTruncated,false);
+      assert.equal(proof.applications.length,1);
+      assert.equal(proof.applications[0].applicationId,agent.applicationId);
+      assert.equal(proof.applications[0].status,'REVOKED');
+      assert.ok(Number.isFinite(Date.parse(proof.applications[0].revokedAt)));
+      assert.equal(proof.services.length,3);
+      for (const v of [agent.dapi.versionId,agent.xapi.versionId]) {
+        const service=proof.services.find(entry=>entry.versionId===v);
+        assert.equal(service.call.applicationStatus,'REVOKED');
+        assert.deepEqual(service.paginationCoverage,{applicationId:agent.applicationId,applicationStatus:'REVOKED',pageSize:1,
+          totalPages:2,verifiedPages:[1,2],status:'COMPLETE'});
+      }
+      openBatchHistory.push(proof);
+    }
+    // Rechecking a page uses its own stored HTTP receipt under the same grant.
+    // Changing the second page's response proof cannot be covered by the
+    // signed Agent's complete single-page read or by the second batch.
+    const dapi=consumed[0].bound.consumption.agent.dapi;
+    const page2=f.store.list('service_call',PROJECT).find(call=>call.serviceVersionId===dapi.versionId &&
+      call.invocationEvidence?.channel==='BEARER_HTTP' && call.parameters.page===2);
+    f.store.update('service_call',page2.id,PROJECT,{invocationEvidence:{...page2.invocationEvidence,paginationDigest:'0'.repeat(64)}});
+    const changed=await f.call(batchEvidence(batchIds[0]));
+    assert.equal(changed.status,200);
+    assert.deepEqual(changed.body.services.find(entry=>entry.versionId===dapi.versionId).paginationCoverage.verifiedPages,[1]);
+    f.store.update('service_call',page2.id,PROJECT,{invocationEvidence:page2.invocationEvidence});
+    const alternate=f.addAdmin({email:'other-batch-history@example.invalid',password:'SyntheticJourney!2026',displayName:'另一虚构工程师'});
+    const login=await f.call('/auth/login',{email:alternate.email,password:'SyntheticJourney!2026'});
+    const cookie=login.cookies.map(value=>value.split(';',1)[0]).join('; ');
+    assert.equal((await fetch(f.base+batchEvidence(batchIds[0]),{headers:{cookie}})).status,403);
+    assert.equal((await fetch(f.base+sourcesPath,{headers:{cookie}})).status,403);
+    assert.equal((await f.call(batchEvidence(randomUUID()))).status,409);
+  }
   const savedCalls=f.store.list('service_call',PROJECT), savedApplications=f.store.list('service_app',PROJECT);
   f.env.V2_FC_PUBLIC_READ_ONLY='true';
   f.env.V2_PRIVATE_DATA_SERVICES_ENABLED='false';
@@ -1931,6 +2002,14 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   f.store.update('monitor_event',recordedEvent.id,PROJECT,{observedAt:recordedEvent.observedAt});
   assert.equal((await f.call('/data-services/dapis')).status,503);
   if(withAgentEvidence){
+    for (const [index,batchId] of batchIds.entries()) {
+      const history=await f.call(batchEvidence(batchId));
+      assert.equal(history.status,200);
+      assert.deepEqual(history.body.services,openBatchHistory[index].services);
+      assert.deepEqual(history.body.applications,openBatchHistory[index].applications);
+      assert.deepEqual(history.body.agentConsumptionRequests,openBatchHistory[index].agentConsumptionRequests);
+      assert.equal((await fetch(f.base+batchEvidence(batchId),{headers:{cookie:otherCookie}})).status,403);
+    }
     const receipts=await Promise.all(consumed.map(({bound})=>f.call('/data-services/agent/consumption-jobs/'+bound.consumption.agent.requestId)));
     const links=receipts.map(({status,body},index)=>{
       assert.equal(status,200);

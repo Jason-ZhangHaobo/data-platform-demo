@@ -62,7 +62,7 @@ export function checkedAgentConsumptionReceipt(value:unknown,requestId:string,ca
     if(!record(call)||call.type!==type||!id(call.serviceId)||call.versionId!==versionId||!digest(call.callIdDigest)||
       !digest(call.rowsDigest)||!digest(call.paginationDigest)||typeof call.rowCount!=='number'||!Number.isSafeInteger(call.rowCount)||
       call.rowCount<1||call.rowCount>100)throw bad();
-    return {type,versionId,callIdDigest:call.callIdDigest,rowCount:call.rowCount};
+    return {type,versionId,serviceId:call.serviceId,rowsDigest:call.rowsDigest,callIdDigest:call.callIdDigest,rowCount:call.rowCount};
   });
   if(new Set(calls.map(call=>call.callIdDigest)).size!==calls.length)throw bad();
   return {...selection,requestId,wakeId:value.wakeId,state:value.state as typeof states[number],calls};

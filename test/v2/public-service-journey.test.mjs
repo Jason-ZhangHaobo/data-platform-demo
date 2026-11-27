@@ -173,3 +173,57 @@ test('an issued consumer cannot borrow a service whose source task changed',{tim
   assert.equal(denied.status,403);assert.equal(denied.body.code,'PUBLIC_SERVICE_TARGET_MISMATCH');assert.equal(denied.body.data,undefined);
   assert.equal(f.computeCalls(),0);
 });
+
+test('interrupted service preparation recovers the original draft, passed test, publication and application',async t=>{
+  const f=await fixture(t);
+  const base='/data-services/dapis';
+  const bodies=f.plan.dapis.map(spec=>({...spec,sourceReleaseRunId:f.run.id}));
+  const first=await f.call(base,bodies[0],{key:'holdings-original'});
+  const second=await f.call(base,bodies[1],{key:'cash-original'});
+  const [holdings,cash]=[first.body,second.body];
+  assert.equal(first.status,201);
+  assert.equal(second.status,201);
+  const cashPath=base+'/'+cash.id;
+  assert.equal((await f.call(cashPath+'/test',{})).status,200);
+  await f.restart();
+  const recovered=await f.call(base,bodies[0],{key:'holdings-original'});
+  assert.equal(recovered.status,200);
+  assert.equal(recovered.body.currentVersionId,holdings.currentVersionId);
+  const publish=(path,service)=>f.call(path+'/publish',{configHash:service.currentVersion.configHash});
+  const holdingsPath=base+'/'+holdings.id;
+  assert.equal((await publish(holdingsPath,holdings)).body.code,'SERVICE_TEST_REQUIRED');
+  assert.equal((await f.call(holdingsPath+'/test',{})).status,200);
+  for (const [path,item] of [[holdingsPath,holdings],[cashPath,cash]]) {
+    const published=await publish(path,item);
+    assert.equal(published.body.version.id,item.currentVersionId);
+  }
+  const {steps,...spec}=f.plan.xapi;
+  const xapi=await f.call('/data-services/xapis',{...spec,steps:[holdings,cash].map((child,index)=>({
+    alias:steps[index].alias,dapiId:child.id,dapiVersionId:child.currentVersionId}))},{key:'xapi-original'});
+  assert.equal(xapi.status,201);
+  const path='/data-services/xapis/'+xapi.body.id;
+  assert.equal((await f.call(path+'/test',{})).status,200);
+  const published=await publish(path,xapi.body);
+  assert.equal(published.status,200);
+  await f.restart();
+  const replay=await publish(path,xapi.body);
+  assert.equal(replay.body.replayed,true);
+  assert.equal(replay.body.version.publishedAt,published.body.version.publishedAt);
+  const grant={name:f.plan.applicationName,serviceIds:[holdings.id,xapi.body.id]};
+  const issued=await f.call('/data-services/applications',grant,{key:'original-grant'});
+  assert.equal(issued.status,201);
+  await f.restart();
+  const saved=await f.call('/data-services/applications',grant,{key:'original-grant'});
+  assert.equal(saved.body.token,null);
+  assert.equal(saved.body.application.id,issued.body.application.id);
+  assert.equal((await f.call('/data-services/applications',grant,{key:'other-key'})).body.code,'PUBLIC_SERVICE_APPLICATION_USED');
+  const revoke='/data-services/applications/'+saved.body.application.id+'/revoke';
+  f.expire();
+  const closed=await f.call(revoke,{});
+  assert.equal(closed.body.status,'REVOKED');
+  assert.equal((await f.call(revoke,{})).body.revokedAt,closed.body.revokedAt);
+  assert.deepEqual(['data_service','data_service_version','data_service_test','service_app'].map(kind=>f.store.list(kind,PROJECT).length),[3,3,3,1]);
+  await f.restart({removeScope:true});
+  assert.equal((await f.call(revoke,{})).body.code,'PUBLIC_READ_ONLY');
+  assert.equal(f.computeCalls(),0);
+});

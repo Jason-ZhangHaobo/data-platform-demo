@@ -54,6 +54,7 @@ import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} f
 import {agentReviewEvidencePath,publicationApprovalStep,publicationSelectorInput,publicationPreflightPath,publicationHistoryPath,publicationReadPath,publicationRequestReceiptPath} from "../src/v2/publication-request.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
+import {readBatchServiceDocument} from '../src/v2/batch-service-document.mjs';
 
 const publicationIdSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,100}$"};
 const servicePlanSourceSchema={type:'object',additionalProperties:false,properties:{taskId:{type:'string',format:'uuid'},manualDeliveryTaskId:{type:'string',format:'uuid'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},releaseId:{type:'string',format:'uuid'},sourceReleaseRunId:{type:'string',format:'uuid'}},required:['packageDigest','releaseId','sourceReleaseRunId'],oneOf:[{required:['taskId'],not:{required:['manualDeliveryTaskId']}},{required:['manualDeliveryTaskId'],not:{required:['taskId']}}]};
@@ -77,6 +78,9 @@ const syncConsentSchema = { type: "object", additionalProperties: false,
 const distributionRollbackSchema={type:'object',additionalProperties:false,properties:{scope:{const:'LOCAL_TEST_RELEASE'},targetPackageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},metadataHash:{type:'string',pattern:'^[a-f0-9]{64}$'},confirmFrozenFictionalData:{const:true}},required:['scope','targetPackageDigest','metadataHash','confirmFrozenFictionalData']};
 const nativeSyncReleaseRequestSchema={type:'object',additionalProperties:false,properties:Object.fromEntries(['taskId','deliveryId','packageId','verificationId','reviewId','requestId'].map(k=>[k,{type:'string',pattern:'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$'}]).concat(['packageDigest','syncRehearsalDigest'].map(k=>[k,{type:'string',pattern:'^[a-f0-9]{64}$'}]))),required:['taskId','deliveryId','packageId','verificationId','reviewId','requestId','packageDigest','syncRehearsalDigest']};
 const tools = [
+  {name:'data_service_batch_openapi',description:'取得原受邀任务指定发布批次、指定在服 DAPI 或 XAPI 版本的 OpenAPI 3.1 文档。只读已有记录。',inputSchema:{type:'object',additionalProperties:false,
+    properties:{taskId:{type:'string',format:'uuid'},packageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},releaseId:{type:'string',format:'uuid'},batchId:{type:'string',format:'uuid'},
+      serviceId:{type:'string',format:'uuid'},versionId:{type:'string',format:'uuid'}},required:['taskId','packageDigest','releaseId','batchId','serviceId','versionId']},annotations:{readOnlyHint:true}},
   {name:"agent_publication_history",description:"创建者读取确切交付包已登记的测试发布、批次和监控记录。可按已知发布编号进一步核对。",inputSchema:{
     type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties,sourceKind:{const:"AGENT"}},
     required:["taskId","sourceKind","sourceRunId","packageDigest","verificationId"]},annotations:{readOnlyHint:true}},
@@ -454,6 +458,7 @@ async function callTool(name, args = {}, client=defaultClient) {
     if(confirm!==true)throw Error('须明确确认此批次的单次消费委托');
     return client.request(agentConsumptionPath,{method:'POST',idempotencyKey:requestId,body:readAgentConsumption(body,requestId)});
   }
+  if(name==='data_service_batch_openapi')return readBatchServiceDocument(client,args);
   if(name==='service_agent_consumption_request'){
     if(Object.keys(args).length!==1)throw Error('只接受原委托请求编号');
     return client.request(agentConsumptionReceiptPath(args.requestId));

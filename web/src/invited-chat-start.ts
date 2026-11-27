@@ -34,7 +34,8 @@ export function invitedWindowTaskLocation(href:string,taskId?:string) {
 type Context={id:string;name:string;definition:string;capabilities?:{agentDevelopment?:boolean;scope?:string;fundPreparation?:boolean}};
 export type InvitedStartWindow={developmentOnly:boolean;taskOnly:boolean;requestOnly:boolean;canWrite:boolean;ready:boolean;
   startsAt?:string;expiresAt?:string;sessionExpiresAt?:string;windowTaskId?:string;used?:boolean;backgroundAvailable:boolean;contexts:Context[];
-  deliverySupported?:boolean;targetTaskId?:string;publicationSupported?:boolean;publicationTarget?:import('./AuthDialog').PublicationTarget};
+  deliverySupported?:boolean;targetTaskId?:string;publicationSupported?:boolean;publicationTarget?:import('./AuthDialog').PublicationTarget;
+  consumptionSupported?:boolean;canConsume?:boolean;consumptionScope?:import('./service-consumption-window').ConsumptionScope};
 
 export function invitedStartReason(authenticated:boolean,access:InvitedStartWindow|undefined,now=Date.now()){
   if(!authenticated)return '请使用本次受邀账号登录。';

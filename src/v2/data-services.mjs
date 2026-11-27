@@ -1,4 +1,5 @@
 import {checkDistributionResponse} from './distribution-consumption-check.mjs';
+import {assetQueryContract,assetQueryDocument,assetQueryFields as assetFields} from './asset-query-contract.mjs';
 import {distributionFields,distributionComposition,distributionResponseSchema,combineDistributionResults,snapshotContractById} from './distribution-services.mjs';
 import {initDistributionStore,distributionDescriptor,materializeDistribution,distributionSnapshotEvidence,queryDistribution,resultSnapshotHash} from './distribution-query-store.mjs';
 import { fundDapiContract, normalizeFundFilters } from "./fund-dapi-contract.mjs";
@@ -80,13 +81,6 @@ const decimal2 = (value) => {
   const [whole, fraction = ""] = resolved.split(".");
   return `${whole}.${fraction.padEnd(2, "0")}`;
 };
-const assetFields = [
-  "client_id",
-  "holding_market_value",
-  "available_cash",
-  "total_assets",
-  "security_count",
-];
 function normalizeCustomerAccess(value) {
   if (!value || typeof value !== "object" || Array.isArray(value) ||
       Object.keys(value).length !== 2 || !Object.hasOwn(value, "clientId") || !Object.hasOwn(value, "maskedFields") ||
@@ -958,6 +952,13 @@ export class DataServiceManager {
     const service = this.#service(serviceId),
       version = this.#version(service.publishedVersionId ?? service.currentVersionId),
       endpoint = `/api/v2/open/${service.serviceType.toLowerCase()}s/${service.slug}`;
+    if (!version.outputContractId) {
+      const children=(version.steps??[]).map(step=>this.#version(step.dapiVersionId));
+      if(!serviceVersionConfigValid(version)||children.some((child,index)=>child.serviceId!==version.steps[index].dapiId||!serviceVersionConfigValid(child)))
+        throw fail(409,'接口文档的固定版本配置未能核对','SERVICE_VERSION_CORRUPT');
+      const contract=assetQueryContract(service,version,children);
+      if(contract)return assetQueryDocument(contract,origin);
+    }
     return {
       openapi: "3.1.0",
       info: {
@@ -1055,7 +1056,7 @@ export class DataServiceManager {
             parametersDigest:consumerParametersDigest(query),issuanceDigest:serviceHash(app.issuanceEvidence),delegation,
             paginationDigest:serviceHash(response.pagination)}}:{}),
           ...(ingress==='HTTP'||ingress==='INTERNAL'?{invocationEvidence:{channel:ingress==='HTTP'?'BEARER_HTTP':'BEARER_PRIVATE_BRIDGE',
-            queryDigest:consumerWireQueryDigest(input),parametersDigest:consumerParametersDigest(query),
+            queryDigest:consumerWireQueryDigest(input),parametersDigest:consumerParametersDigest(query),paginationDigest:serviceHash(response.pagination),
             ...(app.issuanceEvidence?{issuanceDigest:serviceHash(app.issuanceEvidence)}:{})}}:{}),
           ...(isSync(version) ? { sourceEvidenceHash: serviceHash(version.sourceEvidence), paginationHash: serviceHash(response.pagination) } : {}),
         });
