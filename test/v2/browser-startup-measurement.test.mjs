@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { measureAgentStartup, openStartupWebDriver } from "../../scripts/measure-v2-browser-startup.mjs";
 
 const driver = "http://127.0.0.1:9515";
@@ -119,6 +120,57 @@ test("both document visits use the same exact entry and only a readback match ca
   ]);
   assert.deepEqual(steps[8][1].slice(0, 2), [page, entry]);
   assert.equal(steps[8][1].at(-1),revisit.timeOrigin);
+});
+
+test("the narrow viewport confirms only a visible guest login and the read-only boundary", async () => {
+  const liveGuest = { disabled: false, title: "", textContent: "受邀用户登录", getClientRects: () => [{}] };
+  for (const [buttons, boundary, expected] of [
+    [[liveGuest], "只读验收", true],
+    [[{ ...liveGuest, getClientRects: () => [] }], "只读验收", false],
+    [[{ ...liveGuest, title: "退出受邀会话" }], "只读验收", false],
+    [[liveGuest], "环境待确认", false],
+  ]) {
+    const { session } = sampleFixture();
+    session.execute = async (script, args) => {
+      if (typeof args[1] !== "string") return readback;
+      const [expectedUrl, expectedScript, timeOrigin] = args;
+      let ms = 140, changed = false;
+      const panel = {
+        classList: { contains: () => false },
+        querySelectorAll: () => [{ textContent: "新建任务", disabled: true }],
+        querySelector: selector => selector === ".agent-dev-boundary"
+          ? { textContent: boundary }
+          : { textContent: changed ? "股票及现金" : "全部持仓" },
+      };
+      const picker = {
+        value: "holdings-t1", disabled: false, options: [{ value: "stock-cash-t1" }],
+        closest: () => panel,
+        getBoundingClientRect: () => ({ left: 80, top: 120, right: 300, bottom: 152, width: 220, height: 32 }),
+        dispatchEvent: () => { changed = true; },
+      };
+      const document = {
+        readyState: "complete",
+        body: { innerText: "窄屏界面未显示侧栏身份" },
+        scripts: [{ src: expectedScript }],
+        querySelector: () => picker,
+        querySelectorAll: () => buttons,
+        elementFromPoint: () => picker,
+      };
+      return new Promise(done => runInNewContext("(function(){" + script + "})(...args,done)", {
+        args, done, document, location: { href: expectedUrl, origin },
+        innerWidth: 390, innerHeight: 844, scrollY: 0, Event,
+        performance: {
+          now: () => ms, timeOrigin,
+          getEntriesByType: () => [{ responseStart: 100, domContentLoadedEventStart: 120 }],
+          getEntriesByName: () => [{ responseEnd: 100 }],
+        },
+        setTimeout: callback => { ms += 50; callback(); },
+      }));
+    };
+    const sample = await measureAgentStartup(session, { origin, networkLabel: "wifi", entry });
+    assert.equal(sample.threeSecondTargetMet, expected);
+    assert.equal(sample.reads[0].status, expected ? "OBSERVED" : "SELECTION_OR_GUEST_UNCONFIRMED");
+  }
 });
 
 test("an empty document, destroyed context, or old same-URL document never triggers interaction or reload again", async () => {

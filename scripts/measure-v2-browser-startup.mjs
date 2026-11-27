@@ -133,7 +133,12 @@ function observeInPage(expectedUrl, expectedScript, timeOrigin, done) {
           selected.changedBeforeDOMContentLoaded = !timing?.domContentLoadedEventStart ||
             changed < timing.domContentLoadedEventStart;
         }
-        if (!preview && document.body.innerText.includes("公开访客") &&
+        // Narrow screens hide the sidebar identity label. Confirm the visible
+        // guest-only control and the workbench's confirmed read-only boundary.
+        const guestControls = document.querySelectorAll(".topbar .auth-session-button-v2");
+        const guestLogin = guestControls.length === 1 && guestControls[0];
+        if (!preview && guestLogin && !guestLogin.disabled && !guestLogin.title &&
+            guestLogin.textContent.trim() === "受邀用户登录" && guestLogin.getClientRects().length > 0 &&
             panel.querySelector(".agent-dev-boundary")?.textContent.includes("只读验收"))
           return done({...samples,...selected,status:"OBSERVED",guestReadOnly:true,guestReadyMs:Math.round(performance.now()),contextsEndMs:
             Math.round(performance.getEntriesByName(location.origin+"/api/v2/contexts")[0]?.responseEnd ?? 0)});
