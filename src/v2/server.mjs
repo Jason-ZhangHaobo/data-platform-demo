@@ -2332,6 +2332,7 @@ export function createV2Server(options = {}) {
           agentDevelopment: { durableEnabled: Boolean(durableAgent), durableDeliveryEnabled: Boolean(durableDelivery),
             invitedSqlStartSupported:!local && options.ingress?.status.publicHttpEnabled===true,
             invitedTaskDeliverySupported:!local && options.ingress?.status.publicHttpEnabled===true,
+            invitedTaskPublicationSupported:!local && options.ingress?.status.publicHttpEnabled===true,
             requestBindingSupported:Boolean(durableAgent),derivationBindingSupported:Boolean(durableAgent),
             ...(fundPilotAvailable ? {fundPilotAvailable:true} : {}),
             ...(canReadFundContexts ? {fundContexts:invitedFundContexts()} : {}),
@@ -6710,8 +6711,9 @@ export function createV2Server(options = {}) {
           if (local || agent.executionMode !== durableSqlAgentMode || !actorId || agent.submittedBy !== actorId)
             throw fail(403, "原发布历史仅供任务所属人核验");
           const selector = validatePublicationSelector(publicationSelectorFromUrl(url), actorId);
-          if (selector.sourceKind !== "AGENT" || !selector.releaseId || !selector.packageDigest)
-            throw fail(422, "请指定原 Agent 发布编号与确切包摘要");
+          if (selector.sourceKind !== "AGENT" || !selector.packageDigest ||
+              (!selector.releaseId && !(selector.sourceRunId && selector.verificationId)))
+            throw fail(422, "请指定原发布与包摘要，或确切的开发批次、交付包和演练");
           return json(res, 200, cloudPublicationHistory.savedDetail(agent.id, selector));
         }
         const isolatedFund = !local && Boolean(agent.fundPreparation);

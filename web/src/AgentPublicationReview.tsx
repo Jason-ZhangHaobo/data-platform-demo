@@ -10,7 +10,7 @@ export function publicationTargetMatches(target: PublicationTarget | undefined,
     Number.isFinite(now) && now >= Date.parse(target.startsAt) && now < Date.parse(target.expiresAt));
 }
 
-export function AgentPublicationReview({ cloud, distribution=false, sourceKind="AGENT",originTaskId, packageDigest, revisionId, runId, verificationId, confirmed, disabled, onConfirm, onPublish, onCancel, fund, preflight,approvalActions,approvalSaved=false }: {
+export function AgentPublicationReview({ cloud, distribution=false, sourceKind="AGENT",originTaskId, packageDigest, revisionId, runId, verificationId, confirmed, disabled, onConfirm, onPublish, onCancel, fund, preflight,approvalActions,approvalSaved=false,onOpenEvidence,headingRef }: {
   cloud: boolean; distribution?:boolean; packageDigest: string; revisionId?: string; runId?: string; verificationId?: string;
   sourceKind?:"AGENT"|"MANUAL";originTaskId?:string;
   fund?:{businessDate:string;modelMode:string;scheduleSpec:{triggerAfterSeconds:number;intervalSeconds:number;runCount:number}};
@@ -18,19 +18,21 @@ export function AgentPublicationReview({ cloud, distribution=false, sourceKind="
   confirmed: Record<string, boolean>; disabled: boolean;
   approvalActions?:React.ReactNode;
   approvalSaved?:boolean;
-  onConfirm: (id: string, checked: boolean) => void; onPublish: () => void; onCancel: () => void;
+  onOpenEvidence?:(section:string,trigger:HTMLButtonElement)=>void;
+  headingRef?:React.Ref<HTMLHeadingElement>;
+  onConfirm: (id: string, checked: boolean) => void; onPublish?: () => void; onCancel: () => void;
 }) {
   const requirements = deliveryReviewRequirements(cloud,distribution);
   const count = requirements.filter(item => confirmed[item.id] === true).length;
-  const mayPublish=!disabled&&Boolean(revisionId&&runId&&verificationId)&&reviewAttestationsComplete(confirmed,cloud,distribution);
+  const mayPublish=!disabled&&Boolean(onPublish&&revisionId&&runId&&verificationId)&&reviewAttestationsComplete(confirmed,cloud,distribution);
   return <section className="agent-review-form" aria-label="审阅指定版本">
-    <div><h4>发布前确认</h4><p>本次只提交下面这个版本。不会自动代批，不改变公网入口或创建生产发布。</p></div>
+    <div><h4 ref={headingRef} tabIndex={headingRef?-1:undefined}>发布前确认</h4><p>本次只提交下面这个版本。不会自动代批，不改变公网入口或创建生产发布。</p></div>
     {sourceKind==="MANUAL"&&<p role="status">工程师接管版本（MANUAL／ENGINEER_ASSISTED）。原 Agent 任务 {originTaskId??"未确认"} 的失败与次数保留；本次发布不计作 Agent 自主完成。</p>}
     {fund&&<p>基金业务日 {fund.businessDate} · {fund.modelMode==="SYNTHETIC_MODEL"?"模型替身":"模型生成"} · {fund.scheduleSpec.triggerAfterSeconds} 秒后触发首批，间隔 {fund.scheduleSpec.intervalSeconds} 秒，共 {fund.scheduleSpec.runCount} 批。</p>}
     <dl className="delivery-review-source"><dt>发布范围</dt><dd>{cloud ? "私有云测试 · 同一冻结业务日期的两个样例批次，不是两个交易日或生产调度" : distribution?"本机虚构证券测试 · 同一冻结业务日的两个批次，不调用模型":"本机测试 · 两个批次"}</dd><dt>代码版本</dt><dd>{revisionId ?? "未确认"}</dd><dt>源运行批次</dt><dd>{runId ?? "未确认"}</dd><dt>文件演练编号</dt><dd>{verificationId ?? "未确认"}</dd><dt>交付包摘要</dt><dd>{packageDigest}</dd></dl>
     {preflight&&<dl className="delivery-review-source"><dt>冻结业务日</dt><dd>{preflight.businessDate}</dd><dt>业务调度时间</dt><dd>{preflight.businessScheduledFor.replace('T',' ')} · {preflight.plannedBatchCount} 个测试批次</dd><dt>本次审阅摘要</dt><dd>{preflight.reviewDigest}</dd></dl>}
-    {requirements.map(item => <div className="delivery-review-item" key={item.id}><label><input type="checkbox" disabled={disabled||approvalSaved} checked={approvalSaved||confirmed[item.id] === true} onChange={event => {if(!disabled&&!approvalSaved)onConfirm(item.id, event.target.checked);}} />{item.label}</label><a href={`#${item.target}`}>查看依据</a></div>)}
+    {requirements.map(item => <div className="delivery-review-item" key={item.id}><label><input type="checkbox" disabled={disabled||approvalSaved} checked={approvalSaved||confirmed[item.id] === true} onChange={event => {if(!disabled&&!approvalSaved)onConfirm(item.id, event.target.checked);}} />{item.label}</label>{onOpenEvidence?<button type="button" className="button" aria-label={`查看依据 · ${item.label}`} onClick={e=>onOpenEvidence(item.id,e.currentTarget)}>查看依据</button>:<a href={`#${item.target}`}>查看依据</a>}</div>)}
     {approvalSaved?<small>{requirements.length} 项确认已随原批准保存。</small>:<small>{count} / {requirements.length} 项已确认；仅查看文件不会自动勾选。代码、交付包或演练记录变化后需要重新审阅。</small>}
-    {approvalActions??<div className="agent-delivery-actions"><button type="button" className="button primary" disabled={!mayPublish} onClick={()=>{if(mayPublish)onPublish();}}>确认并发布此版本</button><button type="button" className="button" disabled={disabled} onClick={()=>{if(!disabled)onCancel();}}>暂不发布</button></div>}
+    {approvalActions??<div className="agent-delivery-actions"><button type="button" className="button primary" disabled={!mayPublish} onClick={()=>{if(mayPublish)onPublish?.();}}>确认并发布此版本</button><button type="button" className="button" disabled={disabled} onClick={()=>{if(!disabled)onCancel();}}>暂不发布</button></div>}
   </section>;
 }

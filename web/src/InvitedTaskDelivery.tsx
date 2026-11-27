@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import {lazy,Suspense,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {Download,Package,RefreshCw} from 'lucide-react';
 import {invitedTaskDeliveryPath,invitedTaskDeliveryRequestId} from '../../src/v2/invited-task-delivery.mjs';
 import {checkedAgentWorkflow,exactDeliveryAdvance,type Delivery,type Workflow} from './agent-workflow-read';
@@ -9,6 +9,7 @@ import {invitedDeliveryWriteWindow,invitedRehearsalStatus} from './invited-deliv
 import {pinInvitedDelivery,type InvitedEditorSource} from './invited-task-location';
 import type {InvitedStartWindow} from './invited-chat-start';
 import './agent-development.css';
+const InvitedTaskPublication=lazy(()=>import('./InvitedTaskPublication'));
 
 type Source=InvitedEditorSource & {runId:string};
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
@@ -134,6 +135,10 @@ export default function InvitedTaskDelivery({source,api,access,verified,testSour
         {result.settlementEvidence&&<div><dt>结果确认方式</dt><dd>{settlementLabel(result.settlementEvidence)}</dd></div>}
       </dl>}
       {result?.error&&<p role="alert">{result.error}</p>}
+      {access.publicationSupported&&bundle&&result&&delivery&&<Suspense fallback={<p role="status">正在打开测试发布记录…</p>}>
+        <InvitedTaskPublication key={[taskId,delivery.id,bundle.digest,result.id].join(':')} api={api} source={source} workflow={workflow}
+          access={access} verified={verified&&!working&&!reading&&invitedRehearsalStatus(workflow,false)==='演练通过'}/>
+      </Suspense>}
     </>}
   </section>;
 }

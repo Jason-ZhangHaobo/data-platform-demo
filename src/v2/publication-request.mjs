@@ -39,6 +39,13 @@ export function publicationPreflightPath(taskId, selector) {
   return publicationReadPath(taskId,selector).replace("/publication?","/publication/preflight?");
 }
 
+export function publicationHistoryPath(taskId, selector) {
+  const {releaseId,...version} = publicationSelectorInput(selector);
+  if (!exactPreflightSelector(version)) throw invalid();
+  return publicationReadPath(taskId,{...version,...(releaseId?{releaseId}:{})})
+    .replace("/publication?","/publication/history?");
+}
+
 export function publicationRequestReceiptPath(taskId, requestId) {
   if (!safeId(taskId) || !safeId(requestId)) throw invalid();
   return `/agent/tasks/${taskId}/publication/requests/${requestId}`;

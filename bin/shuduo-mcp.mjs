@@ -51,7 +51,7 @@ import {readStandalonePublication,publishStandaloneManual,cancelStandalonePublic
 import {callServicePlan} from '../src/v2/service-plan-client.mjs';
 import {readServiceAgentContext} from '../src/v2/service-agent-context-client.mjs';
 import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} from '../src/v2/agent-consumption-request.mjs';
-import {agentReviewEvidencePath,publicationApprovalStep,publicationSelectorInput,publicationPreflightPath,publicationReadPath,publicationRequestReceiptPath} from "../src/v2/publication-request.mjs";
+import {agentReviewEvidencePath,publicationApprovalStep,publicationSelectorInput,publicationPreflightPath,publicationHistoryPath,publicationReadPath,publicationRequestReceiptPath} from "../src/v2/publication-request.mjs";
 import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs";
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 
@@ -77,6 +77,9 @@ const syncConsentSchema = { type: "object", additionalProperties: false,
 const distributionRollbackSchema={type:'object',additionalProperties:false,properties:{scope:{const:'LOCAL_TEST_RELEASE'},targetPackageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},metadataHash:{type:'string',pattern:'^[a-f0-9]{64}$'},confirmFrozenFictionalData:{const:true}},required:['scope','targetPackageDigest','metadataHash','confirmFrozenFictionalData']};
 const nativeSyncReleaseRequestSchema={type:'object',additionalProperties:false,properties:Object.fromEntries(['taskId','deliveryId','packageId','verificationId','reviewId','requestId'].map(k=>[k,{type:'string',pattern:'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$'}]).concat(['packageDigest','syncRehearsalDigest'].map(k=>[k,{type:'string',pattern:'^[a-f0-9]{64}$'}]))),required:['taskId','deliveryId','packageId','verificationId','reviewId','requestId','packageDigest','syncRehearsalDigest']};
 const tools = [
+  {name:"agent_publication_history",description:"创建者读取确切交付包已登记的测试发布、批次和监控记录。可按已知发布编号进一步核对。",inputSchema:{
+    type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,...publicationProperties,sourceKind:{const:"AGENT"}},
+    required:["taskId","sourceKind","sourceRunId","packageDigest","verificationId"]},annotations:{readOnlyHint:true}},
   {name:"agent_invited_task_delivery",description:"受邀创建者按自己的任务、SQL 版本和原运行读取已保存的交付文件与演练记录，逐文件核对摘要。",inputSchema:{
     type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,revisionId:publicationIdSchema,
       revisionHash:{type:"string",pattern:"^[a-f0-9]{64}$"},runId:publicationIdSchema,deliveryId:publicationIdSchema},
@@ -566,6 +569,10 @@ async function callTool(name, args = {}, client=defaultClient) {
   if(name==="agent_background_cancel"){
     if(args.confirm!==true)throw new Error("必须先确认停止后台推进");
     return client.request(`/agent/tasks/${encodeURIComponent(args.taskId)}/background/cancel`,{method:"POST",body:{}});
+  }
+  if(name==="agent_publication_history"){
+    const {taskId,...selector}=args;
+    return client.request(publicationHistoryPath(taskId,selector));
   }
   if(name==="agent_publication_request"){
     if(!args||typeof args!=="object"||Array.isArray(args)||Object.keys(args).some(key=>!["taskId","requestId"].includes(key)))throw Error("核对原发布请求只接受任务和请求编号");

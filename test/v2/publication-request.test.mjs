@@ -1,9 +1,37 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {publicationSelectorInput,publicationReadPath,publicationSelectorFromUrl,privatePublicationReadRoute} from '../../src/v2/publication-request.mjs';
+import {runV2Cli} from '../../bin/shuduo.mjs';
+import {handleV2Mcp} from '../../bin/shuduo-mcp.mjs';
+import {publicationSelectorInput,publicationReadPath,publicationHistoryPath,publicationSelectorFromUrl,privatePublicationReadRoute} from '../../src/v2/publication-request.mjs';
 
 const taskId='00000000-0000-4000-8000-000000000001',runId='00000000-0000-4000-8000-000000000002',verificationId='00000000-0000-4000-8000-000000000003',releaseId='00000000-0000-4000-8000-000000000004';
 const manual={sourceKind:'MANUAL',sourceRunId:runId,packageDigest:'a'.repeat(64),verificationId};
+
+test('CLI and MCP use the creator’s stored package history without any publication write or Worker reconciliation',async()=>{
+  const selection={...manual,sourceKind:'AGENT',releaseId},requests=[];
+  const receipt={readMode:'SAVED_HISTORY',release:{id:releaseId},runs:[],alerts:[],events:[]};
+  const client={request:async(path,options)=>{requests.push(path);assert.equal(options,undefined);return receipt;}};
+  let cli;
+  assert.equal(await runV2Cli(['agent','publication-history','--id',taskId,'--source-kind','AGENT',
+    '--source-run-id',runId,'--package-digest',selection.packageDigest,'--verification-id',verificationId,'--release-id',releaseId],
+    {},{client,output:s=>{cli=JSON.parse(s);},error:()=>{}}),0);
+  const call=JSON.parse(await handleV2Mcp({jsonrpc:'2.0',id:2,method:'tools/call',
+    params:{name:'agent_publication_history',arguments:{taskId,...selection}}},{client}));
+  assert.deepEqual(call.result.structuredContent,cli);assert.deepEqual(cli,receipt);
+  assert.deepEqual(requests,Array(2).fill(publicationHistoryPath(taskId,selection)));
+});
+
+test('a conversation can read an exact saved package before learning its release ID',()=>{
+  const version={...manual,sourceKind:'AGENT'};
+  for(const input of [version,{...version,releaseId}]){
+    const path=publicationHistoryPath(taskId,input);
+    assert.equal(path.split('?')[0],`/agent/tasks/${taskId}/publication/history`);
+    assert.deepEqual(publicationSelectorFromUrl(path),input);
+  }
+  for(const selector of [manual,{}, {...version,verificationId:undefined},{packageDigest:version.packageDigest,releaseId}]){
+    assert.throws(()=>publicationHistoryPath(taskId,selector),{code:'PUBLICATION_SELECTOR_INVALID'});
+  }
+});
 
 test('pure selector syntax preserves legacy omission and round-trips precise manual/agent query keys',()=>{
   assert.deepEqual(publicationSelectorInput(),{});assert.equal(publicationReadPath(taskId),`/agent/tasks/${taskId}/publication`);

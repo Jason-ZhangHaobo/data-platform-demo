@@ -43,6 +43,7 @@ export const V2_OPERATIONS = Object.freeze([
   "service_agent_plan_advance",
   "agent_context_derive",
   "agent_publication_detail",
+  "agent_publication_history",
   "agent_publication_create",
   "agent_publication_stop",
   "status",

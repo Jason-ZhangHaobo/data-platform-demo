@@ -3,7 +3,27 @@ const hash = /^[a-f0-9]{64}$/;
 const key = /^[A-Za-z0-9_-]{1,100}$/;
 const pins = ['invited_context','invited_revision','invited_hash','invited_run'];
 const deliveryFields=['invited_package_request','invited_rehearsal'];
-const allowedFields=['module','task','invited_request',...pins,...deliveryFields];
+const approvalFields=['invited_approval','invited_review','invited_starts','invited_expires'];
+const publicationFields=[...approvalFields,'invited_release'];
+const pinnedFields=[...pins,...deliveryFields,...publicationFields];
+const allowedFields=['module','task','invited_request',...pinnedFields];
+export type InvitedApprovalPin={requestId:string;reviewDigest:string;startsAt:string;expiresAt:string};
+export function invitedPublicationPin(href:string):{approval?:InvitedApprovalPin;releaseId?:string}|null {
+  const q=new URL(href).searchParams;
+  if(!publicationFields.some(k=>q.has(k)))return {};
+  const releaseId=q.get('invited_release');
+  if(!uuid.test(q.get('invited_rehearsal')??'')||(releaseId!==null&&!uuid.test(releaseId))||
+    publicationFields.some(k=>q.getAll(k).length>1))return null;
+  let approval:InvitedApprovalPin|undefined;
+  if(approvalFields.some(k=>q.has(k))){
+    const requestId=q.get('invited_approval'),reviewDigest=q.get('invited_review'),startsAt=q.get('invited_starts'),expiresAt=q.get('invited_expires');
+    if(!requestId||!/^approval-[a-f0-9]{64}$/.test(requestId)||!reviewDigest||!hash.test(reviewDigest)||
+      !startsAt||!expiresAt||!(Date.parse(startsAt)<Date.parse(expiresAt))||new Date(startsAt).toISOString()!==startsAt||
+      new Date(expiresAt).toISOString()!==expiresAt)return null;
+    approval={requestId,reviewDigest,startsAt,expiresAt};
+  }
+  return {...(approval?{approval}:{}),...(releaseId?{releaseId}:{})};
+}
 
 export type InvitedTaskSelection = {taskId:string;requestId?:string};
 export type InvitedEditorSource = InvitedTaskSelection & {contextId:string;revisionId:string;revisionHash:string;runId?:string};
@@ -18,13 +38,14 @@ export function invitedTaskSelection(href:string):InvitedTaskSelection|null {
   const q=new URL(href).searchParams;
   if([...q.keys()].some(k=>!allowedFields.includes(k)))return null;
   const selected=selectedTask(q);
-  return selected && (![...pins,...deliveryFields].some(k=>q.has(k))||invitedEditorSource(href)) ? selected : null;
+  return selected && (!pinnedFields.some(k=>q.has(k))||invitedEditorSource(href)) ? selected : null;
 }
 export function invitedEditorSource(href:string):InvitedEditorSource|null|undefined {
   const q=new URL(href).searchParams;
-  if(![...pins,...deliveryFields].some(k=>q.has(k)))return;
+  if(!pinnedFields.some(k=>q.has(k)))return;
   const selected=selectedTask(q),contextId=q.get('invited_context'),revisionId=q.get('invited_revision'),revisionHash=q.get('invited_hash'),runId=q.get('invited_run');
   if(!selected||[...q.keys()].some(k=>!allowedFields.includes(k))||
+    !invitedPublicationPin(href)||
     deliveryFields.some(k=>q.has(k)&&(!runId||!uuid.test(q.get(k)??'')))||
     !contextId||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(contextId)||
     !revisionId||!uuid.test(revisionId)||!revisionHash||!hash.test(revisionHash)||(runId!==null&&!uuid.test(runId)))return null;
@@ -42,14 +63,30 @@ export function invitedEditorLocation(href:string,selection:InvitedTaskSelection
     if(old&&old.taskId===source.taskId&&old.requestId===source.requestId&&old.contextId===source.contextId&&
       old.revisionId===source.revisionId&&old.revisionHash===source.revisionHash&&old.runId===source.runId){
       const original=new URL(href).searchParams;
-      for(const k of deliveryFields){const value=original.get(k);if(value)url.searchParams.set(k,value);}
+      for(const k of [...deliveryFields,...publicationFields]){const value=original.get(k);if(value)url.searchParams.set(k,value);}
     }
   }
   if(!invitedTaskSelection(url.href))throw Error('受邀任务链接不完整');
   return url;
 }
 export function clearInvitedEditorSource(url:URL){
-  for(const p of [...pins,...deliveryFields,'invited_request'])url.searchParams.delete(p);
+  for(const p of [...pinnedFields,'invited_request'])url.searchParams.delete(p);
+  return url;
+}
+
+export function pinInvitedPublication(href:string,source:InvitedEditorSource,deliveryId:string,approval?:InvitedApprovalPin,releaseId?:string){
+  const old=new URL(href).searchParams;
+  if(old.has('invited_rehearsal')&&old.get('invited_rehearsal')!==deliveryId)throw Error('原链接指向另一交付。');
+  const url=pinInvitedDelivery(href,source,'rehearse',deliveryId);
+  if(approval){
+    url.searchParams.set('invited_approval',approval.requestId);url.searchParams.set('invited_review',approval.reviewDigest);
+    url.searchParams.set('invited_starts',approval.startsAt);url.searchParams.set('invited_expires',approval.expiresAt);
+  }
+  if(releaseId){
+    if(old.has('invited_release') && old.get('invited_release')!==releaseId)throw Error('已保存的发布编号发生变化。');
+    url.searchParams.set('invited_release',releaseId);
+  }
+  if(!invitedTaskSelection(url.href))throw Error('发布来源或原请求信息不完整。');
   return url;
 }
 

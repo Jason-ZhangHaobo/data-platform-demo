@@ -1,0 +1,12 @@
+.invited-publication-basis{min-width:0;padding:16px;border:1px solid var(--line,#dbe4da);border-radius:10px;background:var(--surface,#fff);overflow-wrap:anywhere}
+.invited-publication-basis h4{margin:0 0 10px}
+.invited-publication-basis pre{max-height:19rem;max-width:100%;overflow:auto;padding:12px;background:#142b23;color:#f5faf7;border-radius:6px;white-space:pre;tab-size:2}
+.invited-publication-basis dl>div{display:grid;grid-template-columns:minmax(6em,auto) minmax(0,1fr);gap:12px;margin:8px 0}
+.invited-publication-basis dd{margin:0}
+.invited-publication-basis summary{cursor:pointer;font-weight:600}
+.invited-package-compare{margin:14px 0;padding-top:12px;border-top:1px solid #e0e7de}
+.invited-publication-basis label{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:10px 0}
+.invited-package-compare input,.invited-publication-basis select{max-width:100%;font:inherit}
+.invited-publication-basis select,.invited-package-compare input::file-selector-button{padding:6px 9px;border:1px solid #c9d7ca;border-radius:6px;background:#fff;color:#243d31}
+.invited-package-compare input::file-selector-button{margin-right:8px;cursor:pointer}
+.invited-package-diff{height:18rem;min-width:0}

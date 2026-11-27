@@ -13,6 +13,7 @@ export default function SqlEditor({
   diff,
   readOnly = false,
   focusChanges = false,
+  comparisonLanguage = "sql",
 }: {
   value: string;
   original: string;
@@ -20,6 +21,7 @@ export default function SqlEditor({
   diff: boolean;
   readOnly?: boolean;
   focusChanges?: boolean;
+  comparisonLanguage?: "sql" | "plaintext";
 }) {
   const options = {
     readOnly,
@@ -38,7 +40,7 @@ export default function SqlEditor({
   return diff ? (
     <DiffEditor
       theme="vs-dark"
-      language="sql"
+      language={comparisonLanguage}
       original={original}
       modified={value}
       options={{ ...options, readOnly: true, renderSideBySide: false,hideUnchangedRegions:focusChanges?{enabled:true,contextLineCount:3,minimumLineCount:6,revealLineCount:20}:undefined }}
