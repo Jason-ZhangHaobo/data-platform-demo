@@ -1,11 +1,10 @@
 import {checkedManualContinuationBinding} from './manual-continuation-binding.mjs';
 import {checkedAssistedDevelopmentReference,sameAssistedDevelopmentReference} from './assisted-development-reference.mjs';
+import {verifiedDeliveryBytes} from './delivery-file-bytes.mjs';
 const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v),hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const bad=()=>new Error('手工交付回执与指定来源、版本或文件字节未确认；保留原记录和请求编号，不自动重提');
 const canonical=v=>JSON.stringify(v,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
-const digest=async v=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v))),b=>b.toString(16).padStart(2,'0')).join('');
 const selected=(s,detail=false)=>s&&Object.keys(s).every(k=>['sourceRunId','revisionId','revisionHash','taskId','sourceBinding'].includes(k))&&uuid(s.sourceRunId)&&(!detail||uuid(s.taskId));
-const names=['main.sql','tests.sql','schedule.json','deployment.json','calendar.json','fixtures.json','validation.json','README.md'];
 export function checkedStandaloneTask(task,selection){
   const b=checkedManualContinuationBinding(task?.sourceBinding),r=checkedAssistedDevelopmentReference(task?.developmentReference);
   if(!uuid(task.id)||task.mode!=='DURABLE_MANUAL_DELIVERY_V1'||task.sourceKind!=='MANUAL'||task.sourceAttribution!=='ENGINEER_AUTHORED'||task.modelRequired!==false||task.agentIndependentE2E!==false||task.fullLifecycleE2E!==false||task.publicDeployed!==false||
@@ -21,9 +20,8 @@ async function checkedFiles(value,task){
   if(!task||b.id!==task.packageId||b.digest!==task.packageDigest||!hash(b.digest)||b.manifest?.format!=='shuduo-delivery/v1'||b.manifest.releaseState!=='NOT_PUBLISHED'||
     b.manifest.source?.runId!==task.sourceRunId||b.manifest.source.revisionId!==task.sourceRevisionId||b.manifest.source.sqlHash!==task.sourceSqlHash||
     b.manifest.source.attribution?.kind!=='ENGINEER_AUTHORED'||b.manifest.source.attribution.agentIndependentE2E!==false||b.manifest.source.attribution.originAgentTaskId!==undefined||
-    !sameAssistedDevelopmentReference(b.manifest.source.attribution.developmentReference,task.developmentReference)||canonical(Object.keys(b.files??{}).sort())!==canonical([...names].sort())||canonical(Object.keys(b.manifest.files??{}).sort())!==canonical([...names].sort()))throw bad();
-  let total=0;for(const name of names){const text=b.files[name],entry=b.manifest.files[name];if(typeof text!=='string')throw bad();const bytes=new TextEncoder().encode(text).length;total+=bytes;if(bytes>250000||entry.bytes!==bytes||entry.sha256!==await digest(text))throw bad();}
-  if(total>750000||await digest(canonical(b.manifest))!==b.digest||await digest(b.files['main.sql'])!==task.sourceSqlHash)throw bad();
+    !sameAssistedDevelopmentReference(b.manifest.source.attribution.developmentReference,task.developmentReference)||
+    !await verifiedDeliveryBytes(b,task.sourceSqlHash))throw bad();
 }
 async function checkedValue(value,selection,workflow){
   if(value?.protocol!==(workflow?'shuduo-standalone-manual-workflow/v1':'shuduo-standalone-manual-detail/v1')||value.modelRequired!==false)throw bad();
@@ -46,7 +44,7 @@ async function checkedValue(value,selection,workflow){
   if(v?.status==='SUCCEEDED'){
     const ids=JSON.parse(value.package.files['fixtures.json']).validationContexts.map(c=>c.id),checks=v.validation.regressions;
     if(ids.length!==5||new Set(ids).size!==5||!Array.isArray(checks)||checks.length!==5||new Set(checks.map(c=>c.contextId)).size!==5||
-      !ids.every(id=>checks.some(c=>c.contextId===id&&c.passed===true))||v.testSqlValidation.sqlHash!==await digest(value.package.files['tests.sql'])||
+      !ids.every(id=>checks.some(c=>c.contextId===id&&c.passed===true))||v.testSqlValidation.sqlHash!==value.package.manifest.files['tests.sql'].sha256||
       v.validation.contractId!==undefined&&v.validation.contractId!==value.package.manifest.source.validationContractId)throw bad();
   }
   if(task?.status==='SUCCEEDED'&&v?.status!=='SUCCEEDED')throw bad();return value;

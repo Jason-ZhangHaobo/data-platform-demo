@@ -32,6 +32,29 @@ shuduo agent change-chat-scope --id INTENT_ID --source-run-id ORIGINAL_RUN_ID \
 
 `ORIGINAL_RUN_ID` 和 `NEXT_REQUEST_ID` 分别取自首次读取的 `binding.runId` 与 `nextRequestId`。两者共同约束本次修改。对应的 MCP 工具为 `agent_chat_scope_changes` 和 `agent_change_chat_scope`。GET `/agent/intents/:id/development/changes` 从原会话找回已受理请求。查阅记录和金额只使用已保存结果。请求的收费结果未知时需先对账原编号，旧编号只对应原需求和口径。
 
+### 在原对话准备派生版本的交付文件
+
+在本机开发会话中选定已完成的口径变更，确认新 SQL 版本与开发批次，点击「生成交付文件并演练」。这一步复用新版本的开发结果，实际运行包内的 `main.sql` 和 `tests.sql`。原任务的交付与派生版本的交付各有独立来源。
+
+可预览的八个文件包括加工 SQL、测试 SQL、调度文件、部署文件、交易日历、虚构输入与回归数据、源运行核验报告和使用说明。可逐个查看、下载，也可下载整个版本化交付包。演练成功后能看到实际使用的引擎、调度时刻、业务日期、节点顺序及断言结果。
+
+股票持仓示例的调度时刻为北京时间 2026 年 9 月 11 日 09:00，冻结业务日为前一个交易日 9 月 10 日。Spark 3.5.9 按文件先执行加工，再执行断言，最后记录结果。客户 001 的口径内资产为 1,300 元，客户 002 为 950 元，五组回归全部通过。这是一次本机文件演练，工程师仍需审阅该版交付包后才能进入发布流程。
+
+CLI 使用原对话编号和所选变更的 `changeRequestId` 读取交付状态。准备前请核对回执的 `source.runId` 和 `requestId`。
+
+```sh
+shuduo agent chat-delivery --id INTENT_ID --change-request-id CHANGE_ID
+shuduo agent prepare-chat-delivery --id INTENT_ID --change-request-id CHANGE_ID \
+  --source-run-id CHILD_RUN_ID --request-id PREPARATION_UUID --confirm
+```
+
+MCP 对应 `agent_chat_change_delivery` 和 `agent_prepare_chat_change_delivery`。提交应答丢失后按原对话和变更编号读取，保留同一份包和演练记录。离线检查可用已核对的 `packageDigest` 和浏览器下载的 JSON。
+
+```sh
+node bin/shuduo-package.mjs unpack shuduo-delivery-package.json --output selected-delivery --digest PACKAGE_DIGEST
+node bin/shuduo-package.mjs plan selected-delivery --digest PACKAGE_DIGEST --scheduled-for 2026-09-11T09:00:00+08:00
+```
+
 ### 从已知开发版本创建派生任务
 
 沿用 `POST /api/v2/agent/tasks`，新增可选来源对象：

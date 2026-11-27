@@ -2,15 +2,28 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash,randomUUID } from "node:crypto";
 import { PROJECT,createV2Server } from "../../src/v2/server.mjs";
+import { V2Client } from "../../src/v2/client.mjs";
+import { readChatChangeDelivery,prepareChatChangeDelivery } from "../../src/v2/chat-change-delivery-client.mjs";
+import { runV2Cli } from "../../bin/shuduo.mjs";
+import { handleV2Mcp } from "../../bin/shuduo-mcp.mjs";
 import { createLocalSourceApiFixture } from "./fixtures/local-service-api-journey.mjs";
 import { seedContextDerivation } from "./fixtures/agent-context-derivation.mjs";
 
 // The existing derivation fixture models stored protocol records and counts
 // synthetic provider/Spark calls; this suite does not claim a live model.
-async function fixture(t) {
+async function fixture(t,{signed=false}={}) {
   const f=await createLocalSourceApiFixture();
   t.after(()=>f.dispose());
-  const actor="local-engineer",parent=seedContextDerivation(f.store,PROJECT,{actorId:actor});
+  let actor="local-engineer",sessionHeaders={};
+  if (signed) {
+    const credentials={email:'owner@example.invalid',password:'SyntheticChat#2027'};
+    const user=f.auth.bootstrapAdmin({...credentials,displayName:'虚构开发者'});
+    const login=f.auth.login(credentials);
+    actor=user.id;
+    sessionHeaders={cookie:'shuduo_session='+login.rawToken,'x-csrf-token':login.csrfToken};
+  }
+  const call=(path,body,{headers={}}={})=>f.call(path,body,{headers:{...sessionHeaders,...headers}});
+  const parent=seedContextDerivation(f.store,PROJECT,{actorId:actor});
   const objective="按全品类持仓和现金制作测试客户资产表";
   const intent=f.store.create("agent_intent",PROJECT,{submittedBy:actor,status:"SUCCEEDED",approvalMode:"REQUEST_APPROVAL",
     route:{steps:[{destinationId:"development",objective}]}});
@@ -21,7 +34,7 @@ async function fixture(t) {
   const path="/agent/intents/"+intent.id+"/development/changes";
   const body={message:"请改算股票和可用现金，保留仅有现金的客户",sql:parent.sql,language:"SPARK_SQL",contextId:"stock-cash-t1",
     derivation:parent.derivation,chatChange:{intentId:intent.id}};
-  return {...f,parent,intent,path,body,submit:(key,input=body)=>f.call("/agent/tasks",input,{headers:{"idempotency-key":key}})};
+  return {...f,call,parent,intent,path,body,submit:(key,input=body)=>call("/agent/tasks",input,{headers:{"idempotency-key":key}})};
 }
 
 test("the conversation recovers its submitted scope change, comparison and independent second request",async t=>{
@@ -133,4 +146,117 @@ test("a durable child can be recovered while still queued from the normal receip
     assert.equal((await fetch(base+f.path)).status,409);
     assert.equal(attempts,0);
   } finally {app.server.closeAllConnections();await new Promise(resolve=>app.server.close(resolve));app.dispose();}
+});
+
+test('the selected child has one independently rehearsed package; parent and foreign receipts cannot replace it',async t=>{
+  const f=await fixture(t);
+  const changeId=(await f.call(f.path)).body.nextRequestId;
+  const created=await f.submit(changeId);
+  const child=await f.poll('/agent/tasks/'+created.body.id,task=>task.status==='SUCCEEDED');
+  const path=f.path+'/'+changeId+'/delivery',view=(await f.call(path)).body;
+  assert.equal(view.status,'NOT_PREPARED');
+  assert.equal(view.source.taskId,child.id);
+  assert.equal(view.source.runId,child.runId);
+  assert.equal(view.parent.taskId,f.parent.task.id);
+  const send=(body={source:view.source,confirm:true},key=view.requestId)=>f.call(path,body,{headers:{'idempotency-key':key}});
+  assert.equal((await send({source:view.parent,confirm:true})).status,409);
+  assert.equal((await send({source:view.source,confirm:false})).status,422);
+  assert.equal((await send(undefined,randomUUID())).status,409);
+  assert.equal((await f.call(path+'?taskId='+f.parent.task.id)).status,422);
+  assert.equal((await f.call(path,undefined,{headers:{authorization:'Bearer unrelated-example'}})).status,403);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
+  const client=new V2Client({baseUrl:f.base});
+  const input={intentId:view.intentId,changeRequestId:changeId,sourceRunId:child.runId,requestId:view.requestId,confirm:true};
+  let lostWrites=0,notifyPost;
+  const posting=new Promise(resolve=>{notifyPost=resolve;});
+  const lostResponse={request:async(path,options)=>{
+    if (options?.method==='POST') notifyPost();
+    const answer=await client.request(path,options);
+    if (options?.method==='POST') {lostWrites++;throw Error('Simulated missing acknowledgement');}
+    return answer;
+  }};
+  await assert.rejects(prepareChatChangeDelivery(lostResponse,{...input,sourceRunId:view.parent.runId}));
+  await assert.rejects(prepareChatChangeDelivery(lostResponse,{...input,confirm:false}));
+  assert.equal(lostWrites,0);
+  const preparing=prepareChatChangeDelivery(lostResponse,input);
+  await Promise.race([posting,preparing]);
+  const [recovered,one,two]=await Promise.all([preparing,send(),send()]);
+  assert.equal(lostWrites,1);
+  assert.equal(recovered.delivery.id,one.body.delivery.id);
+  assert.ok([200,202].includes(one.status),one.body.error);
+  assert.ok([200,202].includes(two.status),two.body.error);
+  assert.equal(one.body.delivery.id,two.body.delivery.id);
+  const proof=await f.poll(path,item=>item.status==='SUCCEEDED');
+  assert.equal(proof.requestId,view.requestId);
+  assert.equal(proof.package.manifest.source.derivation.taskId,f.parent.task.id);
+  assert.equal(proof.package.manifest.source.revisionId,child.revisionId);
+  assert.equal(proof.package.files['main.sql'],child.sql);
+  assert.equal(Object.keys(proof.package.files).length,8);
+  assert.deepEqual(JSON.parse(proof.package.files['deployment.json']).runtime.version,'3.5.9');
+  assert.equal(proof.verification.validation.regressions.length,5);
+  assert.equal(proof.verification.testSqlValidation.sqlHash,proof.package.manifest.files['tests.sql'].sha256);
+  assert.equal(proof.verification.businessDate,'2026-09-10');
+  let output;
+  const command=['agent','chat-delivery','--id',view.intentId,'--change-request-id',changeId];
+  assert.equal(await runV2Cli(command,{},{client,output:value=>{output=JSON.parse(value);},error:()=>{}}),0);
+  assert.deepEqual(output,proof);
+  const rpc=await handleV2Mcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{
+    name:'agent_prepare_chat_change_delivery',arguments:input}},{client});
+  assert.deepEqual(JSON.parse(rpc).result.structuredContent,proof);
+  for (const change of [p=>{p.package.files['deployment.json']+=' ';},p=>{p.verification.executionOrder.reverse();},
+    p=>{p.verification.businessDate='2026-01-01';},p=>{p.source=p.parent;}]){
+    const altered=structuredClone(proof);change(altered);
+    await assert.rejects(readChatChangeDelivery({request:async()=>altered},input));
+  }
+  const schedule=JSON.parse(proof.package.files['schedule.json']);
+  assert.deepEqual(proof.verification.executionOrder,schedule.nodes.map(node=>node.id));
+  assert.equal(proof.verification.id,proof.delivery.verificationId);
+  assert.equal((await send()).body.delivery.id,proof.delivery.id);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,1);
+  assert.equal(f.store.list('delivery_verification',PROJECT).length,1);
+  assert.equal(f.store.list('release',PROJECT).length,0);
+  assert.equal(f.store.list('release_approval',PROJECT).length,0);
+  const verification=f.store.get('delivery_verification',proof.verification.id,PROJECT);
+  f.store.update('delivery_verification',verification.id,PROJECT,{rows:f.parent.run.rows});
+  assert.equal((await f.call(path)).status,409);
+  assert.equal((await send()).status,409);
+  f.store.update('delivery_verification',verification.id,PROJECT,{rows:verification.rows});
+  const bundle=f.store.get('delivery_package',proof.package.id,PROJECT);
+  f.store.update('delivery_package',bundle.id,PROJECT,{files:{...bundle.files,'schedule.json':'{}'}});
+  assert.ok([409,422].includes((await f.call(path)).status));
+  assert.deepEqual(f.counts,{syntheticModel:1,syntheticSpark:2});
+});
+
+test('a prior matching child rehearsal is reused and an interrupted request remains recoverable',async t=>{
+  const f=await fixture(t);
+  const id=(await f.call(f.path)).body.nextRequestId,created=await f.submit(id);
+  const child=await f.poll('/agent/tasks/'+created.body.id,item=>item.status==='SUCCEEDED');
+  const made=await f.call('/agent/tasks/'+child.id+'/prepare-delivery',{});
+  const delivery=await f.poll('/agent/deliveries/'+made.body.id,item=>item.status==='SUCCEEDED');
+  const path=f.path+'/'+id+'/delivery',view=(await f.call(path)).body;
+  assert.equal(view.delivery.id,delivery.id);
+  const submit=()=>f.call(path,{source:view.source,confirm:true},{headers:{'idempotency-key':view.requestId}});
+  const ledger=`${PROJECT}:agent-delivery:${child.id}:${view.requestId}`;
+  assert.equal(f.store.deduplicatedId(ledger),undefined);
+  assert.equal((await submit()).body.verification.id,delivery.verificationId);
+  assert.equal(f.store.deduplicatedId(ledger),delivery.id);
+  f.store.update('agent_delivery_task',delivery.id,PROJECT,{status:'INTERRUPTED',stage:'INTERRUPTED'});
+  assert.equal((await submit()).body.status,'INTERRUPTED');
+  assert.equal(f.store.list('delivery_verification',PROJECT).length,1);
+  assert.deepEqual(f.counts,{syntheticModel:1,syntheticSpark:2});
+});
+
+test('signed chat delivery requires the original development write privilege even when the user still owns the conversation',async t=>{
+  const f=await fixture(t,{signed:true});
+  const changeId=(await f.call(f.path)).body.nextRequestId;
+  const child=(await f.submit(changeId)).body;
+  await f.poll('/agent/tasks/'+child.id,task=>task.status==='SUCCEEDED');
+  const path=f.path+'/'+changeId+'/delivery', current=(await f.call(path)).body;
+  const actor=f.parent.actorId;
+  f.store.update('auth_user',actor,PROJECT,{memberships:[{projectId:PROJECT,role:'PRODUCT_MANAGER'}]});
+  assert.equal((await f.call(path)).body.status,'NOT_PREPARED');
+  const rejected=await f.call(path,{source:current.source,confirm:true},{headers:{'idempotency-key':current.requestId}});
+  assert.equal(rejected.status,403);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
+  assert.equal(f.store.list('delivery_verification',PROJECT).length,0);
 });

@@ -17,6 +17,23 @@ const obj=(x:unknown):x is Record<string,unknown>=>x!==null&&typeof x==='object'
 const uuid=(x:unknown):x is string=>typeof x==='string'&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(x);
 const digest=(x:unknown)=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
 const key=(x:unknown)=>typeof x==='string'&&/^chat-derive-v1-[a-f0-9]{64}$/.test(x);
+export function changeFromLocation(href:string,intentId:string):string|null|undefined {
+  const q=new URL(href).searchParams;
+  if(!q.has('chat_change'))return;
+  const id=q.get('chat_change');
+  if(q.getAll('chat_change').length!==1||q.getAll('chat_intent').length!==1||q.get('chat_intent')!==intentId||!key(id))return null;
+  return id;
+}
+export function changeLocation(href:string,intentId:string,requestId:string) {
+  if(!uuid(intentId)||!key(requestId))throw Error('请选择本次对话中的口径变更');
+  const url=new URL(href);
+  url.searchParams.set('chat_intent',intentId);
+  url.searchParams.set('chat_change',requestId);
+  return url;
+}
+export function chooseStoredChange<T extends {requestId:string}>(changes:T[],selection:string|null|undefined) {
+  return selection===undefined ? changes.at(-1) : changes.find(change=>change.requestId===selection);
+}
 const identifier=(x:unknown)=>typeof x==='string'&&/^[a-z][a-z0-9-]{0,127}$/.test(x);
 const text=(x:unknown,max:number)=>typeof x==='string'&&x.trim().length>0&&x.length<=max;
 const scope=(x:unknown)=>obj(x)&&identifier(x.id)&&text(x.name,200)&&text(x.definition,2000);

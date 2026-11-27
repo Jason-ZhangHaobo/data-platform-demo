@@ -41,6 +41,7 @@ import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelop
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { storedChatSqlDevelopment } from "./chat-sql-development.mjs";
 import { chatSqlChanges, acceptChatChange, validateChatChangeInput, chatChangeRequestKey, chatChangeLedger } from "./chat-sql-changes.mjs";
+import { selectChatChangeDelivery, checkChatDeliveryRequest, checkChatDeliveryBundle, storedChatChangeDelivery, retainChatChangeDelivery } from "./chat-change-delivery.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent, settleAgentDevelopmentResult } from "./durable-agent.mjs";
 import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,assertSqlRequirementPackageSource} from './sql-requirements.mjs';
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
@@ -6822,17 +6823,41 @@ export function createV2Server(options = {}) {
           return json(res, 200, get("agent_delivery_task", item.id));
         }
       }
-      const prepareAgentDelivery = path.match(
-        /^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/prepare-delivery$/,
-      );
-      if (prepareAgentDelivery && method === "POST") {
-        const preparationBody=await readBody(req),hasCalendar=Object.hasOwn(preparationBody,'calendarSelection');
+      const chatDeliveryRoute=path.match(/^\/api\/v2\/agent\/intents\/([a-f0-9-]{36})\/development\/changes\/(chat-derive-v1-[a-f0-9]{64})\/delivery$/);
+      let selectedChatDelivery;
+      const chatDeliveryView=()=>storedChatChangeDelivery(selectedChatDelivery,{store,project:PROJECT,artifacts:workflowDeliveryEvidence});
+      if (chatDeliveryRoute && (method==="GET" || method==="POST")) {
+        if (!local || options.ingress || !isLoopbackRequest(req)) throw fail(403,"会话内派生交付仅在本机原生 SQL 工作台开放");
+        if (url.searchParams.size) throw fail(422,"请从原对话中选择已完成的口径变更");
+        const submitted=method==="POST" ? await readBody(req) : undefined;
+        const intent=get("agent_intent",chatDeliveryRoute[1]);
+        const evidence=chatDevelopmentEvidence(req,intent);
+        selectedChatDelivery=selectChatChangeDelivery({state:chatChangeState(req,evidence),
+          changeRequestId:chatDeliveryRoute[2],store,project:PROJECT,actor:workspaceReadActor(req)});
+        requireDevelopmentOwner("revision",selectedChatDelivery.revision,req);
+        requireDevelopmentOwner("run",selectedChatDelivery.run,req);
+        const view=chatDeliveryView();
+        if (method==="GET") return json(res,200,view);
+        if (!localClassicSpark || selectedChatDelivery.task.executionMode===durableSqlAgentMode)
+          throw fail(403,"该任务须使用其既有持久交付入口");
+        if (auth.sessionFromHeaders(req.headers))
+          auth.requireMutation(req.headers,`/api/v2/agent/tasks/${selectedChatDelivery.source.taskId}/prepare-delivery`);
+        checkChatDeliveryRequest(selectedChatDelivery,submitted,req.headers["idempotency-key"]);
+        if (view.status!=="NOT_PREPARED") {
+          retainChatChangeDelivery(selectedChatDelivery,store,PROJECT,view.delivery.id);
+          return json(res,200,view);
+        }
+      }
+      const prepareTaskId=selectedChatDelivery?.source.taskId ??
+        path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9-]+)\/prepare-delivery$/)?.[1];
+      if (prepareTaskId && method === "POST") {
+        const preparationBody=selectedChatDelivery ? {} : await readBody(req),hasCalendar=Object.hasOwn(preparationBody,'calendarSelection');
         if(hasCalendar&&(!localClassicSpark||options.ingress||!isLoopbackRequest(req)))throw fail(403,'登记日历选择仅在本机原生SQL新交付开放');
-        const calendarRequest=hasCalendar?readAgentCalendarPreparation(preparationBody,prepareAgentDelivery[1]):undefined;
+        const calendarRequest=hasCalendar?readAgentCalendarPreparation(preparationBody,prepareTaskId):undefined;
         const calendarSelection=calendarRequest?.calendarSelection;
         if(calendarRequest&&!(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/).test(req.headers['idempotency-key']??''))throw fail(422,'日历交付须使用稳定请求UUID');
-        const expected = calendarRequest?undefined:readDeliveryPreparationSource(preparationBody,prepareAgentDelivery[1]);
-        const agent = get("agent", prepareAgentDelivery[1]),
+        const expected = calendarRequest?undefined:readDeliveryPreparationSource(preparationBody,prepareTaskId);
+        const agent = get("agent", prepareTaskId),
           finalAttempt = agent.attempts?.at(-1);
         requireDurableAgentOwner(agent, req);
         if (agent.syncInput) requireSyncSqlLocal(req);
@@ -6856,6 +6881,9 @@ export function createV2Server(options = {}) {
         if (agent.status !== "SUCCEEDED" || finalAttempt?.status !== "SUCCEEDED")
           throw fail(409, "只有代码Agent与独立断言通过后才能准备交付");
         const run = get("run", finalAttempt.runId), rev = get("revision", finalAttempt.revisionId);
+        if(selectedChatDelivery && (run.id!==selectedChatDelivery.source.runId ||
+          rev.id!==selectedChatDelivery.source.revisionId || rev.hash!==selectedChatDelivery.source.revisionHash))
+          throw fail(409,"子任务代码或运行已变化，请重新检查原对话");
         const fund = isFundContext(agent.contextId);
         if (fund) {
           assertPreparedFundSource({ agent, run, revision: rev });
@@ -6975,6 +7003,7 @@ export function createV2Server(options = {}) {
             const plan = validateDeliveryPackage(packageItem, packageItem.digest),
               scheduledFor = fundRehearsalAt(plan.source.contextId) ?? agentCalendarScheduledFor(plan,task.calendarSelection),
               occurrence = resolveDeliverySchedule(plan, scheduledFor);
+            if (selectedChatDelivery) checkChatDeliveryBundle(selectedChatDelivery,packageItem,plan);
             if (
               !occurrence.eligible ||
               occurrence.businessDate !== plan.fixtures.context.businessDate
@@ -7085,7 +7114,7 @@ export function createV2Server(options = {}) {
               throw new Error("交付文件演练失败，已保存运行编号供工程师检查");
             }
           });
-        return json(res, 202, publicAgentIntent(task));
+        return json(res,202,selectedChatDelivery ? chatDeliveryView() : publicAgentIntent(task));
       }
       const schemaRead = path.match(/^\/api\/v2\/runs\/([a-f0-9-]{36})\/output-schema$/);
       if (schemaRead && method === "GET") {
