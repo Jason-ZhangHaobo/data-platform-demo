@@ -141,6 +141,7 @@ const tools = [
   { name: "agent_intent_approval_list", description: "读取一个Data Agent意图中已批准和已绑定的专业步骤；不返回批准者内部标识。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name: "agent_intent_approval_create", description: "批准REQUEST_APPROVAL任务中的一个精确专业步骤；只生成版本绑定批准，不执行专业任务。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, destinationId: { type: "string" } }, required: ["intentId", "destinationId"] } },
   { name: "agent_intent_graph", description: "读取意图、逐步批准、专业任务绑定与状态组成的统一任务图；不返回原始任务描述、业务数据或批准者标识。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
+  { name:"agent_chat_sql_development", description:"读取本人对话所绑定的 SQL、代码版本、已保存的调试批次及断言。", inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"}},required:["intentId"],additionalProperties:false},annotations:{readOnlyHint:true} },
   { name: "agent_intent_cancel", description: "停止父意图的后续编排并撤销未绑定批准；已有专业子任务时拒绝，须分别处理。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name: "agent_specialist_cancel", description: "取消父意图中仍在排队或运行的指定专业子任务；保留父意图、批准、交接和取消证据。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, destinationId: { type: "string" } }, required: ["intentId", "destinationId"] } },
   { name: "agent_intent_handoff_list", description: "读取一个跨模块Agent意图的受控交接记录。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
@@ -474,6 +475,8 @@ async function callTool(name, args = {}, client=defaultClient) {
     );
   if (name === "agent_intent_graph")
     return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/graph`);
+  if (name === "agent_chat_sql_development")
+    return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/development`);
   if (name === "agent_intent_cancel")
     return client.request(
       `/agent/intents/${encodeURIComponent(args.intentId)}/cancel`,

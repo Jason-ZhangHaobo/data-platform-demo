@@ -1,0 +1,24 @@
+.chat-sql-development {display:grid;gap:10px;min-width:0;max-width:840px;margin:12px auto}
+.chat-sql-toggle {display:flex;align-items:center;gap:7px;justify-self:start;border:1px solid #bdcebf;background:#f7faf5;color:#244c39;border-radius:7px;padding:8px 10px;cursor:pointer;font:inherit;font-weight:600}
+.chat-sql-toggle[aria-expanded=true]>svg:last-child {transform:rotate(180deg)}
+.chat-sql-development>.button {justify-self:start;display:flex;align-items:center;gap:7px}
+.chat-sql-result {min-width:0;display:grid;gap:12px;padding:12px;background:#f5f8f3;border:1px solid #d7e1d5;border-radius:8px;color:#294434}
+.chat-sql-result h4,.chat-sql-result p,.chat-sql-result ol,.chat-sql-result ul {margin:0}
+.chat-sql-result h4 {font-size:14px}
+.chat-sql-identifiers,.chat-sql-result ol {display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px}
+.chat-sql-result pre {max-height:260px;min-width:0;overflow:auto;margin:0;padding:12px;border-radius:6px;background:#182b23;color:#ecf4ed;font-size:12px;line-height:1.6;white-space:pre}
+.chat-sql-result section {display:grid;gap:5px;min-width:0}
+.chat-sql-result section p,.chat-sql-result ul {font-size:12px;overflow-wrap:anywhere}
+.chat-sql-result ol,.chat-sql-result ul {list-style:none;padding:0}
+.chat-sql-result ol code {margin-left:5px}
+.chat-sql-result ul li {display:flex;align-items:baseline;justify-content:space-between;gap:8px;border-top:1px solid #dce5d9;padding:3px 0}
+.chat-sql-result strong[data-passed=false] {color:#944527}
+.chat-sql-footer {display:none}
+@media(max-width:600px){
+  body:has(.agent-os-v2[data-sql-chat]) .development-language-v2[aria-label="Agent 工作台范围"] {overflow-x:auto;min-height:44px;align-self:stretch}
+  body:has(.agent-os-v2[data-sql-chat]) .development-language-v2[aria-label="Agent 工作台范围"]>* {flex:0 0 auto;white-space:nowrap}
+  .agent-os-chat-v2:has(.chat-sql-result) {flex:1 0 auto}
+  .agent-os-thread-v2:has(.chat-sql-result) {padding:12px 8px;overflow:visible}
+  .agent-os-chat-v2:has(.chat-sql-result) .chat-sql-footer {display:flex;justify-content:flex-end;padding:6px 12px}
+  .agent-os-chat-v2:has(.chat-sql-result) .chat-sql-footer+.agent-os-composer-v2 {display:none}
+}

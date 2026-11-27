@@ -289,6 +289,7 @@ FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查�
 | GET /agent/intents | 受邀用户的跨模块Agent意图记录 | 路由、风险、摘要和模型用量；公网匿名拒绝读取 |
 | POST /agent/intents | message、可选 reportSource 和 approvalMode、幂等键 | 202；返回已保存意图，绑定来源的报表规划须沿同一批次执行 |
 | GET /agent/intent-requests/:requestId | 本人原报表会话请求编号 | 只读找回原意图、发布来源和消息摘要，其他账号无法借用 |
+| GET /agent/intents/:id/development | 本人已关联 SQL 开发任务的对话编号 | 从同一任务、代码与批次读取 SQL、摘要、调试尝试和回归断言。来源不一致时返回 409。CLI 为 `agent chat-development --id`，MCP 为 `agent_chat_sql_development` |
 | GET/POST /agent/intents/:id/approvals | 读取批准或destinationId + 幂等键 | REQUEST_APPROVAL持久化目标摘要哈希与风险；PLAN_ONLY拒绝。批准不执行工具，批准者内部标识不返回 |
 | GET /agent/intents/:id/graph | 无 | 从意图、批准、工具调用租约、交接和专业任务只读投影统一步骤图、恢复状态、尝试号、证据与完成数；未绑定成功不计完成，不返回原始需求/业务行或升级Agent自主E2E/公网状态 |
 | POST /agent/intents/:id/cancel | 空对象 | 停止未绑定子任务的父意图并撤销未消费批准；已有专业子任务时409，须分别控制子任务 |

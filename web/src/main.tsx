@@ -1011,7 +1011,8 @@ function App() {
             currentPythonCode={pythonCode}
             developmentLanguage={developmentLanguage}
             onDevelopmentLanguageChange={setDevelopmentLanguage}
-            onOpenDestination={(destination, handoffMessage) => {
+            onOpenDestination={(destination, handoffMessage, editorHref) => {
+              if(editorHref){location.assign(editorHref);return;}
               if (handoffMessage) setAgentHandoff({ destination, message: handoffMessage });
               setNav(destination);
               setNotice(handoffMessage ? "已带入专业Agent草稿；请在模块内审阅后再发起。" : "已进入对应专业模块；后续动作仍需模块内资源与权限校验");
