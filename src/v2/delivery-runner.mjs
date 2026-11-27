@@ -16,14 +16,12 @@ import { assertSyncSqlOutputSchema, syncSqlColumnDifferences, syncSqlColumnsMatc
 
 const fileHashes = bundle => Object.fromEntries(Object.entries(bundle.manifest.files).map(([name, entry]) => [name, entry.sha256]));
 
-export function assertSyncSqlRehearsal(plan, bundle, receipt, scheduledFor = receipt.scheduledFor) {
-  if (!plan.source.syncInput) return;
+export function matchesStoredHoldingsRehearsal(plan, bundle, receipt, scheduledFor = receipt.scheduledFor) {
   const family = { id: plan.source.validationContractId, contextIds: plan.fixtures.validationContexts.map(context => context.id) };
-  const invalid = () => Object.assign(Error("文件演练未证明原冻结批次的实际结果"), { status: 409, code: "SYNC_SQL_REHEARSAL_UNPROVEN" });
   const trace = plan.order.map(({id,kind}) => ({id,kind,status:"SUCCEEDED"}));
   let occurrence;
   try { occurrence = resolveDeliverySchedule(plan, scheduledFor); }
-  catch { throw invalid(); }
+  catch { return false; }
   if (receipt.status !== "SUCCEEDED" || receipt.testDouble === true || receipt.mainSqlExecuted !== true ||
       receipt.engine !== "Apache Spark" || receipt.engineVersion !== plan.deployment.runtime.version ||
       receipt.packageDigest !== plan.digest || !isDeepStrictEqual(receipt.source, plan.source) ||
@@ -32,9 +30,15 @@ export function assertSyncSqlRehearsal(plan, bundle, receipt, scheduledFor = rec
       !isDeepStrictEqual(receipt.workflowTrace, trace) ||
       !isDeepStrictEqual(receipt.fileHashes, fileHashes(bundle)) ||
       receipt.testSqlValidation?.passed !== true || receipt.testSqlValidation.sqlHash !== sha256(bundle.files["tests.sql"]) ||
-      !validationMatchesFamily(receipt.validation, family) || receipt.validation.selectedPassed !== true ||
-      !syncSqlRowsMatch(receipt.rows, plan.fixtures.context))
-    throw invalid();
+      !validationMatchesFamily(receipt.validation, family) || !syncSqlRowsMatch(receipt.rows, plan.fixtures.context))
+    return false;
+  return true;
+}
+
+export function assertSyncSqlRehearsal(plan, bundle, receipt, scheduledFor = receipt.scheduledFor) {
+  if (!plan.source.syncInput) return;
+  if (!matchesStoredHoldingsRehearsal(plan,bundle,receipt,scheduledFor) || receipt.validation.selectedPassed !== true)
+    throw Object.assign(Error("文件演练未证明原冻结批次的实际结果"), {status:409,code:"SYNC_SQL_REHEARSAL_UNPROVEN"});
   assertSyncSqlOutputSchema(receipt.columns);
 }
 

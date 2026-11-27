@@ -1,16 +1,17 @@
-import {useEffect,useRef,useState} from 'react';
+import {lazy,Suspense,useEffect,useRef,useState} from 'react';
 import {ArrowRight,GitBranch} from 'lucide-react';
 import {checkedDerivedComparison,type DerivedResultComparison} from '../../src/v2/derived-comparison-client.mjs';
 import {DerivedAmountReport} from './DerivedAmountComparison';
 import {RunComparisonCode} from './RunComparisonCode';
-import {acceptedChange,changeIsRunning,readChanges,recommendedTarget,reviewChange,submitReviewedChange,
+import {acceptedChange,changeFromLocation,changeIsRunning,changeLocation,chooseStoredChange,readChanges,recommendedTarget,reviewChange,submitReviewedChange,
   type ChangeApi,type ChangeReview,type Changes,type ChatChange} from './chat-context-change';
 import './chat-scope-change.css';
 
 const states:Record<string,string>={QUEUED:'已排队',RUNNING:'运行中',SUCCEEDED:'已完成',FAILED:'失败',
   VALIDATION_FAILED:'断言未通过',INTERRUPTED:'已中断',CANCELLED:'已取消',NEEDS_CLARIFICATION:'等待口径确认'};
+const ChatChangeDelivery=lazy(()=>import('./ChatChangeDelivery'));
 
-function ChangeResult({api,history,change}:{api:ChangeApi;history:Changes;change:ChatChange}){
+function ChangeResult({api,history,change,canPrepare,isCurrent,onPin}:{api:ChangeApi;history:Changes;change:ChatChange;canPrepare?:boolean;isCurrent:()=>boolean;onPin:()=>void}){
   const [comparison,setComparison]=useState<DerivedResultComparison>(),[error,setError]=useState('');
   const [retry,setRetry]=useState(0);
   const b=history.binding,c=change;
@@ -40,21 +41,31 @@ function ChangeResult({api,history,change}:{api:ChangeApi;history:Changes;change
     </div>
     {comparison&&<section className="derived-amount-panel" aria-label="派生口径金额对照"><DerivedAmountReport report={comparison}/></section>}
     {comparison?.state==='MATCHED'&&<RunComparisonCode api={api} derived={comparison}/>}
+    {comparison?.state==='MATCHED'&&canPrepare!==undefined&&<Suspense fallback={<p role="status">正在读取派生版本交付…</p>}>
+      <ChatChangeDelivery api={api} intentId={b.intentId} changeRequestId={c.requestId} parent={comparison.parent} child={comparison.child}
+        canPrepare={canPrepare} isCurrent={isCurrent} onPin={onPin}/>
+    </Suspense>}
     {error&&<p role="alert">{error} <button className="button" onClick={()=>setRetry(n=>n+1)}>刷新金额对照</button></p>}
     {c.status==='SUCCEEDED'&&!comparison&&!error&&<p role="status">{c.revisionId&&c.runId&&c.revisionHash?'正在读取已保存的两次运行…':'新版本与批次仍待核对。'}</p>}
   </article>;
 }
 
-type Props={api:ChangeApi;intentId:string;taskId:string;canSubmit:boolean;isCurrent:()=>boolean};
-export default function ChatScopeChange({api,intentId,taskId,canSubmit,isCurrent}:Props) {
+type Props={api:ChangeApi;intentId:string;taskId:string;canSubmit:boolean;canPrepare?:boolean;isCurrent:()=>boolean};
+export default function ChatScopeChange({api,intentId,taskId,canSubmit,canPrepare,isCurrent}:Props) {
   const [history,setHistory]=useState<Changes>(),[error,setError]=useState(''),[retry,setRetry]=useState(0);
-  const [selected,setSelected]=useState(''),[target,setTarget]=useState(''),[message,setMessage]=useState('');
+  const [selected,setSelected]=useState(()=>typeof location==='undefined'?undefined:changeFromLocation(location.href,intentId));
+  const [target,setTarget]=useState(''),[message,setMessage]=useState('');
   const [review,setReview]=useState<ChangeReview>(),[working,setWorking]=useState(false),[notice,setNotice]=useState('');
   const [unknown,setUnknown]=useState(false);
   const live=useRef(false),sending=useRef(false),readEpoch=useRef(0);
   const writeAccess=useRef(canSubmit);
   writeAccess.current=canSubmit;
   const current=()=>live.current&&isCurrent();
+  function selectChange(requestId:string) {
+    if(!current())return;
+    setSelected(requestId);
+    window.history.replaceState(null,'',changeLocation(location.href,intentId,requestId));
+  }
   const running=history?.changes.some(c=>changeIsRunning(c.status));
   async function load(){
     const ticket=++readEpoch.current;
@@ -87,7 +98,7 @@ export default function ChatScopeChange({api,intentId,taskId,canSubmit,isCurrent
     if(!result||!live.current)return false;
     const accepted=acceptedChange(result,original);
     if(accepted){
-      setSelected(accepted.requestId);setReview(undefined);setMessage('');setUnknown(false);setNotice('');
+      selectChange(accepted.requestId);setReview(undefined);setMessage('');setUnknown(false);setNotice('');
       return true;
     }
     return false;
@@ -108,17 +119,24 @@ export default function ChatScopeChange({api,intentId,taskId,canSubmit,isCurrent
     }catch(cause){if(current()){setUnknown(true);setNotice((cause as Error).message);}}
     finally{sending.current=false;if(current())setWorking(false);}
   }
-  const chosen=history?.changes.find(c=>c.requestId===selected)??history?.changes.at(-1);
-  const canCreate=canSubmit&&Boolean(history?.eligible&&history.nextRequestId);
+  const chosen=history&&chooseStoredChange(history.changes,selected);
+  const missingSelection=Boolean(history&&selected!==undefined&&!chosen);
+  const canCreate=canSubmit&&!missingSelection&&Boolean(history?.eligible&&history.nextRequestId);
   const safeRetry=unknown&&Boolean(review&&history?.nextRequestId===review.requestId&&!history.changes.some(c=>c.requestId===review.requestId));
   return <section className="chat-scope-change" aria-label="在原对话修改业务口径">
     <header><GitBranch size={16}/><h3>{review?'审阅口径变更':chosen?'口径变更记录':'修改业务口径'}</h3></header>
     {error&&<p role="alert">{error} <button className="button" onClick={()=>setRetry(n=>n+1)}>重新读取变更记录</button></p>}
     {!history&&!error&&<p role="status">正在核对原版本和已登记的变更…</p>}
     {history&&<>
-      {!review&&history.changes.length>1&&<label>已提交的变更<select aria-label="已提交的变更" value={chosen?.requestId??''} onChange={e=>setSelected(e.target.value)}>
+      {missingSelection&&<p role="alert">此对话中未找到链接指定的变更。 <button type="button" className="button" onClick={()=>{
+        const url=new URL(location.href);url.searchParams.delete('chat_change');
+        window.history.replaceState(null,'',url);setSelected(undefined);
+      }}>回到当前会话</button></p>}
+      {!review&&(history.changes.length>1||missingSelection&&history.changes.length>0)&&<label>已提交的变更<select aria-label="已提交的变更" value={chosen?.requestId??''} onChange={e=>selectChange(e.target.value)}>
+        {!chosen&&<option value="" disabled>选择一项变更</option>}
         {history.changes.map((c,i)=><option key={c.requestId} value={c.requestId}>{i+1} · {c.message}</option>)}</select></label>}
-      {chosen&&!review&&<ChangeResult key={[chosen.requestId,chosen.status,chosen.revisionId,chosen.runId,chosen.revisionHash].join(':')} api={api} history={history} change={chosen}/>}
+      {chosen&&!review&&<ChangeResult key={[history.binding.runId,history.binding.revisionHash,chosen.requestId,chosen.status,chosen.revisionId,chosen.runId,chosen.revisionHash].join(':')} api={api}
+        history={history} change={chosen} canPrepare={canPrepare} isCurrent={isCurrent} onPin={()=>selectChange(chosen.requestId)}/>}
       {review?<section className="chat-change-review" aria-label="审阅口径变更">
         <p>{review.message}</p>
         <dl><dt>原口径</dt><dd>{review.source.name} · 版本 <code>{review.binding.revisionId.slice(0,8)}</code> · 批次 <code>{review.binding.runId.slice(0,8)}</code></dd>
@@ -137,7 +155,7 @@ export default function ChatScopeChange({api,intentId,taskId,canSubmit,isCurrent
           <option value="">选择已登记口径</option>{history.targets.map(t=><option key={t.id} value={t.id}>{t.name}{t.recommended?'（同一测试场景）':''}</option>)}
         </select></label>
         <button className="button" disabled={!target||message.trim().length<4} type="submit">审阅口径变更<ArrowRight size={14}/></button>
-      </form>:!chosen&&<p role="status">{history.reason??(canSubmit?'当前没有可提交的目标口径。':'当前会话可查看已保存的口径变更。')}</p>}
+      </form>:!chosen&&!missingSelection&&<p role="status">{history.reason??(canSubmit?'当前没有可提交的目标口径。':'当前会话可查看已保存的口径变更。')}</p>}
     </>}
     {notice&&<p role="status">{notice}</p>}
   </section>;

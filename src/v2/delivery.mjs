@@ -14,17 +14,9 @@ import { assertSyncSqlOutputSchema, syncSqlContractId, syncSqlContextId, syncSql
 import { checkedDeliveryDerivation } from "./agent-context-derivation.mjs";
 import {deliverySourceExecutionIssue,supportedDeliverySparkVersion} from './delivery-source-evidence.mjs';
 
+import { deliveryFiles } from "./delivery-file-bytes.mjs";
+export { deliveryFiles };
 export const deliveryFormat = "shuduo-delivery/v1";
-export const deliveryFiles = [
-  "main.sql",
-  "tests.sql",
-  "schedule.json",
-  "deployment.json",
-  "calendar.json",
-  "fixtures.json",
-  "validation.json",
-  "README.md",
-];
 export const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 // Worker receipts historically omit contractId. When present it must match;
 // the independently selected family still requires its exact five cases.

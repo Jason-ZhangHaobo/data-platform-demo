@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';
-import {acceptedChange,readChanges,recommendedTarget,reviewChange,submitReviewedChange} from '../../web/src/chat-context-change.ts';
+import {acceptedChange,changeFromLocation,changeLocation,chooseStoredChange,readChanges,recommendedTarget,reviewChange,submitReviewedChange} from '../../web/src/chat-context-change.ts';
 
 function fixture() {
   const sql='SELECT 1 AS fictional_total';
@@ -17,6 +17,22 @@ function fixture() {
     validation:{state:'PASSED',contractId:'securities-assets-five-fixtures-2026-09-14',regressions:[{contextId:'holdings-t1',passed:true}]}};
   return {snapshot,original,sql};
 }
+
+test('the chosen delivery branch survives reopening and an absent or foreign change never falls back to a different branch',()=>{
+  const {snapshot}=fixture(),intentId=snapshot.binding.intentId;
+  const changes=['a','b'].map(c=>({requestId:'chat-derive-v1-'+c.repeat(64)}));
+  const start='https://example.invalid/v2/?module=agent-center#agent-chat';
+  const link=changeLocation(start,intentId,changes[0].requestId);
+  assert.equal(link.hash,'#agent-chat');
+  assert.equal(chooseStoredChange(changes,changeFromLocation(start,intentId)),changes[1]);
+  assert.equal(chooseStoredChange(changes,changeFromLocation(link.href,intentId)),changes[0]);
+  assert.equal(chooseStoredChange([changes[1]],changeFromLocation(link.href,intentId)),undefined);
+  assert.equal(chooseStoredChange(changes,changeFromLocation(link.href,randomUUID())),undefined);
+  link.searchParams.append('chat_change',changes[1].requestId);
+  assert.equal(changeFromLocation(link.href,intentId),null);
+  assert.equal(chooseStoredChange(changes,null),undefined);
+  assert.throws(()=>changeLocation(start,intentId,'unbound'));
+});
 
 test('the reviewed edit fixes the original version, target definition, user request and idempotency key',async()=>{
   const {snapshot,original,sql}=fixture(),calls=[];

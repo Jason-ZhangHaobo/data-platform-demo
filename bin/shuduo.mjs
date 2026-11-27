@@ -43,6 +43,7 @@ import {agentExecutionEvidencePath} from "../src/v2/agent-execution-evidence.mjs
 import {serviceSourceReadPath} from "../src/v2/service-source-request.mjs";
 import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} from '../src/v2/agent-consumption-request.mjs';
 import {createContextDerivedTask,readChatScopeChanges,submitChatScopeChange} from "../src/v2/agent-derivation-client.mjs";
+import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-change-delivery-client.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -94,6 +95,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent chat-development --id INTENT_ID
   shuduo agent chat-changes --id INTENT_ID
   shuduo agent change-chat-scope --id INTENT_ID --source-run-id ORIGINAL_RUN_ID --context CONTEXT_ID --message REQUEST --request-id NEXT_REQUEST_ID --confirm
+  shuduo agent chat-delivery --id INTENT_ID --change-request-id CHANGE_ID
+  shuduo agent prepare-chat-delivery --id INTENT_ID --change-request-id CHANGE_ID --source-run-id CHILD_RUN_ID --request-id PREPARATION_UUID --confirm
   shuduo agent cancel-intent --id INTENT_ID
   shuduo agent cancel-child --id INTENT_ID --destination MODULE_ID
   shuduo agent handoffs --id INTENT_ID
@@ -624,6 +627,12 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: { destinationId: required(parsed.options, "destination") },
         },
       );
+    else if (resource==="agent" && ["chat-delivery","prepare-chat-delivery"].includes(action)) {
+      const selection={intentId:required(parsed.options,"id"),changeRequestId:required(parsed.options,"change_request_id")};
+      result=action==="chat-delivery" ? await readChatChangeDelivery(client,selection)
+        : await prepareChatChangeDelivery(client,{...selection,sourceRunId:required(parsed.options,"source_run_id"),
+          requestId:required(parsed.options,"request_id"),confirm:parsed.options.confirm});
+    }
     else if (resource === "agent" && action === "chat-changes")
       result=await readChatScopeChanges(client,{intentId:required(parsed.options,"id")});
     else if (resource === "agent" && action === "change-chat-scope")

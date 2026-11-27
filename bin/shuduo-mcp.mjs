@@ -34,6 +34,7 @@ import {readBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import{publishedReportSourceSchema,publishedReportMetricIds}from'../src/v2/published-report-request.mjs';
 import {createContextDerivedTask,readChatScopeChanges,submitChatScopeChange} from "../src/v2/agent-derivation-client.mjs";
+import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-change-delivery-client.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -143,6 +144,8 @@ const tools = [
   { name: "agent_intent_graph", description: "读取意图、逐步批准、专业任务绑定与状态组成的统一任务图；不返回原始任务描述、业务数据或批准者标识。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name:"agent_chat_sql_development", description:"读取本人对话所绑定的 SQL、代码版本、已保存的调试批次及断言。", inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"}},required:["intentId"],additionalProperties:false},annotations:{readOnlyHint:true} },
   { name:"agent_chat_scope_changes", description:"查询原开发对话的来源、可选口径和已经提交的变更。", inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"}},required:["intentId"],additionalProperties:false},annotations:{readOnlyHint:true} },
+  {name:"agent_chat_change_delivery",description:"从原会话读取指定口径变更的交付文件和已保存的演练记录。",inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"}},required:["intentId","changeRequestId"],additionalProperties:false},annotations:{readOnlyHint:true}},
+  {name:"agent_prepare_chat_change_delivery",description:"明确确认后为选定的派生版本准备交付文件并进行文件演练，可能运行 Spark。",inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"},sourceRunId:{type:"string",format:"uuid"},requestId:{type:"string",format:"uuid"},confirm:{const:true}},required:["intentId","changeRequestId","sourceRunId","requestId","confirm"],additionalProperties:false},annotations:{readOnlyHint:false}},
   { name:"agent_change_chat_scope", description:"按审阅过的会话来源和目标口径创建独立开发任务。可能运行模型与 Spark。请求结果未知时，从原会话查询变更记录。", inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},sourceRunId:{type:"string",format:"uuid"},contextId:{type:"string"},message:{type:"string",minLength:4,maxLength:2000},requestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"},confirm:{const:true}},required:["intentId","sourceRunId","contextId","message","requestId","confirm"],additionalProperties:false},annotations:{readOnlyHint:false} },
   { name: "agent_intent_cancel", description: "停止父意图的后续编排并撤销未绑定批准；已有专业子任务时拒绝，须分别处理。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name: "agent_specialist_cancel", description: "取消父意图中仍在排队或运行的指定专业子任务；保留父意图、批准、交接和取消证据。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, destinationId: { type: "string" } }, required: ["intentId", "destinationId"] } },
@@ -480,6 +483,8 @@ async function callTool(name, args = {}, client=defaultClient) {
   if (name === "agent_chat_sql_development")
     return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/development`);
   if (name === "agent_chat_scope_changes") return readChatScopeChanges(client,args);
+  if (name === "agent_chat_change_delivery") return readChatChangeDelivery(client,args);
+  if (name === "agent_prepare_chat_change_delivery") return prepareChatChangeDelivery(client,args);
   if (name === "agent_change_chat_scope") return submitChatScopeChange(client,args);
   if (name === "agent_intent_cancel")
     return client.request(
