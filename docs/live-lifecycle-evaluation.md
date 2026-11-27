@@ -377,6 +377,8 @@ CLI 对应 `shuduo agent publish --id TASK_ID --file REVIEW_JSON --request-id RE
 
 报告读取已有证据，不重查远端。报告中的 `willExecute:false` 和 `executionAuthorized:false` 分别表示未执行与未授权。
 
+`score.highestPossibleCloudSuccesses` 从冻结分母扣除已结算失败，以及原父案例失败而无法续接的派生案例。`score.highestPossibleDirectAutonomousSuccesses` 再扣除有确切创建者人工推进证据的受邀完成案例。未确认来源暂保留在上界里。`reviewedCloudCountTargetReachable` 与 `directAutonomousCountTargetReachable` 只比较对应上界与 17 例门槛，可在审批新的付费窗口前判断本轮还有多少余量。覆盖率和最终完成率仍按各自原规则计算。
+
 ### 逐例续接固定基础案例
 
 ```sh
