@@ -1170,6 +1170,16 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
   }, {reconcile:true});
 }
 
+function cloudV3PostMonitoringHandoff(state,item) {
+  const {pendingBatchIds,unconfirmedBatchIds}=cloudV3ConsumptionReadiness(state,item);
+  if (unconfirmedBatchIds.length)
+    return {step:"CONSUMPTION",status:"HANDOFF_REQUIRED",reason:"ORIGINAL_CONSUMPTION_EVIDENCE_UNCONFIRMED",
+      pendingBatchIds,unconfirmedBatchIds};
+  if (pendingBatchIds.length)
+    return {step:"CONSUMPTION",status:"HANDOFF_REQUIRED",reason:"ORIGINAL_CONSUMPTION_EVIDENCE_REQUIRED",pendingBatchIds};
+  return {step:"COMPLETION",status:"HANDOFF_REQUIRED",reason:"ORIGINAL_CONSUMPTION_REPORTS_REQUIRED"};
+}
+
 export async function reconcileCloudV3ReadOnly(path, client) {
   const {state,item,action} = snapshot(client,path);
   const {publication,delivery} = item.actions;
@@ -1192,15 +1202,17 @@ export async function reconcileCloudV3ReadOnly(path, client) {
   if (action.status !== "CONFIRMED")
     return respond("CREATION",await continueCloudV3Start(path,reader,{reconcile:true}));
   if (publication || item.rehearsal?.status === "SUCCEEDED") {
-    if (!validCloudV3Monitoring(publication))
-      return respond("PUBLICATION",await submitCloudV3Publication(path,reader,{reconcile:true,workbench:true}));
-    const {pendingBatchIds,unconfirmedBatchIds}=cloudV3ConsumptionReadiness(state,item);
-    if (unconfirmedBatchIds.length)
-      return respond("CONSUMPTION",{...stored("HANDOFF_REQUIRED","ORIGINAL_CONSUMPTION_EVIDENCE_UNCONFIRMED"),
-        pendingBatchIds,unconfirmedBatchIds});
-    if (pendingBatchIds.length)
-      return respond("CONSUMPTION",{...stored("HANDOFF_REQUIRED","ORIGINAL_CONSUMPTION_EVIDENCE_REQUIRED"),pendingBatchIds});
-    return respond("COMPLETION",stored("HANDOFF_REQUIRED","ORIGINAL_CONSUMPTION_REPORTS_REQUIRED"));
+    if (validCloudV3Monitoring(publication)) {
+      const handoff=cloudV3PostMonitoringHandoff(state,item);
+      return respond(handoff.step,{...stored(handoff.status,handoff.reason),...handoff});
+    }
+    const observation=respond("PUBLICATION",await submitCloudV3Publication(path,reader,{reconcile:true,workbench:true}));
+    if (observation.publication?.monitoringStatus !== "VERIFIED") return observation;
+    const current=snapshot(client,path);
+    const recorded=current.item.actions.publication;
+    if (recorded?.id !== observation.publication.releaseId || recorded.cancelled || !validCloudV3Monitoring(recorded))
+      return observation;
+    return {...observation,next:cloudV3PostMonitoringHandoff(current.state,current.item)};
   }
   return respond("DEVELOPMENT_AND_DELIVERY",await inspectCloudV3Execution(path,reader,{workbench:true}));
 }
