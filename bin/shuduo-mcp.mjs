@@ -301,7 +301,7 @@ const tools = [
   { name: "stream_job_create", description: "创建绑定源版本的实时任务草稿，不自动启动。", inputSchema: { type: "object", properties: { name: { type: "string" }, sourceId: { type: "string" }, targetTable: { type: "string" }, checkpointEvery: { type: "integer", minimum: 1, maximum: 100 }, maxOutOfOrderSeconds: { type: "integer", minimum: 0, maximum: 300 } }, required: ["name", "sourceId", "targetTable"] } },
   { name: "stream_job_start", description: "启动指定实时任务。依据已登记适配器运行 JSONL 或本机 Kafka / Flink 验收。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
   { name: "stream_job_stop", description: "停止当前运行中的实时任务并保留终止证据。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
-  { name: "stream_job_recover", description: "校验Checkpoint前缀后从指定修正版本断点恢复。", inputSchema: { type: "object", properties: { jobId: { type: "string" }, sourceRevisionId: { type: "string" } }, required: ["jobId", "sourceRevisionId"] } },
+  { name: "stream_job_recover", description: "从修正日志版本或原持续窗口运行的保存点恢复。", inputSchema: { type: "object", properties: { jobId: { type: "string" }, sourceRevisionId: { type: "string" }, liveSourceRunId: { type: "string" } }, required: ["jobId"], oneOf:[{required:["sourceRevisionId"]},{required:["liveSourceRunId"]}] } },
   { name: "stream_job_state", description: "读取实时任务实际物化的最新证券状态。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
   { name: "stream_job_checkpoints", description: "读取实时任务持久Checkpoint证据。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
   { name: "stream_monitor", description: "读取延迟、吞吐、运行状态和告警；明确本机适配器边界。", inputSchema: { type: "object", properties: {} } },
@@ -888,14 +888,17 @@ async function callTool(name, args = {}, client=defaultClient) {
       `/streams/jobs/${encodeURIComponent(args.jobId)}/${name === "stream_job_start" ? "start" : "stop"}`,
       { method: "POST", body: {} },
     );
-  if (name === "stream_job_recover")
+  if (name === "stream_job_recover") {
+    if ((args.sourceRevisionId===undefined)===(args.liveSourceRunId===undefined))
+      throw new Error("须选择单一日志版本或原持续窗口运行");
     return client.request(
       `/streams/jobs/${encodeURIComponent(args.jobId)}/recover`,
       {
         method: "POST",
-        body: { sourceRevisionId: args.sourceRevisionId },
+        body: args.liveSourceRunId===undefined ? {sourceRevisionId:args.sourceRevisionId} : {liveSourceRunId:args.liveSourceRunId},
       },
     );
+  }
   if (["stream_job_state", "stream_job_checkpoints"].includes(name))
     return client.request(
       `/streams/jobs/${encodeURIComponent(args.jobId)}/${name === "stream_job_state" ? "state" : "checkpoints"}`,

@@ -244,17 +244,18 @@ test("live windows become readable while running and only confirm stop with a sa
   const stateStore=new StreamStateStore(join(root,"stream.sqlite"));
   const sqlDigest="a".repeat(64), flinkJobId="b".repeat(32);
   const windowRows=[{window_start_utc:"2026-09-14 09:30:00",security_code:"SEC-DEMO-001",event_count:1,total_volume:10}];
-  const frame={protocol:"shuduo-live-window-stream/v1",state:"RUNNING",sqlDigest,flinkJobId,sourcePartitions:2,
+  const frame={protocol:"shuduo-live-window-stream/v1",state:"RUNNING",sqlDigest,flinkJobId,planDigest:"e".repeat(64),sourcePartitions:2,
     committedWindowCount:1,windowRows};
   let stopConfirmed=true, calls=0, ready;
-  const runner=Object.assign(({signal,onProgress})=>new Promise((resolve,reject)=>{
+  const runner=Object.assign(({signal,onProgress,restore})=>new Promise((resolve,reject)=>{
     calls++;
-    ready=()=>onProgress(frame);
+    const active=restore ? {...frame,flinkJobId:"d".repeat(32),restoredSavepointDigest:restore.savepointDigest} : frame;
+    ready=()=>onProgress(active);
     signal.addEventListener("abort",()=>{
-      if (stopConfirmed) resolve({...frame,state:"STOPPED",savepointDigest:"c".repeat(64)});
+      if (stopConfirmed) resolve({...active,state:"STOPPED",savepointDigest:"c".repeat(64)});
       else reject(new Error("LIVE_WINDOW_STOP_UNCONFIRMED"));
     },{once:true});
-  }),{liveSqlDigest:sqlDigest});
+  }),{liveSqlDigest:sqlDigest,verifyLiveRestore:(id,evidence)=>({savepointDigest:evidence.savepointDigest})});
   const server=await start({store,stateStore,kafkaFlinkRunner:runner});
   t.after(async()=>{
     await new Promise(resolve=>server.app.server.close(resolve));
@@ -278,6 +279,21 @@ test("live windows become readable while running and only confirm stop with a sa
   const stopped=await waitForJob(server.base,job.id,"STOPPED");
   assert.equal(stopped.checkpoints[0].stateHash,"c".repeat(64));
   assert.equal(stopped.checkpoints[0].flinkJobId,flinkJobId);
+
+  const unrelated="00000000-0000-4000-8000-000000000001";
+  assert.equal((await request(server.base,path+"/recover",{liveSourceRunId:unrelated},"live-unrelated")).status,409);
+  const resumed=await request(server.base,path+"/recover",{liveSourceRunId:started.body.id},"live-resume");
+  assert.equal(resumed.status,202);
+  assert.equal(resumed.body.liveSourceRunId,started.body.id);
+  ready();
+  const continued=await waitForJob(server.base,job.id,"RUNNING");
+  assert.equal(continued.liveWindow.restoredSavepointDigest,stopped.liveWindow.savepointDigest);
+  assert.notEqual(continued.liveWindow.flinkJobId,flinkJobId);
+  assert.equal((await request(server.base,path+"/recover",{liveSourceRunId:started.body.id},"live-resume")).body.id,resumed.body.id);
+  assert.equal(calls,2);
+  assert.equal((await request(server.base,path+"/stop",{})).status,202);
+  await waitForJob(server.base,job.id,"STOPPED");
+  assert.equal((await request(server.base,path+"/recover",{liveSourceRunId:started.body.id},"live-reuse")).status,409);
 
   stopConfirmed=false;
   assert.equal((await request(server.base,path+"/start",{},"live-2")).status,202);

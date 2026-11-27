@@ -2923,13 +2923,17 @@ export function createV2Server(options = {}) {
           );
         }
         if (method === "POST" && action === "recover") {
-          const body = await readBody(req),
-            sourceRevisionId = text(body.sourceRevisionId, 1, 80),
+          const body = await readBody(req);
+          if (job.liveWindowEnabled && (!body || typeof body!=="object" || Object.keys(body).length!==1 ||
+              typeof body.liveSourceRunId!=="string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(body.liveSourceRunId)))
+            throw fail(422,"持续窗口接续须提供唯一原运行编号");
+          const source = job.liveWindowEnabled ? {liveSourceRunId:body.liveSourceRunId}
+            : {sourceRevisionId:text(body.sourceRevisionId, 1, 80)},
             requestKey = text(req.headers["idempotency-key"], 1, 100),
             requestSignature = hash(
               JSON.stringify({
                 jobId: job.id,
-                sourceRevisionId,
+                ...source,
                 action: "recover",
               }),
             );
@@ -2938,7 +2942,7 @@ export function createV2Server(options = {}) {
             202,
             realtime.recoverJob(
               job.id,
-              { sourceRevisionId },
+              source,
               { requestKey, requestSignature },
             ),
           );

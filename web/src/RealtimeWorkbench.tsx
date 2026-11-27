@@ -122,6 +122,8 @@ type StreamJob = {
     committedWindowCount: number;
     windowRows: StreamWindowRow[];
     savepointDigest?: string;
+    planDigest?: string;
+    restoredSavepointDigest?: string;
   };
   engineEvidence?: {
     runId: string;
@@ -225,6 +227,7 @@ function KafkaFlinkJobEvidence({job}:{job:StreamJob}) {
           <div className="stream-checkpoints"><article><Clock3 size={14}/><div>
             <strong>{live.savepointDigest ? "保存点已确认" : "作业编号"}</strong>
             <code title={live.flinkJobId}>{live.flinkJobId.slice(0,12)}</code>
+            {live.restoredSavepointDigest && <code title={live.restoredSavepointDigest}>原保存点 {live.restoredSavepointDigest.slice(0,12)}</code>}
             {live.savepointDigest && <code title={live.savepointDigest}>SHA-256 {live.savepointDigest.slice(0,12)}</code>}
           </div></article></div>
         </section>
@@ -271,7 +274,8 @@ function KafkaFlinkJobEvidence({job}:{job:StreamJob}) {
         <span className={`status-pill ${run.status.toLowerCase()}`}>{labels[run.status] ?? run.status}</span>
         <code title={run.id}>{run.id.slice(0,8)}</code>
         <div><strong>{run.error ?? (run.liveSqlDigest ? "持续行情窗口" : "本机行情恢复验收")}</strong></div>
-        <small>{run.errorCode ?? (run.durationMs === undefined ? "等待引擎回执" : `${compact(run.durationMs / 1000)} 秒`)}</small>
+        <small>{run.errorCode ?? (run.durationMs === undefined ?
+          live?.runId === run.id ? "持续接收中" : "等待引擎回执" : `${compact(run.durationMs / 1000)} 秒`)}</small>
       </article>)}
     </section>
   </>;
@@ -322,7 +326,7 @@ export function RealtimeWorkbench({
       "基于当前虚构证券行情源，生成写入realtime_quotes_agent的实时同步草稿，每2条事件保存Checkpoint，允许2秒乱序",
     ),
     [agentPlan, setAgentPlan] = useState<RealtimePlan>();
-  const engineStartKey = useRef<{jobId:string;key:string}|undefined>(undefined);
+  const engineStartKey = useRef<{request:string;key:string}|undefined>(undefined);
 
   const selectedJob = jobs.find((job) => job.id === selectedJobId),
     selectedSource = sources.find((source) => source.id === selectedJob?.sourceId),
@@ -421,6 +425,19 @@ export function RealtimeWorkbench({
       },
       "实时任务草稿已绑定当前源版本，尚未启动",
     );
+  const sendEngineRequest = async (path:string, body:object, request:string) => {
+    if (engineStartKey.current?.request !== request)
+      engineStartKey.current = {request,key:crypto.randomUUID()};
+    try {
+      await api(path,body,{idempotencyKey:engineStartKey.current.key});
+      engineStartKey.current = undefined;
+    } catch (cause) {
+      const {status} = cause as {status?:number};
+      if (status !== undefined && status >= 400 && status < 500 && status !== 408)
+        engineStartKey.current = undefined;
+      throw cause;
+    }
+  };
   const start = () =>
     selectedJob &&
     action(
@@ -428,21 +445,18 @@ export function RealtimeWorkbench({
       async () => {
         const path = `/streams/jobs/${selectedJob.id}/start`;
         if (!isKafkaFlink(selectedJob)) return api(path,{});
-        if (engineStartKey.current?.jobId !== selectedJob.id)
-          engineStartKey.current = {jobId:selectedJob.id,key:crypto.randomUUID()};
-        try {
-          await api(path,{},{idempotencyKey:engineStartKey.current.key});
-          engineStartKey.current = undefined;
-        } catch (cause) {
-          const {status} = cause as {status?:number};
-          if (status !== undefined && status >= 400 && status < 500 && status !== 408)
-            engineStartKey.current = undefined;
-          throw cause;
-        }
+        return sendEngineRequest(path,{},path);
       },
       selectedJob.liveWindowEnabled ? "已启动持续行情任务，可离开页面" :
         isKafkaFlink(selectedJob) ? "已启动本机 Kafka / Flink 验收，可离开页面" : "已提交后台逐事件处理，可离开页面",
     );
+  const resume = () => {
+    if (!selectedJob?.liveWindow?.runId) return;
+    const liveSourceRunId=selectedJob.liveWindow.runId;
+    const path=`/streams/jobs/${selectedJob.id}/recover`;
+    return action("resume",()=>sendEngineRequest(path,{liveSourceRunId},path+"#"+liveSourceRunId),
+      "接续请求已提交，正在核对原保存点");
+  };
   const stop = () =>
     selectedJob &&
     action(
@@ -541,7 +555,10 @@ export function RealtimeWorkbench({
         </aside>
         <section className={isKafkaFlink(selectedJob) ? "stream-job-detail kafka-flink-detail" : "stream-job-detail"}>
           {selectedJob ? <>
-            <header><div><h3>{selectedJob.name}</h3><p>{selectedJob.sourceTopic ?? selectedSource?.topic} → {selectedJob.targetTable}</p></div><div className="stream-actions"><button className="button primary" onClick={start} disabled={!canWrite || !!busy || isRunning(selectedJob.status) || (!isKafkaFlink(selectedJob) && ["FAILED", "INTERRUPTED"].includes(selectedJob.status))}>{busy === "start" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{selectedJob.liveWindowEnabled ? "启动持续窗口" : selectedJob.brokerCrashEnabled ? "启动副本切换验收" : selectedJob.windowCrashEnabled ? "启动双分区验收" : selectedJob.checkpointCrashEnabled ? "启动异常恢复验收" : isKafkaFlink(selectedJob) ? "启动本机验收" : "启动"}</button><button className="button" onClick={stop} disabled={!canWrite || !!busy || !isRunning(selectedJob.status)}><Square size={14} />停止</button></div></header>
+            <header><div><h3>{selectedJob.name}</h3><p>{selectedJob.sourceTopic ?? selectedSource?.topic} → {selectedJob.targetTable}</p></div><div className="stream-actions"><button className="button primary" onClick={start} disabled={!canWrite || !!busy || isRunning(selectedJob.status) || (!isKafkaFlink(selectedJob) && ["FAILED", "INTERRUPTED"].includes(selectedJob.status))}>{busy === "start" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{selectedJob.liveWindowEnabled ? "启动持续窗口" : selectedJob.brokerCrashEnabled ? "启动副本切换验收" : selectedJob.windowCrashEnabled ? "启动双分区验收" : selectedJob.checkpointCrashEnabled ? "启动异常恢复验收" : isKafkaFlink(selectedJob) ? "启动本机验收" : "启动"}</button><button className="button" onClick={stop} disabled={!canWrite || !!busy || !isRunning(selectedJob.status)}><Square size={14} />停止</button>
+              {selectedJob.liveWindowEnabled && selectedJob.status==="STOPPED" && selectedJob.liveWindow?.planDigest && selectedJob.liveWindow.savepointDigest &&
+                <button className="button" onClick={resume} disabled={!canWrite || !!busy}><RotateCcw size={14}/>从保存点继续</button>}
+            </div></header>
             {isKafkaFlink(selectedJob) ? <KafkaFlinkJobEvidence job={selectedJob}/> : <>
             <div className="stream-proof-grid"><div><span>状态</span><strong>{labels[selectedJob.status] ?? selectedJob.status}</strong></div><div><span>唯一事件</span><strong>{compact(selectedJob.processedEventCount)}</strong></div><div><span>重复事件</span><strong>{compact(selectedJob.duplicateCount)}</strong></div><div><span>Checkpoint</span><strong>{selectedJob.checkpoints.length}</strong></div><div><span>延迟</span><strong>{compact(selectedJob.lagMs)} ms</strong></div><div><span>吞吐</span><strong>{compact(selectedJob.throughputPerSecond)}/s</strong></div></div>
             {["FAILED", "INTERRUPTED"].includes(selectedJob.status) && <div className="stream-recovery"><AlertTriangle size={18} /><div><strong>恢复必须保留Checkpoint前缀</strong><p>先登记修正事件日志，再由后端比较已处理前缀；不一致时拒绝跳过。</p></div><button className="button" onClick={createRecoveryRevision} disabled={!canWrite || !!busy || latestRevision?.fileName === "quotes_recovered.jsonl"}><RefreshCw size={14} />登记修正版本</button><button className="button primary" onClick={recover} disabled={!canWrite || !!busy || latestRevision?.fileName !== "quotes_recovered.jsonl"}><RotateCcw size={14} />从Checkpoint恢复</button></div>}

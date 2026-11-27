@@ -264,6 +264,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo streams create-job --name 名称 --source-id ID --target-table realtime_quotes [--checkpoint-every 2] [--max-out-of-order-seconds 2]
   shuduo streams start|stop --id JOB_ID
   shuduo streams recover --id JOB_ID --revision-id REVISION_ID
+  shuduo streams recover --id JOB_ID --live-source-run-id RUN_ID
   shuduo streams state|checkpoints --id JOB_ID
   shuduo streams monitor
   shuduo streams plan --message "实时同步需求"
@@ -1470,16 +1471,19 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         `/streams/jobs/${encodeURIComponent(required(parsed.options, "id"))}/${action}`,
         { method: "POST", body: {} },
       );
-    else if (resource === "streams" && action === "recover")
+    else if (resource === "streams" && action === "recover") {
+      if (Object.hasOwn(parsed.options,"live_source_run_id") && Object.hasOwn(parsed.options,"revision_id"))
+        throw new Error("须选择单一日志版本或原持续窗口运行");
       result = await client.request(
         `/streams/jobs/${encodeURIComponent(required(parsed.options, "id"))}/recover`,
         {
           method: "POST",
-          body: {
-            sourceRevisionId: required(parsed.options, "revision_id"),
-          },
+          body: Object.hasOwn(parsed.options,"live_source_run_id")
+            ? {liveSourceRunId:required(parsed.options,"live_source_run_id")}
+            : {sourceRevisionId:required(parsed.options,"revision_id")},
         },
       );
+    }
     else if (
       resource === "streams" &&
       ["state", "checkpoints"].includes(action)

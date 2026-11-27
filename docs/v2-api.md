@@ -372,7 +372,7 @@ FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查�
 | GET/POST /streams/jobs | 列表或源/目标/Checkpoint/乱序配置 | 创建版本绑定的实时任务 |
 | GET /streams/jobs/:id | 任务详情 | 运行、最新状态和告警。真实引擎验收返回 `engineEvidence`，恢复和切换分别返回对应回执。持续模式的 `liveWindow` 返回同一作业的累计提交数、最近 24 条窗口结果及已确认的停止保存点 |
 | POST /streams/jobs/:id/start | 空对象 + 幂等键 | 立即返回运行号。按已登记的 JSONL 或本机 Kafka / Flink 适配器后台执行 |
-| POST /streams/jobs/:id/recover | sourceRevisionId + 幂等键 | 校验Checkpoint前缀后从下一offset恢复 |
+| POST /streams/jobs/:id/recover | sourceRevisionId 或 liveSourceRunId + 幂等键 | JSONL 核对前缀后恢复；持续窗口核对最近一次已停止运行的计划与保存点后接续 |
 | POST /streams/jobs/:id/stop | 空对象 | 中止本机处理并保留STOPPED运行 |
 | GET /streams/jobs/:id/state | 无 | 按证券读取实际最新状态 |
 | GET /streams/jobs/:id/checkpoints | 无 | JSONL 断点包含偏移与水位。Flink 保存点包含实际作业编号和元数据摘要 |
