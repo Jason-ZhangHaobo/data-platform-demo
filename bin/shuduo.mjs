@@ -47,6 +47,7 @@ import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-c
 import {readChatChangePublication,reviewedChatChangeInput,publishChatChange} from "../src/v2/chat-change-publication-client.mjs";
 import {readChatChangeConsumption} from "../src/v2/chat-change-consumption-client.mjs";
 import {readInvitedSqlContext} from "../src/v2/invited-sql-context-client.mjs";
+import {readInvitedTaskDelivery} from "../src/v2/invited-task-delivery-client.mjs";
 import {recoverInvitedSqlStart,submitInvitedSqlStart} from "../src/v2/invited-sql-start.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
@@ -98,6 +99,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent graph --id INTENT_ID
   shuduo agent chat-development --id INTENT_ID
   shuduo agent invited-task-context --id TASK_ID [--request-id ORIGINAL_REQUEST_ID]
+  shuduo agent invited-task-delivery --id TASK_ID --revision-id REVISION_ID --revision-hash SHA256 --run-id RUN_ID [--delivery-id DELIVERY_ID] [--download-digest PACKAGE_SHA256 --out-file NEW_BUNDLE_JSON]
   shuduo agent invited-start --context CONTEXT_ID --message "开发需求" --request-id ORIGINAL_UUID --confirm
   shuduo agent invited-start-request --request-id ORIGINAL_UUID
   shuduo agent chat-changes --id INTENT_ID
@@ -370,6 +372,19 @@ const required = (options, key) => {
     throw new Error(`缺少 --${key.replaceAll("_", "-")}`);
   return options[key].trim();
 };
+function saveNewAttachment(outFile,bytes) {
+  const staging = mkdtempSync(join(dirname(outFile), ".shuduo-attachment-"));
+  try {
+    const temporary = join(staging, "attachment.json");
+    writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx", flush: true });
+    linkSync(temporary, outFile);
+  } catch (error) {
+    if (error.code === "EEXIST") throw Error("目标文件已存在，原文件未覆盖");
+    throw error;
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
 const jsonObject = (value, name) => {
   let parsed;
   try {
@@ -650,6 +665,26 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if(resource==="agent" && action==="invited-task-context")
       result=await readInvitedSqlContext(client,{taskId:required(parsed.options,"id"),
         ...(parsed.options.request_id===undefined?{}:{requestId:required(parsed.options,"request_id")})});
+    else if(resource==="agent" && action==="invited-task-delivery"){
+      const flags=parsed.options,allowed=new Set(['id','revision_id','revision_hash','run_id','delivery_id','download_digest','out_file','base_url']);
+      if(parsed.positionals.length!==2 || argv.filter(a=>a.startsWith('--')).some(a=>!allowed.delete(a.slice(2).replaceAll('-','_'))))
+        throw Error('请核对受邀交付读取参数');
+      const selection={taskId:required(flags,'id'),revisionId:required(flags,'revision_id'),revisionHash:required(flags,'revision_hash'),
+        runId:required(flags,'run_id'),...(flags.delivery_id!==undefined?{deliveryId:required(flags,'delivery_id')}:{})};
+      const downloading=flags.out_file!==undefined;
+      if(downloading!==(flags.download_digest!==undefined))throw Error('导出需要同时提供原包摘要和新文件路径');
+      const outFile=downloading?required(flags,'out_file'):undefined;
+      const expected=downloading?required(flags,'download_digest'):undefined;
+      if(expected&&!/^[a-f0-9]{64}$/.test(expected))throw Error('请提供所选交付包的完整 SHA-256 摘要');
+      if(outFile&&lstatSync(outFile,{throwIfNoEntry:false}))throw Error('目标文件已存在，原文件未覆盖');
+      const receipt=await readInvitedTaskDelivery(client,selection);
+      if(!downloading)result=receipt;
+      else {
+        if(!receipt.package || receipt.package.digest!==expected)throw Error('原包内容或摘要尚未核对，未写入文件');
+        saveNewAttachment(outFile,JSON.stringify(receipt.package,null,2)+'\n');
+        result={saved:true,taskId:selection.taskId,deliveryId:receipt.delivery.id,packageId:receipt.package.id,digest:expected};
+      }
+    }
     else if(resource==="agent" && action==="chat-batch-consumption")
       result=await readChatChangeConsumption(client,{intentId:required(parsed.options,"id"),changeRequestId:required(parsed.options,"change_request_id"),
         batchId:required(parsed.options,"batch_id"),...(parsed.options.release_id===undefined?{}:{releaseId:required(parsed.options,"release_id")})});
@@ -1805,17 +1840,7 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
         const attachment = await downloadReportProvenance(client, {
           ...binding, downloadDigest: required(parsed.options, "download_digest"),
         });
-        const staging = mkdtempSync(join(dirname(outFile), ".shuduo-provenance-"));
-        try {
-          const temporary = join(staging, "attachment.json");
-          writeFileSync(temporary, attachment.bytes, { mode: 0o600, flag: "wx", flush: true });
-          linkSync(temporary, outFile);
-        } catch (error) {
-          if (error.code === "EEXIST") throw Error("目标文件已存在，原文件未覆盖");
-          throw error;
-        } finally {
-          rmSync(staging, { recursive: true, force: true });
-        }
+        saveNewAttachment(outFile,attachment.bytes);
         result = { saved: true, digest: attachment.digest, ...binding, reportVersionId: attachment.reportVersionId };
       } else {
         result = await readReportProvenance(client, binding);

@@ -38,6 +38,7 @@ import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-c
 import {readChatChangePublication,publishChatChange} from "../src/v2/chat-change-publication-client.mjs";
 import {readChatChangeConsumption} from "../src/v2/chat-change-consumption-client.mjs";
 import {readInvitedSqlContext} from "../src/v2/invited-sql-context-client.mjs";
+import {readInvitedTaskDelivery} from "../src/v2/invited-task-delivery-client.mjs";
 import {recoverInvitedSqlStart,submitInvitedSqlStart} from "../src/v2/invited-sql-start.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
@@ -76,6 +77,10 @@ const syncConsentSchema = { type: "object", additionalProperties: false,
 const distributionRollbackSchema={type:'object',additionalProperties:false,properties:{scope:{const:'LOCAL_TEST_RELEASE'},targetPackageDigest:{type:'string',pattern:'^[a-f0-9]{64}$'},metadataHash:{type:'string',pattern:'^[a-f0-9]{64}$'},confirmFrozenFictionalData:{const:true}},required:['scope','targetPackageDigest','metadataHash','confirmFrozenFictionalData']};
 const nativeSyncReleaseRequestSchema={type:'object',additionalProperties:false,properties:Object.fromEntries(['taskId','deliveryId','packageId','verificationId','reviewId','requestId'].map(k=>[k,{type:'string',pattern:'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$'}]).concat(['packageDigest','syncRehearsalDigest'].map(k=>[k,{type:'string',pattern:'^[a-f0-9]{64}$'}]))),required:['taskId','deliveryId','packageId','verificationId','reviewId','requestId','packageDigest','syncRehearsalDigest']};
 const tools = [
+  {name:"agent_invited_task_delivery",description:"受邀创建者按自己的任务、SQL 版本和原运行读取已保存的交付文件与演练记录，逐文件核对摘要。",inputSchema:{
+    type:"object",additionalProperties:false,properties:{taskId:publicationIdSchema,revisionId:publicationIdSchema,
+      revisionHash:{type:"string",pattern:"^[a-f0-9]{64}$"},runId:publicationIdSchema,deliveryId:publicationIdSchema},
+    required:["taskId","revisionId","revisionHash","runId"]},annotations:{readOnlyHint:true}},
   { name: "fund_preparation_submit", description: "保存指定基金交易日和固定输出字段的本机需求准备，不运行模型或 Spark。",
     inputSchema: { type: "object", properties: { requestId: { type: "string", format: "uuid" }, contextId: { type: "string" },
       businessDate: { type: "string", format: "date" }, message: { type: "string" },
@@ -499,6 +504,7 @@ async function callTool(name, args = {}, client=defaultClient) {
   if (name === "agent_chat_sql_development")
     return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/development`);
   if (name === "agent_invited_task_context") return readInvitedSqlContext(client,args);
+  if (name === "agent_invited_task_delivery") return readInvitedTaskDelivery(client,args);
   if (name === "agent_invited_sql_start") return submitInvitedSqlStart(client,args);
   if (name === "agent_invited_sql_start_request") return recoverInvitedSqlStart(client,args);
   if (name === "agent_chat_scope_changes") return readChatScopeChanges(client,args);
