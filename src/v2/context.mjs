@@ -134,6 +134,10 @@ export const contextIds = [
 export const validationContractId =
   "securities-assets-five-fixtures-2026-09-14";
 const stockCashContextIds = Object.keys(stockCashVariants);
+export function otherHoldingsScope(id) {
+  if (Object.hasOwn(stockCashVariants,id)) return stockCashVariants[id].sourceId;
+  return stockCashContextIds.find(candidate=>stockCashVariants[candidate].sourceId===id);
+}
 export const allContextIds = [...contextIds, ...stockCashContextIds];
 export const publicV2Contexts = () => allContextIds.map(publicContext);
 export const classicContextIds = [...allContextIds, ...distributionContextIds, ...fundContextIds];

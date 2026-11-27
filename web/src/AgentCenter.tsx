@@ -30,6 +30,7 @@ import {AgentReportBatchPicker} from './AgentReportBatchPicker';
 import {appliedChatReport, chatBatchLocation, chatBatchTarget, readWealthBatch, sameReportSource, type ChatTarget} from './agent-report-chat';
 const CustomerAssetAnalysis=lazy(()=>import('./CustomerAssetAnalysis'));
 const ChatSqlDevelopment=lazy(()=>import('./ChatSqlDevelopment'));
+const ChatScopeChange=lazy(()=>import('./ChatScopeChange'));
 type Api = <T>(path: string, body?: unknown, options?:{idempotencyKey?:string}) => Promise<T>;
 type Risk = "LOW" | "MEDIUM" | "HIGH";
 type Destination = { id: string; label: string; action: string; risk: Risk };
@@ -691,6 +692,7 @@ export function AgentCenter({
     ['SUCCEEDED','FAILED','VALIDATION_FAILED','CANCELLED','INTERRUPTED'].includes(sqlStep.specialistStatus??'')
     ? sqlStep.specialistTaskId : undefined;
   const renderedSelection=selectionEpoch.current;
+  const scopeChat=Boolean(readableSqlId&&sqlStep?.specialistStatus==='SUCCEEDED'&&!wealthSource);
   const reportActivity=activities.reports;
   const chatPlan=wealthSource&&task?.reportSource&&sameReportSource(wealthSource,task.reportSource)&&
     sameReportSource(reportActivity?.boundPlan?.sourceBinding,wealthSource)?reportActivity.boundPlan:undefined;
@@ -784,6 +786,10 @@ export function AgentCenter({
                   onOpenDestination('development',undefined,href);
                 }}/>
             </Suspense>}
+            {scopeChat&&task&&readableSqlId&&<Suspense fallback={<p role="status">正在打开口径变更记录…</p>}>
+              <ChatScopeChange key={task.id+':'+readableSqlId} api={api} intentId={task.id} taskId={readableSqlId} isCurrent={()=>selectionEpoch.current===renderedSelection}
+                canSubmit={canWrite&&modelConfigured&&!actionBusy&&task.status!=='CANCELLED'&&task.approvalMode==='REQUEST_APPROVAL'}/>
+            </Suspense>}
             {chatPlan?.clarification&&<details className="agent-chat-clarification-history">
               <summary>本次方案的口径确认 · {chatPlan.clarification.depth} 轮</summary>
               <p>原需求：{chatPlan.clarification.originalRequest}</p>
@@ -807,10 +813,10 @@ export function AgentCenter({
             {appliedReport&&!fullAnalysis&&<a className="button" href={'?module=agent-center&report_request='+appliedReport.requestId}>查看原报表运行</a>}
           </>}
         </div>
-        {readableSqlId&&!message.trim()&&<footer className="chat-sql-footer">
+        {readableSqlId&&!scopeChat&&!message.trim()&&<footer className="chat-sql-footer">
           <button className="button" onClick={resetTask} disabled={busy||actionBusy}>发起新需求</button>
         </footer>}
-        {task&&wealthSource?<footer className="chat-report-footer"><button className="button" onClick={()=>chooseBatch(wealthSource)} disabled={busy||actionBusy||!verifiedBatch}>用此批次提新需求</button></footer>:<footer className="agent-os-composer-v2">
+        {scopeChat?<footer className="chat-change-footer"><button className="button" onClick={resetTask} disabled={busy||actionBusy}>发起新需求</button></footer>:task&&wealthSource?<footer className="chat-report-footer"><button className="button" onClick={()=>chooseBatch(wealthSource)} disabled={busy||actionBusy||!verifiedBatch}>用此批次提新需求</button></footer>:<footer className="agent-os-composer-v2">
           <textarea aria-label="向数舵 Data Agent 描述目标" placeholder={wealthSource?"描述这次资产报表的需求…":"描述你希望完成的目标，例如：接入持仓数据，生成T+1资产任务并发布服务…"} value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && sendAllowed) { event.preventDefault(); submit(); } }} maxLength={2000} />
           <div>{!wealthSource&&<div className="agent-os-context-v2"><span>@ 证券数据实验室</span><span><Code2 size={11} />{contextId}</span><span>{developmentLanguage === "PYTHON" ? "受限Python" : "Spark SQL"}</span><span>{approvalMode === "PLAN_ONLY" ? "只规划" : "请求批准"}</span></div>}<div className="agent-os-send-v2">{!wealthSource&&<select aria-label="数据开发语言" value={developmentLanguage} onChange={(event) => onDevelopmentLanguageChange(event.target.value as "SQL" | "PYTHON")}><option value="SQL">Spark SQL</option><option value="PYTHON">受限Python</option></select>}<select aria-label="Agent审批模式" value={approvalMode} onChange={(event) => setApprovalMode(event.target.value as typeof approvalMode)}><option value="REQUEST_APPROVAL">请求批准</option><option value="PLAN_ONLY">仅规划</option></select><button aria-label="发送给Data Agent" onClick={()=>void submit()} disabled={!sendAllowed}>{busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button></div></div>
           <small>Agent可以调用所有经典中台能力；读操作、草稿、发布和权限变更按风险分级，生产上线仍需独立批准。</small>

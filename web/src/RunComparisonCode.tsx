@@ -1,29 +1,43 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { readComparisonSql } from '../../src/v2/run-comparison-client.mjs';
-import type { SqlRunComparison } from '../../src/v2/run-comparison-client.mjs';
+import { readComparisonSql, type SqlComparisonSelection } from '../../src/v2/run-comparison-client.mjs';
+
 const SqlEditor = lazy(() => import('./SqlEditor'));
-export function RunComparisonCode({ api, comparison }: {
-    api: <T>(path: string) => Promise<T>;
-    comparison: SqlRunComparison;
-}) {
-    const [read, setRead] = useState<{
-        state: 'LOADING' | 'READY' | 'ERROR';
-        value?: {
-            baselineSql: string;
-            currentSql: string;
-        };
-        error?: string;
-    }>(), live = useRef(true);
-    useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
-    const load = async () => { if (read?.state === 'LOADING')
-        return; setRead({ state: 'LOADING' }); try {
-        const value = await readComparisonSql({ request: p => api<unknown>(p) }, { comparison });
-        if (live.current)
-            setRead({ state: 'READY', value });
+type Result = {state:'LOADING'} | {state:'ERROR';error:string} | {state:'READY';value:{baselineSql:string;currentSql:string}};
+type Props = {api:<T>(path:string)=>Promise<T>} & SqlComparisonSelection;
+
+export function RunComparisonCode({api,...selection}:Props) {
+  const [result,setResult]=useState<Result>();
+  const request=useRef(0);
+  const [before,after]=selection.derived
+    ? [selection.derived.parent,selection.derived.child] : [selection.comparison.baseline,selection.comparison.current];
+  useEffect(()=>{
+    setResult(undefined);
+    return ()=>{request.current++;};
+  },[before.revisionId,before.revisionHash,after.revisionId,after.revisionHash]);
+  const ready=selection.derived || (selection.comparison.baseline.binding==='VERIFIED' && selection.comparison.current.binding==='VERIFIED');
+
+  async function load(){
+    if (!ready || result?.state==='LOADING') return;
+    const id=++request.current;
+    setResult({state:'LOADING'});
+    try {
+      const value=await readComparisonSql({request:path=>api<unknown>(path)},selection);
+      if (id===request.current) setResult({state:'READY',value});
+    } catch (e) {
+      if (id===request.current) setResult({state:'ERROR',error:(e as Error).message});
     }
-    catch (e) {
-        if (live.current)
-            setRead({ state: 'ERROR', error: (e as Error).message });
-    } };
-    return <details className="run-comparison-code-v2"><summary>查看两版SQL（只读）</summary><p>按所选保存版本读取并核对完整字节摘要；不使用当前草稿，不发送源码给模型。</p><button className="button" disabled={read?.state === 'LOADING' || comparison.current.binding !== 'VERIFIED' || comparison.baseline.binding !== 'VERIFIED'} onClick={() => void load()}>{read?.state === 'LOADING' ? '正在核对SQL…' : '读取已保存SQL差异'}</button>{read?.state === 'ERROR' && <p role="alert">{read.error}</p>}{read?.state === 'READY' && read.value && <div className="run-comparison-sql-editor-v2"><Suspense fallback={<p role="status">正在加载只读代码差异…</p>}><SqlEditor value={read.value.currentSql} original={read.value.baselineSql} onChange={() => { }} diff readOnly focusChanges/></Suspense></div>}</details>;
+  }
+  return <details className="run-comparison-code-v2">
+    <summary>查看两版SQL（只读）</summary>
+    <p>按原版本和新版本的代码摘要核对保存的 SQL。</p>
+    <button className="button" disabled={!ready||result?.state==='LOADING'} onClick={()=>void load()}>
+      {result?.state==='LOADING'?'正在核对SQL…':'读取已保存SQL差异'}
+    </button>
+    {result?.state==='ERROR'&&<p role="alert">{result.error}</p>}
+    {result?.state==='READY'&&<div className="run-comparison-sql-editor-v2">
+      <Suspense fallback={<p role="status">正在加载只读代码差异…</p>}>
+        <SqlEditor value={result.value.currentSql} original={result.value.baselineSql} onChange={()=>{}} diff readOnly focusChanges/>
+      </Suspense>
+    </div>}
+  </details>;
 }
