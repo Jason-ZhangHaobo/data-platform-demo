@@ -21,7 +21,7 @@ JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/real
 
 打开「数据同步 → 实时同步」，选择「证券行情 · Kafka / Flink」，点击「启动本机验收」。返回运行编号后可关闭页面。同一详情读回 Kafka 实际输入条数、事务输出条数、两个 Flink 作业及各自保存点摘要、最终行情和运行记录。当前运行失败时保留上次已核验结果。相同幂等编号只返回原运行。CLI 和 MCP 复用已有实时任务启动、状态与保存点工具。[接口约定](v2-api.md)
 
-该任务使用本机隔离的 Kafka 与 Flink 和受控虚构输入。可用时监控返回 `kafkaFlinkLocalReady`，表示可以发起本机验收。每次运行拥有独立引擎进程和保存点。持续运行、生产连接和公网权限另行验收。
+该任务使用本机隔离的 Kafka 与 Flink 和受控虚构输入。可用时监控返回 `kafkaFlinkLocalReady`，表示可以发起本机运行。每次运行拥有独立引擎进程和保存点。生产连接和公网权限另行验收。
 
 ### 从进程异常退出前的检查点恢复
 
@@ -48,6 +48,16 @@ JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/real
 两分区窗口共用上面的事件时间口径。核对切换前的两条已提交窗口结果后，发送分区 0 的偏移 2。收到 Kafka 确认后只终止本次验收启动的当前 Leader。Kafka Admin 必须从原主题读到新 Leader 和两个存活同步副本。同一个 Flink 作业继续处理，验收重读原输出前缀并对照后续四条结果。退出前的最后一笔已确认输入计入第二个窗口，最终六条结果分别通过独立断言。
 
 任务详情返回 `engineEvidence.brokerFailover`，包含切换前后 Leader、同步副本数、退出码以及切换前最后一个已确认偏移。保存点仍来自同一个 Flink 作业。验收只覆盖同一主机上的单 Broker 故障，跨主机高可用与两个以上 Broker 同时故障另行验收。
+
+### 从本机 Kafka 持续读取行情窗口
+
+在可信本机测试 Kafka 预建 `shuduo-live-quotes`（1 至 8 个输入分区）与 `shuduo-live-windows`（1 个输出分区）。生产者在输入主题写虚构证券 `SEC-DEMO-001` 或 `SEC-DEMO-002`，使用 `security_code`、UTC 毫秒 `event_ms` 和整数 `volume`。
+
+启用正常的本机 Kafka/Flink 配置，再设置 `V2_LOCAL_KAFKA_FLINK_LIVE_BOOTSTRAP=127.0.0.1:9092`。可选多个以逗号分隔的数字回环地址。既有工作台提供「启动持续窗口」与「停止」。运行时先锁定各输入分区的起始偏移，再从这些偏移读取后续写入。页面只显示本次作业通过 Kafka 事务提交的数据。浏览器关闭不会中断后台作业，控制面保存当前结果累计值和最近 24 条窗口记录。[Kafka 起始偏移](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/connectors/table/kafka/#start-reading-position)
+
+点击「停止」后等待真实 Flink 保存点。成功时状态为「已停止」并显示摘要，读取失败或超时会保留上一次结果并标记停止未确认。CLI 和 MCP 沿用原任务查询，同一作业的进度及保存点分别从 `liveWindow` 和 `checkpoints` 回读。[Flink 停止与保存点](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/ops/state/savepoints/#stopping-a-job-with-savepoint)
+
+真实本机验收预先送入两条历史记录，再在作业运行后分两次各送四条，其中第二次在关页后发送。历史记录被起始偏移排除，两个时段的四条提交结果经独立复算一致。重开浏览器后单次停止，原作业的保存点经摘要核对。该模式的生产认证、跨主机高可用及从持续作业保存点再启动仍待验收。
 
 ## 实现语义
 

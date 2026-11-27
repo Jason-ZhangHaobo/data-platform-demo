@@ -238,6 +238,57 @@ test("the registered engine runs once per request and keeps verified Kafka resul
   assert.equal(calls,7);
 });
 
+test("live windows become readable while running and only confirm stop with a savepoint",async t=>{
+  const root=mkdtempSync(join(tmpdir(),"shuduo-kafka-live-api-"));
+  const store=new MetadataStore(join(root,"meta.sqlite"));
+  const stateStore=new StreamStateStore(join(root,"stream.sqlite"));
+  const sqlDigest="a".repeat(64), flinkJobId="b".repeat(32);
+  const windowRows=[{window_start_utc:"2026-09-14 09:30:00",security_code:"SEC-DEMO-001",event_count:1,total_volume:10}];
+  const frame={protocol:"shuduo-live-window-stream/v1",state:"RUNNING",sqlDigest,flinkJobId,sourcePartitions:2,
+    committedWindowCount:1,windowRows};
+  let stopConfirmed=true, calls=0, ready;
+  const runner=Object.assign(({signal,onProgress})=>new Promise((resolve,reject)=>{
+    calls++;
+    ready=()=>onProgress(frame);
+    signal.addEventListener("abort",()=>{
+      if (stopConfirmed) resolve({...frame,state:"STOPPED",savepointDigest:"c".repeat(64)});
+      else reject(new Error("LIVE_WINDOW_STOP_UNCONFIRMED"));
+    },{once:true});
+  }),{liveSqlDigest:sqlDigest});
+  const server=await start({store,stateStore,kafkaFlinkRunner:runner});
+  t.after(async()=>{
+    await new Promise(resolve=>server.app.server.close(resolve));
+    await server.app.realtime.waitForIdle();
+    store.close();
+    stateStore.close();
+  });
+  const [job]=(await request(server.base,"/streams/jobs")).body;
+  const path="/streams/jobs/"+job.id;
+  assert.equal(job.liveWindowEnabled,true);
+  const started=await request(server.base,path+"/start",{},"live-1");
+  assert.equal(started.status,202);
+  ready();
+  const running=await waitForJob(server.base,job.id,"RUNNING");
+  assert.equal(running.liveWindow.runId,started.body.id);
+  assert.deepEqual(running.liveWindow.windowRows,windowRows);
+  assert.deepEqual(running.checkpoints,[]);
+  assert.equal((await request(server.base,path+"/start",{},"live-1")).body.id,started.body.id);
+  assert.equal(calls,1);
+  assert.equal((await request(server.base,path+"/stop",{})).status,202);
+  const stopped=await waitForJob(server.base,job.id,"STOPPED");
+  assert.equal(stopped.checkpoints[0].stateHash,"c".repeat(64));
+  assert.equal(stopped.checkpoints[0].flinkJobId,flinkJobId);
+
+  stopConfirmed=false;
+  assert.equal((await request(server.base,path+"/start",{},"live-2")).status,202);
+  ready();
+  assert.equal((await request(server.base,path+"/stop",{})).status,202);
+  const failed=await waitForJob(server.base,job.id,"FAILED");
+  assert.equal(failed.runs[0].errorCode,"LIVE_WINDOW_STOP_UNCONFIRMED");
+  assert.deepEqual(failed.liveWindow.windowRows,windowRows);
+  assert.deepEqual(failed.checkpoints,[]);
+});
+
 test("V2 API records a failed stream checkpoint and resumes from a corrected revision", async () => {
   const root = mkdtempSync(join(tmpdir(), "shuduo-realtime-api-")),
     fixtureRoot = join(root, "streams"),

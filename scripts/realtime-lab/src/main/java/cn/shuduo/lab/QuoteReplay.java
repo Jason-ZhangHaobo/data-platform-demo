@@ -58,9 +58,13 @@ public final class QuoteReplay {
             QuoteWindowReplay.run(Path.of(args[0]).toRealPath(), Path.of(args[1]).toAbsolutePath(), args[2].equals("--broker-crash"));
             return;
         }
+        if (args.length == 3 && args[2].equals("--live-windows")) {
+            QuoteWindowSession.run(Path.of(args[0]).toRealPath(), Path.of(args[1]).toAbsolutePath());
+            return;
+        }
         boolean crash = args.length == 3 && args[2].equals("--checkpoint-crash");
         if (args.length != 2 && !crash)
-            throw new IllegalArgumentException("Usage: QuoteReplay REPO_ROOT NEW_RUN_DIR [--checkpoint-crash|--window-crash|--broker-crash]");
+            throw new IllegalArgumentException("Usage: QuoteReplay REPO_ROOT NEW_RUN_DIR [--checkpoint-crash|--window-crash|--broker-crash|--live-windows]");
         Path repo = Path.of(args[0]).toRealPath();
         Path run = Path.of(args[1]).toAbsolutePath();
         Files.createDirectory(run);
@@ -364,6 +368,10 @@ public final class QuoteReplay {
     }
 
     static JobClient submit(String sql, String address, Path run, String restorePath, int port) {
+        return submit(List.of(sql.split(";")),address,run,restorePath,port);
+    }
+
+    static JobClient submit(List<String> statements, String address, Path run, String restorePath, int port) {
         EnvironmentSettings settings = EnvironmentSettings.newInstance().inStreamingMode().build();
         TableEnvironment table = TableEnvironment.create(settings);
         table.getConfig().setLocalTimeZone(java.time.ZoneId.of("UTC"));
@@ -382,9 +390,9 @@ public final class QuoteReplay {
         }
         if (restorePath != null) table.getConfig().set("execution.state-recovery.path", restorePath);
         JobClient job = null;
-        for (String statement : sql.replace("@BROKER@", address).split(";")) {
+        for (String statement : statements) {
             if (!statement.isBlank()) {
-                var result = table.executeSql(statement.trim());
+                var result = table.executeSql(statement.trim().replace("@BROKER@",address));
                 if (result.getJobClient().isPresent()) job = result.getJobClient().orElseThrow();
             }
         }

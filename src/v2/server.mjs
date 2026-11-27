@@ -2910,6 +2910,7 @@ export function createV2Server(options = {}) {
                 jobId: job.id,
                 sourceRevisionId: job.sourceRevisionId,
                 action: "start",
+                ...(job.liveWindowEnabled ? {liveWindow:true} : {}),
                 ...(job.windowCrashEnabled ? {windowCrash:true} : {}),
                 ...(job.brokerCrashEnabled ? {brokerCrash:true} : {}),
                 ...(job.checkpointCrashEnabled ? {checkpointCrash:true} : {}),
