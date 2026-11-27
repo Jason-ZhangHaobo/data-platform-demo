@@ -185,6 +185,29 @@ node bin/shuduo.mjs agent v3-run --checkpoint "$V3_CHECKPOINT" --completion-file
 
 使用仓库对应源码和 Node.js 24。只读复核直接打开保存库，可在没有运行中的数舵服务和模型凭证时执行。先把授权提供的两组证据存入独立目录，设置 `WEALTH_DIR`、`FUND_DIR` 和尚无同名报告的受保护目录 `ACCEPTANCE_OUT`。命令中的其他变量为交接表所列原编号或 SHA-256。缺少留存库时，先按[本机启动与参考流程](v2-quickstart.md#在空目录复刻并读回证据)准备样例，再按[财富管理原生集成](local-real-spark-service-integration.md)或[基金保存证据复核](acceptance.md#复核已保存的基金-agent-端到端证据)走对应流程。
 
+财富样例也可从洁净检出按[同一文件演练继续发布和消费](v2-quickstart.md#从本机文件演练继续到发布与消费)生成留存材料。先通过本机参考 SQL 与演练读回，再沿同包执行两个本机调度批次。在 `.v2-artifacts/reference-wealth-release.json` 读取 `ids.release`、`packageDigest`、`batches[0].id`、`ids.report`、`ids.reportRun`、`calls.dapi` 和 `calls.xapi`。停止服务后用 SQLite 备份接口导出三份无 WAL 依赖的完整副本。源文件依次为 `.data/v2-platform.sqlite`、`.data/v2-business-services.sqlite`、`.data/v2-reports.sqlite`，交接名为 `metadata.sqlite`、`business.sqlite`、`reports.sqlite`。下方命令对照原发布、两批监控和同批报表，缺失任何一组分页时不通过。
+
+使用本机样例时，可在停止服务后的洁净检出目录运行下列命令。目标必须为尚不存在的新目录。
+
+```sh
+export WEALTH_DIR="$PWD/.v2-artifacts/wealth-handoff"
+(
+  umask 077
+  node --input-type=module <<'NODE'
+import { backup, DatabaseSync } from 'node:sqlite';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+const target = process.env.WEALTH_DIR;
+mkdirSync(target, { mode: 0o700 });
+for (const [source, name] of [['platform', 'metadata'], ['business-services', 'business'], ['reports', 'reports']]) {
+  const db = new DatabaseSync('.data/v2-' + source + '.sqlite', { readOnly: true });
+  try { await backup(db, join(target, name + '.sqlite')); }
+  finally { db.close(); }
+}
+NODE
+)
+```
+
 在仓库根目录复核财富管理。两个 DAPI 固定版本分别保存两页，XAPI 保存完整查询和两页调用。
 
 ```sh
