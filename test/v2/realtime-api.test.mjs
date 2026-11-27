@@ -208,9 +208,34 @@ test("the registered engine runs once per request and keeps verified Kafka resul
   assert.deepEqual(checkedWindows.state,[]);
   assert.equal(calls,6);
   await stop(server);
+
+  runner.brokerCrash=true;
+  server=await start({store,stateStore,kafkaFlinkRunner:runner});
+  assert.equal((await request(server.base,path)).body.brokerCrashEnabled,true);
+  assert.equal((await request(server.base,path+"/start",{},"engine-window-proof")).status,409);
+  const {checkpointId:unusedCheckpoint,restoredCheckpointId:unusedRestored,checkpointDigest:unusedDigest,exitCode:unusedExit,...sharedWindows}=windowResult;
+  const brokerFailover={partition:0,leaderBefore:1,leaderAfter:2,replicasBefore:3,replicasAfter:2,minInSyncReplicas:2,exitCode:137};
+  const brokerResult={...sharedWindows,scope:"LOCAL_KAFKA_REPLICATED_WINDOWS",restoredJobId:sharedWindows.originalJobId,brokerFailover};
+  const brokerExpectation={...windowExpectation,brokerCrash:true};
+  assert.throws(()=>kafkaFlinkEvidence({...brokerResult,restoredJobId:windowResult.restoredJobId},brokerExpectation),/EVIDENCE_MISMATCH/);
+  assert.throws(()=>kafkaFlinkEvidence({...brokerResult,brokerFailover:{...brokerFailover,leaderAfter:1}},brokerExpectation),/EVIDENCE_MISMATCH/);
+  assert.throws(()=>kafkaFlinkEvidence({...brokerResult,brokerFailover:{...brokerFailover,replicasAfter:1}},brokerExpectation),/EVIDENCE_MISMATCH/);
+  assert.throws(()=>kafkaFlinkEvidence(windowResult,brokerExpectation),/EVIDENCE_MISMATCH/);
+  reply=Promise.withResolvers();
+  const brokerRun=await request(server.base,path+"/start",{},"engine-broker-proof");
+  assert.equal(brokerRun.status,202);
+  reply.resolve(brokerResult);
+  const checkedBroker=await waitForJob(server.base,job.id,"CAUGHT_UP");
+  assert.equal(checkedBroker.engineEvidence.runId,brokerRun.body.id);
+  assert.deepEqual(checkedBroker.engineEvidence.brokerFailover,{...brokerFailover,inputOffsetBeforeExit:2});
+  assert.equal(checkedBroker.engineEvidence.checkpointRecovery,undefined);
+  assert.equal(checkedBroker.checkpoints.length,1);
+  assert.equal(checkedBroker.checkpoints[0].flinkJobId,sharedWindows.originalJobId);
+  assert.equal(calls,7);
+  await stop(server);
   server=await start({store,stateStore,local:false,kafkaFlinkRunner:runner});
   assert.equal(server.app.realtime.listJobs().some(candidate=>candidate.id===job.id),false);
-  assert.equal(calls,6);
+  assert.equal(calls,7);
 });
 
 test("V2 API records a failed stream checkpoint and resumes from a corrected revision", async () => {

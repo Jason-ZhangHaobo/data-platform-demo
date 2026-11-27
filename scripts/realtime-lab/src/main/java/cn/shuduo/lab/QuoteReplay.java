@@ -54,13 +54,13 @@ public final class QuoteReplay {
             runFlinkWorker(args);
             return;
         }
-        if (args.length == 3 && args[2].equals("--window-crash")) {
-            QuoteWindowReplay.run(Path.of(args[0]).toRealPath(), Path.of(args[1]).toAbsolutePath());
+        if (args.length == 3 && (args[2].equals("--window-crash") || args[2].equals("--broker-crash"))) {
+            QuoteWindowReplay.run(Path.of(args[0]).toRealPath(), Path.of(args[1]).toAbsolutePath(), args[2].equals("--broker-crash"));
             return;
         }
         boolean crash = args.length == 3 && args[2].equals("--checkpoint-crash");
         if (args.length != 2 && !crash)
-            throw new IllegalArgumentException("Usage: QuoteReplay REPO_ROOT NEW_RUN_DIR [--checkpoint-crash|--window-crash]");
+            throw new IllegalArgumentException("Usage: QuoteReplay REPO_ROOT NEW_RUN_DIR [--checkpoint-crash|--window-crash|--broker-crash]");
         Path repo = Path.of(args[0]).toRealPath();
         Path run = Path.of(args[1]).toAbsolutePath();
         Files.createDirectory(run);

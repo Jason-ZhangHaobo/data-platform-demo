@@ -21,7 +21,7 @@ JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/real
 
 打开「数据同步 → 实时同步」，选择「证券行情 · Kafka / Flink」，点击「启动本机验收」。返回运行编号后可关闭页面。同一详情读回 Kafka 实际输入条数、事务输出条数、两个 Flink 作业及各自保存点摘要、最终行情和运行记录。当前运行失败时保留上次已核验结果。相同幂等编号只返回原运行。CLI 和 MCP 复用已有实时任务启动、状态与保存点工具。[接口约定](v2-api.md)
 
-该任务使用本机单 Broker 和受控虚构输入。可用时监控返回 `kafkaFlinkLocalReady`，表示可以发起本机验收。每次运行拥有独立引擎进程和保存点。持续运行、生产连接和公网权限另行验收。
+该任务使用本机隔离的 Kafka 与 Flink 和受控虚构输入。可用时监控返回 `kafkaFlinkLocalReady`，表示可以发起本机验收。每次运行拥有独立引擎进程和保存点。持续运行、生产连接和公网权限另行验收。
 
 ### 从进程异常退出前的检查点恢复
 
@@ -40,6 +40,14 @@ JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/real
 分区 0 先推进，分区 1 含乱序事件。Kafka 已确认两边各读取两条，输出仍为零。慢分区推进后，第一个窗口产生两条证券结果，其中包含先到八秒、后到四秒的乱序输入。随后从实际周期检查点恢复新 Flink 作业，将失败前 Kafka 已接收的分区 0 偏移 2 纳入第二个窗口。第三个窗口提交后，再核对已关闭窗口及 Kafka 输出前缀，确认迟到行情未改写结果。最终两分区共 11 条输入，输出 6 条，涉及 3 个窗口、2 只证券。
 
 任务详情与 `shuduo streams jobs` 的 `engineEvidence.windowRows` 返回窗口结果。MCP 可使用 `stream_job_list` 读同一回执。此处仍为本机单 Broker，生产多实例、分区变化及持续运行另行验收。
+
+### 三 Broker 的 Kafka Leader 切换
+
+本机工作台设置 `V2_LOCAL_KAFKA_FLINK_BROKER_CRASH=true` 后选择「启动副本切换验收」。复跑脚本对应参数为 `--broker-crash`。在同一台机器的回环网络启动三个隔离 Broker，输入与输出主题配置三个副本，最低同步副本数为两个，禁用非同步副本当选。输入使用 `acks=all`。[Kafka 副本与写入确认](https://kafka.apache.org/41/configuration/topic-configs/#min.insync.replicas)
+
+两分区窗口共用上面的事件时间口径。核对切换前的两条已提交窗口结果后，发送分区 0 的偏移 2。收到 Kafka 确认后只终止本次验收启动的当前 Leader。Kafka Admin 必须从原主题读到新 Leader 和两个存活同步副本。同一个 Flink 作业继续处理，验收重读原输出前缀并对照后续四条结果。退出前的最后一笔已确认输入计入第二个窗口，最终六条结果分别通过独立断言。
+
+任务详情返回 `engineEvidence.brokerFailover`，包含切换前后 Leader、同步副本数、退出码以及切换前最后一个已确认偏移。保存点仍来自同一个 Flink 作业。验收只覆盖同一主机上的单 Broker 故障，跨主机高可用与两个以上 Broker 同时故障另行验收。
 
 ## 实现语义
 

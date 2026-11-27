@@ -2911,6 +2911,7 @@ export function createV2Server(options = {}) {
                 sourceRevisionId: job.sourceRevisionId,
                 action: "start",
                 ...(job.windowCrashEnabled ? {windowCrash:true} : {}),
+                ...(job.brokerCrashEnabled ? {brokerCrash:true} : {}),
                 ...(job.checkpointCrashEnabled ? {checkpointCrash:true} : {}),
               }),
             );

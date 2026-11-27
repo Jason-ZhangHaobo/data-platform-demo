@@ -15,23 +15,38 @@ const expectedWindows = new Map([
   ["20/001", [1,70]], ["20/002", [1,40]],
 ]);
 
-function kafkaFlinkWindowEvidence(value, expectedSqlDigest) {
+function kafkaFlinkWindowEvidence(value, expectedSqlDigest, brokerCrash) {
   const {scope,result,kafkaVersion,flinkVersion,sqlDigest,partitionInputCounts,windowsWhilePartitionHeld,
     windowsBeforeCrash,windowsAfterRestore,finalWindowRows,originalJobId,restoredJobId,checkpointId,
     restoredCheckpointId,checkpointDigest,restoredSavepointDigest,exitCode,partitionBeforeExit,inputOffsetBeforeExit,
-    windowRows} = value ?? {};
+    windowRows,brokerFailover} = value ?? {};
   const fail = () => { throw new Error("KAFKA_FLINK_EVIDENCE_MISMATCH"); };
-  if (scope !== "LOCAL_KAFKA_FLINK_EVENT_TIME_WINDOWS" || result !== "VERIFIED" ||
+  if (scope !== (brokerCrash ? "LOCAL_KAFKA_REPLICATED_WINDOWS" : "LOCAL_KAFKA_FLINK_EVENT_TIME_WINDOWS") ||
+      result !== "VERIFIED" ||
       kafkaVersion !== "4.1.2" || flinkVersion !== "1.20.5" ||
       !hex(sqlDigest,64) || sqlDigest !== expectedSqlDigest ||
       !Array.isArray(partitionInputCounts) || partitionInputCounts.length !== 2 ||
       partitionInputCounts[0] !== 5 || partitionInputCounts[1] !== 6 ||
       windowsWhilePartitionHeld !== 0 || windowsBeforeCrash !== 2 || windowsAfterRestore !== 4 || finalWindowRows !== 6 ||
-      !hex(originalJobId,32) || !hex(restoredJobId,32) || originalJobId === restoredJobId ||
-      !Number.isSafeInteger(checkpointId) || checkpointId < 1 || checkpointId !== restoredCheckpointId ||
-      !hex(checkpointDigest,64) || !hex(restoredSavepointDigest,64) || checkpointDigest === restoredSavepointDigest ||
-      exitCode !== 137 || partitionBeforeExit !== 0 || inputOffsetBeforeExit !== 2 ||
+      !hex(originalJobId,32) || !hex(restoredJobId,32) || !hex(restoredSavepointDigest,64) ||
+      partitionBeforeExit !== 0 || inputOffsetBeforeExit !== 2 ||
       !Array.isArray(windowRows) || windowRows.length !== expectedWindows.size) fail();
+  let recovery;
+  if (brokerCrash) {
+    const {partition,leaderBefore,leaderAfter,replicasBefore,replicasAfter,minInSyncReplicas,exitCode:brokerExitCode} = brokerFailover ?? {};
+    if (originalJobId !== restoredJobId || checkpointId !== undefined || restoredCheckpointId !== undefined ||
+        checkpointDigest !== undefined || exitCode !== undefined || partition !== 0 ||
+        ![1,2,3].includes(leaderBefore) || ![1,2,3].includes(leaderAfter) || leaderBefore === leaderAfter ||
+        replicasBefore !== 3 || replicasAfter !== 2 || minInSyncReplicas !== 2 || brokerExitCode !== 137) fail();
+    recovery = {brokerFailover:{partition,leaderBefore,leaderAfter,replicasBefore,replicasAfter,
+      minInSyncReplicas,exitCode:brokerExitCode,inputOffsetBeforeExit}};
+  } else {
+    if (brokerFailover !== undefined || originalJobId === restoredJobId ||
+        !Number.isSafeInteger(checkpointId) || checkpointId < 1 || checkpointId !== restoredCheckpointId ||
+        !hex(checkpointDigest,64) || checkpointDigest === restoredSavepointDigest || exitCode !== 137) fail();
+    recovery = {checkpointRecovery:{checkpointId,restoredCheckpointId,checkpointDigest,exitCode,
+      partitionBeforeExit,inputOffsetBeforeExit,committedUpdatesAtExit:windowsBeforeCrash}};
+  }
   const keys = new Set();
   for (const row of windowRows) {
     if (typeof row?.window_start_utc !== "string" || typeof row.security_code !== "string") fail();
@@ -46,12 +61,11 @@ function kafkaFlinkWindowEvidence(value, expectedSqlDigest) {
   return {scope,result,kafkaVersion,flinkVersion,sqlDigest,partitionInputCounts,
     inputEvents:11,committedUpdatesBefore:windowsBeforeCrash,committedUpdatesAfter:finalWindowRows,
     windowsWhilePartitionHeld,windowsAfterRestore,originalJobId,restoredJobId,restoredSavepointDigest,windowRows,
-    checkpointRecovery:{checkpointId,restoredCheckpointId,checkpointDigest,exitCode,partitionBeforeExit,inputOffsetBeforeExit,
-      committedUpdatesAtExit:windowsBeforeCrash}};
+    ...recovery};
 }
 
 export function kafkaFlinkEvidence(value, expected) {
-  if (expected.windowSqlDigest) return kafkaFlinkWindowEvidence(value,expected.windowSqlDigest);
+  if (expected.windowSqlDigest) return kafkaFlinkWindowEvidence(value,expected.windowSqlDigest,expected.brokerCrash === true);
   const {scope, result, kafkaVersion, flinkVersion, inputEvents, committedUpdatesBefore, committedUpdatesAfter,
     originalJobId, restoredJobId, originalSavepointDigest, restoredSavepointDigest, finalQuotes, fixtureDigest,
     checkpointRecovery} = value ?? {};
@@ -91,7 +105,8 @@ export function createKafkaFlinkRunner(env, root) {
       ![env.JAVA_HOME, env.SHUDUO_REALTIME_MAVEN_REPO].every(path =>
         typeof path === "string" && isAbsolute(path))) return undefined;
   const workRoot = join(root, ".runtime", "realtime-kafka-flink");
-  const windowCrash = env.V2_LOCAL_KAFKA_FLINK_WINDOW_CRASH === "true";
+  const brokerCrash = env.V2_LOCAL_KAFKA_FLINK_BROKER_CRASH === "true";
+  const windowCrash = brokerCrash || env.V2_LOCAL_KAFKA_FLINK_WINDOW_CRASH === "true";
   const checkpointCrash = !windowCrash && env.V2_LOCAL_KAFKA_FLINK_CHECKPOINT_CRASH === "true";
   const windowSqlDigest = windowCrash
     ? createHash("sha256").update(readFileSync(join(repo,"scripts/realtime-lab/windows.sql"))).digest("hex")
@@ -109,7 +124,7 @@ export function createKafkaFlinkRunner(env, root) {
     const work = mkdtempSync(join(workRoot,"run-"));
     return new Promise((resolve, reject) => {
       const child = spawn("/bin/bash", [join(repo, "scripts/realtime-lab/run.sh"), work,
-        ...(windowCrash ? ["--window-crash"] : checkpointCrash ? ["--checkpoint-crash"] : [])], {
+        ...(brokerCrash ? ["--broker-crash"] : windowCrash ? ["--window-crash"] : checkpointCrash ? ["--checkpoint-crash"] : [])], {
         cwd:repo, env:childEnvironment, detached:true, stdio:["ignore","pipe","ignore"],
       });
       let output = "", failure, killTimer;
@@ -151,5 +166,5 @@ export function createKafkaFlinkRunner(env, root) {
       });
     });
   };
-  return Object.assign(run,{checkpointCrash,windowSqlDigest});
+  return Object.assign(run,{checkpointCrash,windowSqlDigest,brokerCrash});
 }

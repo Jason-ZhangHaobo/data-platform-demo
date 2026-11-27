@@ -2,8 +2,8 @@
 set -euo pipefail
 umask 077
 
-if [[ $# -lt 1 || $# -gt 2 || ! -d "$1" || -z "${JAVA_HOME:-}" || (${2:-} != "" && ${2:-} != "--checkpoint-crash" && ${2:-} != "--window-crash") ]]; then
-  echo "Usage: JAVA_HOME=/path/to/jdk17 bash scripts/realtime-lab/run.sh EXISTING_PRIVATE_DIRECTORY [--checkpoint-crash|--window-crash]" >&2
+if [[ $# -lt 1 || $# -gt 2 || ! -d "$1" || -z "${JAVA_HOME:-}" || (${2:-} != "" && ${2:-} != "--checkpoint-crash" && ${2:-} != "--window-crash" && ${2:-} != "--broker-crash") ]]; then
+  echo "Usage: JAVA_HOME=/path/to/jdk17 bash scripts/realtime-lab/run.sh EXISTING_PRIVATE_DIRECTORY [--checkpoint-crash|--window-crash|--broker-crash]" >&2
   exit 2
 fi
 
