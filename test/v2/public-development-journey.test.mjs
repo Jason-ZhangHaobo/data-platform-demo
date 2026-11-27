@@ -1774,18 +1774,26 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(f.counts(),counts);
 
   const queueBeforeImport=f.queueCounts();
-  const inspected=await cli('v3-inspect',['--workbench']);
+  const inspected=await cli('v3-reconcile');
+  assert.equal(inspected.step,'DEVELOPMENT_AND_DELIVERY');
+  assert.equal(inspected.remoteReadOnly,true);
   assert.equal(inspected.delivery.id,preparedFiles.body.id);
   assert.equal(inspected.delivery.rehearsal.id,verificationId);
   assert.equal(saved().outcomes[0].actions.delivery.key,deliveryRequestId);
   assert.equal((await cli('v3-review')).status,'REVIEW_EVIDENCE_BOUND');
   const beforePublication=readFileSync(checkpoint,'utf8');
   const receiptPath=publicationRequestReceiptPath(created.body.id,request.idempotencyKey);
+  alter=(path,value)=>{if(path==='/auth/session')value.user.id=randomUUID();};
+  await cli('v3-reconcile',[],1);
+  assert.deepEqual(requests,[['GET','/auth/session']]);
+  assert.equal(readFileSync(checkpoint,'utf8'),beforePublication);
   alter=(path,value)=>{if(path===receiptPath)value.release.reviewDigest='0'.repeat(64);};
   assert.equal((await cli('v3-publish',['--reconcile','--workbench'])).reason,'ORIGINAL_PUBLICATION_UNCONFIRMED');
   assert.equal(readFileSync(checkpoint,'utf8'),beforePublication);
   alter=undefined;
-  const adopted=await cli('v3-publish',['--reconcile','--workbench']);
+  const adoptedReadback=await cli('v3-reconcile');
+  assert.equal(adoptedReadback.step,'PUBLICATION');
+  const {step:_step,remoteReadOnly:_readOnly,...adopted}=adoptedReadback;
   const {releaseId,batchIds}=adopted.publication;
   assert.equal(releaseId,accepted.body.release.id);
   assert.deepEqual(batchIds,accepted.body.runs.map(run=>run.id));
@@ -1888,7 +1896,8 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal((await cli('v3-publish',['--reconcile'])).reason,'WORKBENCH_USAGE_UNCONFIRMED');
   assert.equal(readFileSync(checkpoint,'utf8'),beforeUsage);
   alter=undefined;
-  const monitored=await cli('v3-publish',['--reconcile']);
+  const monitored=await cli('v3-reconcile');
+  assert.equal(monitored.step,'PUBLICATION');
   assert.equal(monitored.publication.monitoringStatus,'VERIFIED');
   assert.deepEqual(monitored.publication.monitoring.map(row=>row.batchId),batchIds);
   const scheduledBatches=[firstResult,secondResult].map(row=>({
@@ -1899,6 +1908,12 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.deepEqual(saved().outcomes[0].actions.publication.scheduledBatches,scheduledBatches);
   assert.deepEqual(requests,[['GET','/auth/session'],['GET',receiptPath],['GET','/status']]);
   const afterMonitored=readFileSync(checkpoint,'utf8');
+  const consumptionHandoff=await cli('v3-reconcile');
+  assert.equal(consumptionHandoff.step,'CONSUMPTION');
+  assert.equal(consumptionHandoff.status,'HANDOFF_REQUIRED');
+  assert.deepEqual(consumptionHandoff.pendingBatchIds,batchIds);
+  assert.deepEqual(requests,[]);
+  assert.equal(readFileSync(checkpoint,'utf8'),afterMonitored);
   alter=(path,value)=>{if(path===receiptPath)value.monitoring.scheduledBatches[0].workerResultDigest='0'.repeat(64);};
   assert.equal((await cli('v3-publish',['--reconcile'])).reason,'ORIGINAL_PUBLICATION_UNCONFIRMED');
   assert.equal(readFileSync(checkpoint,'utf8'),afterMonitored);
@@ -2065,6 +2080,11 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
     }
     alter=undefined;
   }
+  const completionHandoff=await cli('v3-reconcile');
+  assert.equal(completionHandoff.step,'COMPLETION');
+  assert.equal(completionHandoff.reason,'ORIGINAL_CONSUMPTION_REPORTS_REQUIRED');
+  assert.deepEqual(requests,[]);
+  assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
   const completion=await cli('v3-complete',completionFlags);
   assert.equal(completion.scope,'LOCAL_MATCHED_ONLY');
   assert.equal(completion.independentlyVerifiedCloudCase,false);
@@ -2245,6 +2265,11 @@ test('a killed publication CLI recovers both original batches through signed sch
   };
   const confirm=['--bill-file',billPath,'--confirm'];
   await cli('v3-start',['--source-revision','a'.repeat(40)]);
+  await cli('v3-reconcile',['--confirm'],1);
+  assert.deepEqual(requests,[]);
+  const notSubmitted=await cli('v3-reconcile');
+  assert.equal(notSubmitted.reason,'ORIGINAL_REQUEST_NOT_SUBMITTED');
+  assert.deepEqual(requests,[]);
   const created=await cli('v3-start',confirm);
   assert.equal(created.status,'CREATION_CONFIRMED');
   const taskPath='/agent/tasks/'+created.taskId, advance=task=>f.call(taskPath+'/advance',{expectedVersion:task.version});

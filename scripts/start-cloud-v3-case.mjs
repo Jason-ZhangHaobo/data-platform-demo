@@ -1167,3 +1167,38 @@ export async function inspectCloudV3Execution(path, client, {workbench=false,del
       ...(drivers ? {developmentDriverEvidence:drivers} : {})};
   }, {reconcile:true});
 }
+
+export async function reconcileCloudV3ReadOnly(path, client) {
+  const {state,item,action} = snapshot(client,path);
+  const {publication,delivery} = item.actions;
+  const respond = (step,value) => ({...value,step,remoteReadOnly:true});
+  const stored = (status,reason) => result(state,item,status,reason);
+  if (item.status === "CANCELLED" || item.developmentObservation?.stage === "CANCELLED" ||
+      delivery?.cancelled || item.rehearsal?.status === "CANCELLED" || publication?.cancelled)
+    return respond("CANCELLED",stored("STOPPED","ORIGINAL_CASE_CANCELLED"));
+  if (action.status === "PREPARED")
+    return respond("CREATION",stored("PREPARED","ORIGINAL_REQUEST_NOT_SUBMITTED"));
+
+  const reader = {
+    baseUrl:client.baseUrl,projectId:client.projectId,sessionFile:client.sessionFile,
+    request(route,options) {
+      if (options !== undefined && (options.method !== "GET" || Object.hasOwn(options,"body")))
+        stop("只读续接仅允许 GET");
+      return client.request(route,{method:"GET"});
+    },
+  };
+  if (action.status !== "CONFIRMED")
+    return respond("CREATION",await continueCloudV3Start(path,reader,{reconcile:true}));
+  if (publication || item.rehearsal?.status === "SUCCEEDED") {
+    const {batchIds,monitoring,status} = publication ?? {};
+    if (status !== "CONFIRMED" || !Array.isArray(batchIds) || batchIds.length !== 2 || new Set(batchIds).size !== 2 ||
+        !Array.isArray(monitoring) || monitoring.length !== 2 ||
+        !batchIds.every((batchId,index)=>id(batchId) && monitoring[index]?.batchId===batchId))
+      return respond("PUBLICATION",await submitCloudV3Publication(path,reader,{reconcile:true,workbench:true}));
+    const pendingBatchIds = batchIds.filter(batchId=>item.consumption?.[batchId]?.batchId!==batchId);
+    return pendingBatchIds.length
+      ? respond("CONSUMPTION",{...stored("HANDOFF_REQUIRED","ORIGINAL_CONSUMPTION_EVIDENCE_REQUIRED"),pendingBatchIds})
+      : respond("COMPLETION",stored("HANDOFF_REQUIRED","ORIGINAL_CONSUMPTION_REPORTS_REQUIRED"));
+  }
+  return respond("DEVELOPMENT_AND_DELIVERY",await inspectCloudV3Execution(path,reader,{workbench:true}));
+}
