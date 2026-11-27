@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -19,7 +19,7 @@ import {
   Waves,
 } from "lucide-react";
 
-type Api = <T>(path: string, body?: unknown) => Promise<T>;
+type Api = <T>(path: string, body?: unknown, options?: {idempotencyKey?:string}) => Promise<T>;
 type StreamRevision = {
   id: string;
   revisionNumber: number;
@@ -70,6 +70,7 @@ type Checkpoint = {
   duplicateCount: number;
   watermark: string;
   stateHash: string;
+  flinkJobId?: string;
 };
 type StreamAlert = {
   id: string;
@@ -100,6 +101,16 @@ type StreamJob = {
   state: StreamState[];
   checkpoints: Checkpoint[];
   alerts: StreamAlert[];
+  sourceTopic?: string;
+  lastRunId?: string;
+  engineEvidence?: {
+    runId: string;
+    kafkaVersion: string;
+    flinkVersion: string;
+    inputEvents: number;
+    committedUpdatesBefore: number;
+    committedUpdatesAfter: number;
+  };
 };
 type RealtimePlan = {
   id: string;
@@ -124,6 +135,7 @@ type Monitor = {
   kafkaConnected: boolean;
   flinkConnected: boolean;
   publicDeployed: boolean;
+  kafkaFlinkLocalReady?: boolean;
   counts: {
     jobs: number;
     running: number;
@@ -152,6 +164,57 @@ const isRunning = (status?: string) =>
   status === "RUNNING" || status === "RECOVERING";
 const compact = (value?: number) =>
   value === undefined ? "—" : new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(value);
+const isKafkaFlink = (job?: StreamJob) => job?.adapter === "kafka-flink-local-v1";
+const jobLabel = (job: StreamJob) => isKafkaFlink(job) && job.status === "CAUGHT_UP"
+  ? "已核验" : labels[job.status] ?? job.status;
+
+function KafkaFlinkJobEvidence({job}:{job:StreamJob}) {
+  const evidence = job.engineEvidence;
+  return <>
+    {evidence ? <>
+      {evidence.runId !== job.lastRunId && <p>下方为上一次通过核验的结果。</p>}
+      <div className="stream-proof-grid">
+        <div><span>状态</span><strong>{jobLabel(job)}</strong></div>
+        <div><span>Kafka 输入</span><strong>{evidence.inputEvents} 条</strong></div>
+        <div><span>恢复前已提交</span><strong>{evidence.committedUpdatesBefore} 条</strong></div>
+        <div><span>恢复后已提交</span><strong>{evidence.committedUpdatesAfter} 条</strong></div>
+        <div><span>Kafka</span><strong>{evidence.kafkaVersion}</strong></div>
+        <div><span>Flink</span><strong>{evidence.flinkVersion}</strong></div>
+      </div>
+      <div className="stream-evidence-grid">
+        <StreamQuoteTable state={job.state}/>
+        <section>
+          <header><h4>Flink 保存点</h4><span>{job.checkpoints.length} 个</span></header>
+          <div className="stream-checkpoints">{job.checkpoints.map((item,index) =>
+            <article key={item.id}><Clock3 size={14}/><div>
+              <strong>{index === 0 ? "原作业" : "恢复后作业"}</strong>
+              <code title={item.flinkJobId}>{item.flinkJobId?.slice(0,12)} · SHA-256 {item.stateHash.slice(0,12)}</code>
+            </div></article>)}</div>
+        </section>
+      </div>
+    </> : <div className="ingestion-empty"><Activity size={25}/><p>
+      {isRunning(job.status) ? "正在写入 Kafka、运行 Flink 并核对保存点恢复。" :
+        "启动后将显示 Kafka 的实际提交记录、两份 Flink 保存点和最新行情。"}
+    </p></div>}
+    <section className="stream-run-history">
+      <header><h4>运行记录</h4><span>{job.runs.length} 次 · {job.alerts.filter(alert=>alert.status==="OPEN").length} 条开放告警</span></header>
+      {job.runs.map(run => <article key={run.id}>
+        <span className={`status-pill ${run.status.toLowerCase()}`}>{labels[run.status] ?? run.status}</span>
+        <code title={run.id}>{run.id.slice(0,8)}</code>
+        <div><strong>{run.error ?? "本机行情恢复验收"}</strong></div>
+        <small>{run.errorCode ?? (run.durationMs === undefined ? "等待引擎回执" : `${compact(run.durationMs / 1000)} 秒`)}</small>
+      </article>)}
+    </section>
+  </>;
+}
+
+function StreamQuoteTable({state}:{state:StreamState[]}) {
+  return <section><header><h4>最新证券状态</h4><span>{state.length}只</span></header><div className="stream-table-wrap">
+    <table><thead><tr><th>证券</th><th>价格</th><th>成交量</th><th>序号</th></tr></thead>
+      <tbody>{state.map(row => <tr key={row.stateKey}><td><code>{row.security_code}</code></td><td>{row.price}</td>
+        <td>{row.volume}</td><td>{row.lastSequence}</td></tr>)}</tbody></table>
+  </div></section>;
+}
 
 export function RealtimeWorkbench({
   api,
@@ -179,6 +242,7 @@ export function RealtimeWorkbench({
       "基于当前虚构证券行情源，生成写入realtime_quotes_agent的实时同步草稿，每2条事件保存Checkpoint，允许2秒乱序",
     ),
     [agentPlan, setAgentPlan] = useState<RealtimePlan>();
+  const engineStartKey = useRef<{jobId:string;key:string}|undefined>(undefined);
 
   const selectedJob = jobs.find((job) => job.id === selectedJobId),
     selectedSource = sources.find((source) => source.id === selectedJob?.sourceId),
@@ -281,8 +345,22 @@ export function RealtimeWorkbench({
     selectedJob &&
     action(
       "start",
-      () => api(`/streams/jobs/${selectedJob.id}/start`, {}),
-      "已提交后台逐事件处理，可离开页面",
+      async () => {
+        const path = `/streams/jobs/${selectedJob.id}/start`;
+        if (!isKafkaFlink(selectedJob)) return api(path,{});
+        if (engineStartKey.current?.jobId !== selectedJob.id)
+          engineStartKey.current = {jobId:selectedJob.id,key:crypto.randomUUID()};
+        try {
+          await api(path,{},{idempotencyKey:engineStartKey.current.key});
+          engineStartKey.current = undefined;
+        } catch (cause) {
+          const {status} = cause as {status?:number};
+          if (status !== undefined && status >= 400 && status < 500 && status !== 408)
+            engineStartKey.current = undefined;
+          throw cause;
+        }
+      },
+      isKafkaFlink(selectedJob) ? "已启动本机 Kafka / Flink 验收，可离开页面" : "已提交后台逐事件处理，可离开页面",
     );
   const stop = () =>
     selectedJob &&
@@ -349,12 +427,14 @@ export function RealtimeWorkbench({
         </div>
       )}
       <section className="stream-boundary-card">
-        <div className="stream-live-mark"><Radio size={17} /><span>LOCAL EVENT LOG</span></div>
-        <div><span className="eyebrow">REAL EXECUTION · EXPLICIT BOUNDARY</span><h3>真实处理事件，不伪装云流计算</h3><p>当前逐行消费版本化 JSONL，并真实保存幂等、状态、Watermark 与 Checkpoint；Kafka、Flink 和公网均未连接。</p></div>
+        <div className="stream-live-mark"><Radio size={17} /><span>本机运行</span></div>
+        <div><h3>证券行情实时同步</h3><p>{monitor?.kafkaFlinkLocalReady
+          ? "可运行 Kafka / Flink 保存点验收，也可调试版本化 JSONL 事件日志。"
+          : "支持版本化 JSONL 事件日志，保存最新行情、Watermark 和 Checkpoint。"}</p></div>
         <div className="stream-adapters" aria-label="实时连接边界">
           <span className="connected"><i />事件日志 已连接</span>
-          <span><i />Kafka 未连接</span>
-          <span><i />Flink 未连接</span>
+          <span className={monitor?.kafkaFlinkLocalReady ? "connected" : undefined}><i />{monitor?.kafkaFlinkLocalReady
+            ? "Kafka / Flink 可启动本机验收" : "Kafka / Flink 未启用"}</span>
         </div>
       </section>
 
@@ -375,19 +455,21 @@ export function RealtimeWorkbench({
       <div className="stream-main-grid">
         <aside className="stream-job-list">
           <header><div><span className="eyebrow">STREAM JOBS</span><h3>实时任务</h3></div><span>{jobs.length}</span></header>
-          {jobs.map((job) => <button key={job.id} className={job.id === selectedJobId ? "active" : ""} onClick={() => setSelectedJobId(job.id)}><Activity size={16} /><div><strong>{job.name}</strong><code>{job.targetTable} · CP/{job.checkpointEvery}</code></div><span className={`status-pill ${job.status.toLowerCase()}`}>{labels[job.status] ?? job.status}</span></button>)}
+          {jobs.map((job) => <button key={job.id} className={job.id === selectedJobId ? "active" : ""} onClick={() => setSelectedJobId(job.id)}><Activity size={16} /><div><strong>{job.name}</strong><code>{job.targetTable}{isKafkaFlink(job) ? "" : ` · CP/${job.checkpointEvery}`}</code></div><span className={`status-pill ${job.status.toLowerCase()}`}>{jobLabel(job)}</span></button>)}
           {!jobs.length && <div className="ingestion-empty"><Waves size={25} /><p>创建第一个实时任务草稿。</p></div>}
         </aside>
-        <section className="stream-job-detail">
+        <section className={isKafkaFlink(selectedJob) ? "stream-job-detail kafka-flink-detail" : "stream-job-detail"}>
           {selectedJob ? <>
-            <header><div><span className="eyebrow">{selectedJob.adapter} · VERSION BOUND</span><h3>{selectedJob.name}</h3><p>{selectedSource?.topic} → {selectedJob.targetTable}</p></div><div className="stream-actions"><button className="button primary" onClick={start} disabled={!canWrite || !!busy || isRunning(selectedJob.status) || ["FAILED", "INTERRUPTED"].includes(selectedJob.status)}>{busy === "start" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}启动</button><button className="button" onClick={stop} disabled={!canWrite || !!busy || !isRunning(selectedJob.status)}><Square size={14} />停止</button></div></header>
+            <header><div><h3>{selectedJob.name}</h3><p>{selectedJob.sourceTopic ?? selectedSource?.topic} → {selectedJob.targetTable}</p></div><div className="stream-actions"><button className="button primary" onClick={start} disabled={!canWrite || !!busy || isRunning(selectedJob.status) || (!isKafkaFlink(selectedJob) && ["FAILED", "INTERRUPTED"].includes(selectedJob.status))}>{busy === "start" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{isKafkaFlink(selectedJob) ? "启动本机验收" : "启动"}</button><button className="button" onClick={stop} disabled={!canWrite || !!busy || !isRunning(selectedJob.status)}><Square size={14} />停止</button></div></header>
+            {isKafkaFlink(selectedJob) ? <KafkaFlinkJobEvidence job={selectedJob}/> : <>
             <div className="stream-proof-grid"><div><span>状态</span><strong>{labels[selectedJob.status] ?? selectedJob.status}</strong></div><div><span>唯一事件</span><strong>{compact(selectedJob.processedEventCount)}</strong></div><div><span>重复事件</span><strong>{compact(selectedJob.duplicateCount)}</strong></div><div><span>Checkpoint</span><strong>{selectedJob.checkpoints.length}</strong></div><div><span>延迟</span><strong>{compact(selectedJob.lagMs)} ms</strong></div><div><span>吞吐</span><strong>{compact(selectedJob.throughputPerSecond)}/s</strong></div></div>
             {["FAILED", "INTERRUPTED"].includes(selectedJob.status) && <div className="stream-recovery"><AlertTriangle size={18} /><div><strong>恢复必须保留Checkpoint前缀</strong><p>先登记修正事件日志，再由后端比较已处理前缀；不一致时拒绝跳过。</p></div><button className="button" onClick={createRecoveryRevision} disabled={!canWrite || !!busy || latestRevision?.fileName === "quotes_recovered.jsonl"}><RefreshCw size={14} />登记修正版本</button><button className="button primary" onClick={recover} disabled={!canWrite || !!busy || latestRevision?.fileName !== "quotes_recovered.jsonl"}><RotateCcw size={14} />从Checkpoint恢复</button></div>}
             <div className="stream-evidence-grid">
-              <section><header><h4>最新证券状态</h4><span>{selectedJob.state.length}只</span></header><div className="stream-table-wrap"><table><thead><tr><th>证券</th><th>价格</th><th>成交量</th><th>序号</th></tr></thead><tbody>{selectedJob.state.map((row) => <tr key={row.stateKey}><td><code>{row.security_code}</code></td><td>{row.price}</td><td>{row.volume}</td><td>{row.lastSequence}</td></tr>)}</tbody></table></div></section>
+              <StreamQuoteTable state={selectedJob.state}/>
               <section><header><h4>Checkpoint</h4><span>{selectedJob.checkpoints.length}个</span></header><div className="stream-checkpoints">{selectedJob.checkpoints.slice(0, 4).map((item) => <article key={item.id}><Clock3 size={14} /><div><strong>offset {item.lastOffset} · {item.eventCount}事件</strong><code>{item.stateHash.slice(0, 12)}</code></div></article>)}{!selectedJob.checkpoints.length && <p>启动后生成持久Checkpoint。</p>}</div></section>
             </div>
             <section className="stream-run-history"><header><h4>运行与故障证据</h4><span>{selectedJob.runs.length}次运行 · {selectedJob.alerts.length}条告警</span></header>{selectedJob.runs.map((run) => <article key={run.id}><span className={`status-pill ${run.status.toLowerCase()}`}>{labels[run.status] ?? run.status}</span><code>{run.id.slice(0, 8)}</code><div><strong>{run.recovery ? "断点恢复" : "初始消费"}</strong><span>offset {run.startOffset}→{run.lastOffset} · 新增{run.processedCount} · 重复{run.duplicateCount}</span></div><small>{run.error ? `${run.errorCode} · ${run.error}` : `${run.durationMs ?? 0}ms · ${compact(run.throughputPerSecond)}/s`}</small></article>)}</section>
+            </>}
           </> : <div className="ingestion-empty"><Activity size={26} /><p>创建或选择实时任务。</p></div>}
         </section>
       </div>

@@ -7,6 +7,7 @@ import {
   realpathSync,
 } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
+import { kafkaFlinkAdapter, kafkaFlinkEvidence } from "./realtime-kafka-flink.mjs";
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -267,6 +268,7 @@ export class RealtimeManager {
     fixtureRoot,
     now = () => Date.now(),
     eventDelayMs = 25,
+    kafkaFlinkRunner,
   }) {
     this.store = store;
     this.stateStore = stateStore;
@@ -282,17 +284,35 @@ export class RealtimeManager {
     );
     this.controls = new Map();
     this.pending = new Set();
+    this.kafkaFlinkRunner = kafkaFlinkRunner;
+    if (kafkaFlinkRunner &&
+        !this.store.list("stream_job", this.project).some(job => job.adapter === kafkaFlinkAdapter)) {
+      this.store.create("stream_job", this.project, {
+        adapter: kafkaFlinkAdapter, name: "证券行情 · Kafka / Flink",
+        sourceTopic: "shuduo-quote-events", targetTable: "shuduo-latest-quotes",
+        status: "READY", actualExecution: true, publicDeployed: false, fullLifecycleE2E: false,
+      });
+    }
     for (const job of this.store.list("stream_job", this.project)) {
       const run = job.lastRunId
         ? this.store.get("stream_run", job.lastRunId, this.project)
         : undefined;
+      if (job.adapter === kafkaFlinkAdapter && job.status === "RUNNING" &&
+          ["SUCCEEDED","FAILED","STOPPED"].includes(run?.status)) {
+        this.store.update("stream_job",job.id,this.project,{
+          status:run.status === "SUCCEEDED" ? "CAUGHT_UP" : run.status,error:run.error,
+        });
+        continue;
+      }
       if (
         ["RUNNING", "RECOVERING"].includes(job.status) &&
         run?.status === "INTERRUPTED"
       )
         this.store.update("stream_job", job.id, this.project, {
           status: "INTERRUPTED",
-          error: "服务重启中断实时处理，请从最新Checkpoint恢复",
+          error: job.adapter === kafkaFlinkAdapter
+            ? "服务重启中断本机引擎验收，请查看原运行后重新启动"
+            : "服务重启中断实时处理，请从最新Checkpoint恢复",
         });
     }
   }
@@ -412,19 +432,31 @@ export class RealtimeManager {
     };
   }
 
-  listJobs() {
+  listJobs(includeEngine = true) {
     return this.store
       .list("stream_job", this.project)
+      .filter(job => job.adapter !== kafkaFlinkAdapter || (includeEngine && this.kafkaFlinkRunner))
       .map((job) => this.jobDetail(job.id));
   }
 
   jobDetail(id) {
     const job = this.#job(id);
+    const runs = this.store.list("stream_run", this.project).filter(run => run.jobId === id);
+    if (job.adapter === kafkaFlinkAdapter) {
+      const verified = runs.find(run => run.engineResult);
+      const evidence = verified?.engineResult;
+      return {...job,runs,alerts:this.store.list("stream_alert",this.project).filter(alert => alert.jobId === id),
+        ...(evidence ? {engineEvidence: {...evidence,runId:verified.id}} : {}),
+        checkpoints: evidence ? [
+          {id:evidence.originalSavepointDigest,runId:verified.id,stateHash:evidence.originalSavepointDigest,flinkJobId:evidence.originalJobId},
+          {id:evidence.restoredSavepointDigest,runId:verified.id,stateHash:evidence.restoredSavepointDigest,flinkJobId:evidence.restoredJobId},
+        ] : [],
+        state: evidence?.quotes.map(quote => ({...quote,stateKey:quote.security_code,lastSequence:quote.sequence})) ?? [],
+      };
+    }
     return {
       ...job,
-      runs: this.store
-        .list("stream_run", this.project)
-        .filter((run) => run.jobId === job.id),
+      runs,
       checkpoints: this.stateStore.checkpoints(job.id),
       state: this.stateStore.state(job.id),
       alerts: this.store
@@ -434,9 +466,10 @@ export class RealtimeManager {
   }
 
   startJob(jobId, request = {}) {
-    return this.#start(this.#job(jobId), {
+    const job = this.#job(jobId);
+    return this.#start(job, {
       ...request,
-      sourceRevisionId: this.#job(jobId).sourceRevisionId,
+      sourceRevisionId: job.sourceRevisionId,
       startOffset: 0,
       recovery: false,
     });
@@ -444,6 +477,8 @@ export class RealtimeManager {
 
   recoverJob(jobId, input, request = {}) {
     const job = this.#job(jobId);
+    if (job.adapter === kafkaFlinkAdapter)
+      throw fail(409, "本机引擎在每次验收中自动演练保存点恢复", "KAFKA_FLINK_RECOVERY_IS_INTERNAL");
     if (!["FAILED", "INTERRUPTED"].includes(job.status))
       throw fail(409, "只有失败或中断的实时任务可以恢复", "STREAM_NOT_RECOVERABLE");
     const revision = this.#revision(text(input.sourceRevisionId, "恢复源版本", 3, 80));
@@ -484,15 +519,15 @@ export class RealtimeManager {
     return this.jobDetail(job.id);
   }
 
-  monitor() {
-    const jobs = this.listJobs(),
-      runs = this.store.list("stream_run", this.project),
-      alerts = this.store.list("stream_alert", this.project);
+  monitor(includeEngine = true) {
+    const jobs = this.listJobs(includeEngine), runs = jobs.flatMap(job => job.runs),
+      alerts = jobs.flatMap(job => job.alerts);
     return {
       scope: "LOCAL_EVENT_LOG_RUNTIME",
       adapter: "local-event-log-v1",
       kafkaConnected: false,
       flinkConnected: false,
+      ...(includeEngine && this.kafkaFlinkRunner ? {kafkaFlinkLocalReady:true} : {}),
       publicDeployed: false,
       jobs,
       counts: {
@@ -511,6 +546,7 @@ export class RealtimeManager {
   }
 
   shutdown() {
+    this.closed = true;
     for (const controller of this.controls.values()) controller.abort();
   }
 
@@ -528,8 +564,10 @@ export class RealtimeManager {
         "本机预算模式一次只运行一个实时任务",
         "STREAM_CONCURRENCY_LIMIT",
       );
-    if (!input.recovery && !["READY", "STOPPED", "CAUGHT_UP"].includes(job.status))
+    const isEngine = job.adapter === kafkaFlinkAdapter;
+    if (!input.recovery && !["READY", "STOPPED", "CAUGHT_UP", ...(isEngine ? ["FAILED","INTERRUPTED"] : [])].includes(job.status))
       throw fail(409, "实时任务当前状态不能启动", "STREAM_INVALID_STATE");
+    const engineFixture = isEngine ? this.#read("quotes_recovered.jsonl") : undefined;
     const run = this.store.create("stream_run", this.project, {
         jobId: job.id,
         status: "RUNNING",
@@ -544,6 +582,7 @@ export class RealtimeManager {
         recoveryCheckpointId: input.recoveryCheckpointId,
         requestKey: input.requestKey,
         requestSignature: input.requestSignature,
+        ...(isEngine ? {adapter:kafkaFlinkAdapter,fixtureDigest:engineFixture.contentHash} : {}),
         startedAt: new Date(this.now()).toISOString(),
         actualExecution: true,
         publicDeployed: false,
@@ -556,12 +595,51 @@ export class RealtimeManager {
       error: undefined,
     });
     this.controls.set(job.id, controller);
-    const pending = this.#process(run.id, controller.signal).finally(() => {
+    const processing = isEngine
+      ? this.#processEngine(job,run,engineFixture,controller.signal)
+      : this.#process(run.id, controller.signal);
+    const pending = processing.finally(() => {
       this.controls.delete(job.id);
       this.pending.delete(pending);
     });
     this.pending.add(pending);
     return run;
+  }
+
+  async #processEngine(job, run, fixture, signal) {
+    let status, engineResult, errorCode;
+    try {
+      const latest = new Map();
+      for (const line of fixture.lines) {
+        const quote = validateQuoteEvent(JSON.parse(line));
+        if (quote.sequence > (latest.get(quote.security_code)?.sequence ?? 0)) latest.set(quote.security_code,quote);
+      }
+      const output = await this.kafkaFlinkRunner({signal});
+      if (signal.aborted) throw new Error("KAFKA_FLINK_CANCELLED");
+      engineResult = kafkaFlinkEvidence(output,{
+        fixtureDigest:fixture.contentHash,
+        quotes:[...latest.values()].sort((a,b) => a.security_code.localeCompare(b.security_code)),
+      });
+      status = "SUCCEEDED";
+    } catch (error) {
+      status = signal.aborted ? "STOPPED" : "FAILED";
+      errorCode = signal.aborted ? "KAFKA_FLINK_CANCELLED" :
+        ["KAFKA_FLINK_EVIDENCE_MISMATCH","KAFKA_FLINK_TIMEOUT"].includes(error.message)
+          ? error.message : "KAFKA_FLINK_EXECUTION_FAILED";
+    }
+    if (this.closed) return;
+    const finishedAt = new Date(this.now()).toISOString();
+    const error = status === "FAILED" ? "本机 Kafka / Flink 运行或证据核对失败" : undefined;
+    this.store.update("stream_run",run.id,this.project,{status,engineResult,error,errorCode,finishedAt,
+      durationMs:this.now()-Date.parse(run.startedAt)});
+    this.store.update("stream_job",job.id,this.project,{status:status === "SUCCEEDED" ? "CAUGHT_UP" : status,error});
+    if (error) this.store.create("stream_alert",this.project,{
+      jobId:job.id,runId:run.id,status:"OPEN",severity:"ERROR",code:errorCode,message:error,openedAt:finishedAt,
+    });
+    if (status === "SUCCEEDED")
+      for (const alert of this.store.list("stream_alert",this.project))
+        if (alert.jobId === job.id && alert.status === "OPEN")
+          this.store.update("stream_alert",alert.id,this.project,{status:"RESOLVED",recoveryRunId:run.id,resolvedAt:finishedAt});
   }
 
   async #process(runId, signal) {
@@ -777,7 +855,8 @@ export class RealtimeManager {
 
   #job(id) {
     const job = this.store.get("stream_job", id, this.project);
-    if (!job) throw fail(404, "未找到实时任务", "STREAM_JOB_NOT_FOUND");
+    if (!job || (job.adapter === kafkaFlinkAdapter && !this.kafkaFlinkRunner))
+      throw fail(404, "未找到实时任务", "STREAM_JOB_NOT_FOUND");
     return job;
   }
 }

@@ -17,7 +17,9 @@ cat > "$work/settings.xml" <<'XML'
 <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"/>
 XML
 
-"${MAVEN_BIN:-mvn}" -B -C -q -s "$work/settings.xml" -f "$repo/scripts/realtime-lab/pom.xml" \
+maven_mode=()
+if [[ ${SHUDUO_REALTIME_OFFLINE:-0} == 1 ]]; then maven_mode+=(-o); fi
+"${MAVEN_BIN:-mvn}" -B -C -q "${maven_mode[@]}" -s "$work/settings.xml" -f "$repo/scripts/realtime-lab/pom.xml" \
   "-Dmaven.repo.local=${SHUDUO_REALTIME_MAVEN_REPO:-$parent/maven-repo}" \
   "-Dmdep.outputFile=$work/classpath.txt" dependency:build-classpath > "$work/maven.log" 2>&1
 
