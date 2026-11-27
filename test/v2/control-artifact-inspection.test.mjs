@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {dirname,resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {execFileSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
-import {validateArtifactIdentity,verifyControlBuildBytes,controlArtifactSources,controlArtifactSourceChecks,splitStartupArtifactSources,verifyControlArtifactSources} from '../../scripts/inspect-control-artifact.mjs';
+import {validateArtifactIdentity,verifyControlBuildBytes,controlArtifactSources,controlArtifactSourceChecks,splitStartupArtifactSources,verifyControlArtifactSources,requiresTrackedControlSources,verifyTrackedControlSources} from '../../scripts/inspect-control-artifact.mjs';
 test('remote inspection requires a successful source-matched original build and unexpired matching artifact',()=>{
  const identity={source:'a'.repeat(40),buildRunId:'12345678',artifactId:'12345679'};
  const run={id:12345678,name:'Build V2 control plane package',head_sha:identity.source,status:'completed',conclusion:'success'};
@@ -77,4 +79,61 @@ test('split startup artifacts require every new module and context byte while le
    assert.throws(()=>verifyControlArtifactSources(root,missing),/SOURCE_MISMATCH/);
   }
  }finally{rmSync(root,{recursive:true,force:true});}
+});
+
+test('the protected build workflow requires its declared protocol even if a new manifest is removed or downgraded',()=>{
+ const workflow=readFileSync(new URL('../../.github/workflows/build-v2-control-plane.yml',import.meta.url),'utf8');
+ const legacy={protocol:'shuduo-control-build-source/v1'}, current={protocol:'shuduo-control-build-source/v2'};
+ assert.equal(requiresTrackedControlSources(current,workflow),true);
+ for(const manifest of [undefined,legacy])
+  assert.throws(()=>requiresTrackedControlSources(manifest,workflow),/BUILD_SOURCE_PROTOCOL_MISMATCH/);
+ assert.equal(requiresTrackedControlSources(legacy,'name: Original build'),false);
+ assert.equal(requiresTrackedControlSources(undefined,'name: Original build'),false);
+});
+
+test('staging uses tracked working files and inspection compares every source and manifest with the independent commit',t=>{
+ const dir=mkdtempSync(resolve(tmpdir(),'shuduo-control-tree-')), root=resolve(dir,'checkout'), stage=resolve(dir,'function');
+ t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ mkdirSync(root);mkdirSync(stage);
+ const write=(base,name,content)=>{mkdirSync(dirname(resolve(base,name)),{recursive:true});writeFileSync(resolve(base,name),content);};
+ const git=(...args)=>execFileSync('git',['-C',root,'-c','core.hooksPath=/dev/null','-c','commit.gpgSign=false',
+  '-c','user.name=Synthetic fixture','-c','user.email=source-tree@example.invalid',...args],{stdio:'pipe'});
+ const context='src/v2/invited-task-context.mjs',fixture='fixtures/holdings/context.json';
+ const tracked={[context]:'export const value = 1;\n',[fixture]:'{"fictional":true}', 'deploy/v2/package.json':'{"name":"fictional"}',
+  'deploy/v2/package-lock.json':'{"lockfileVersion":3}'};
+ for(const [name,data] of Object.entries(tracked))write(root,name,data);
+ git('init','-q');git('add','.');git('commit','-qm','Add fictional source');
+ const cache='src/v2/__pycache__/fixture.pyc',local='fixtures/local-only.txt';
+ write(root,cache,'fictional cache');write(root,local,'fictional local configuration');
+ const helper=fileURLToPath(new URL('../../scripts/control-package-sources.py',import.meta.url));
+ execFileSync('python3',[helper,'stage',root,stage]);
+ for(const [name,data] of Object.entries(tracked)){
+  const dest=name.replace(/^deploy\/v2\//,'');assert.equal(readFileSync(resolve(stage,dest),'utf8'),data);
+ }
+ for(const name of [cache,local,'deploy/v2/package.json'])assert.throws(()=>readFileSync(resolve(stage,name)),{code:'ENOENT'});
+ const archive=resolve(dir,'package.zip');
+ const sourceNames=[context,fixture,'package.json','package-lock.json'].sort();
+ const entries=sourceNames.map(name=>[name,readFileSync(resolve(stage,name),'utf8')]);
+ entries.push(['runtime/node','synthetic runtime'],['web-dist/index.html','<html>fictional</html>'],['node_modules/fictional/index.js','']);
+ const inspect=rows=>{
+  execFileSync('python3',['-c',[
+   'import json, sys, zipfile',
+   'with zipfile.ZipFile(sys.argv[1], "w") as archive:',
+   '    for name, data in json.load(sys.stdin): archive.writestr(name, data)',
+  ].join('\n'),archive],{input:JSON.stringify(rows),stdio:['pipe','pipe','pipe']});
+  return verifyTrackedControlSources(root,archive);
+ };
+ const modified=tracked[context].replace('1','2');write(root,context,modified);git('add',context);
+ execFileSync('python3',[helper,'stage',root,stage]);
+ assert.equal(readFileSync(resolve(stage,context),'utf8'),modified);
+ assert.deepEqual(inspect(entries),sourceNames);
+ for(const name of sourceNames){
+  assert.throws(()=>inspect(entries.filter(([path])=>path!==name)),/PACKAGE_PATH_MISSING/);
+  assert.throws(()=>inspect(entries.map(([path,data])=>[path,path===name?data.replace(/[a-z0-9]/i,'Z'):data])),/SOURCE_MISMATCH/);
+ }
+ assert.throws(()=>inspect([...entries,entries[0]]),/DUPLICATE_PATH/);
+ for(const extra of ['web-dist/assets/.env.staging','node_modules/test/key.PEM','web-dist/fixture.key','web-dist/.env/fixture'])
+  assert.throws(()=>inspect([...entries,[extra,'fictional']]),/SENSITIVE_PACKAGE_PATH/);
+ for(const extra of [local,cache,'deploy/v2/package.json','extra.txt','runtime/other'])
+  assert.throws(()=>inspect([...entries,[extra,'fictional']]),/UNEXPECTED_PACKAGE_PATH/);
 });

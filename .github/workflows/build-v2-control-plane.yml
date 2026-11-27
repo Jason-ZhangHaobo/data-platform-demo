@@ -8,6 +8,9 @@ on:
         required: false
         type: string
 
+env:
+  V2_CONTROL_BUILD_PROTOCOL: shuduo-control-build-source/v2
+
 permissions:
   contents: read
 
@@ -29,6 +32,8 @@ jobs:
           V2_BUILD_SOURCE: ${{ inputs.source_revision }}
         run: |
           set -euo pipefail
+          mkdir "$RUNNER_TEMP/control-packager"
+          cp scripts/build-v2-fc-package.sh scripts/control-package-sources.py scripts/verify-v2-packaged-entry.sh "$RUNNER_TEMP/control-packager/"
           if [[ -n "$V2_BUILD_SOURCE" ]]; then
             test "$GITHUB_REF" = refs/heads/main
             [[ "$V2_BUILD_SOURCE" =~ ^[a-f0-9]{40}$ ]]
@@ -63,10 +68,13 @@ jobs:
       - name: Build immutable Linux package
         run: |
           set -euo pipefail
-          scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
-          scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function-repeat.zip"
+          bash "$RUNNER_TEMP/control-packager/build-v2-fc-package.sh" "$GITHUB_WORKSPACE/v2-function.zip" "$GITHUB_WORKSPACE"
+          bash "$RUNNER_TEMP/control-packager/build-v2-fc-package.sh" "$GITHUB_WORKSPACE/v2-function-repeat.zip" "$GITHUB_WORKSPACE"
           test "$(sha256sum v2-function.zip | cut -d' ' -f1)" = "$(sha256sum v2-function-repeat.zip | cut -d' ' -f1)"
           test "$(wc -c < v2-function.zip)" = "$(wc -c < v2-function-repeat.zip)"
+
+      - name: Test the packaged application with the selected revision's fixture
+        run: bash "$RUNNER_TEMP/control-packager/verify-v2-packaged-entry.sh" "$GITHUB_WORKSPACE/v2-function.zip" "$GITHUB_WORKSPACE"
 
       - name: Verify package and record identity
         env:
@@ -74,10 +82,15 @@ jobs:
         run: |
           set -euo pipefail
           unzip -tq v2-function.zip
-          unzip -l v2-function.zip | grep -q 'runtime/node'
-          unzip -l v2-function.zip | grep -q 'src/v2/cloud-server.mjs'
-          unzip -l v2-function.zip | grep -q 'web-dist/index.html'
-          ! unzip -l v2-function.zip | grep -E '(^|/)(\.env|\.env\.local|[^/]+\.(pem|key))$'
+          paths="$RUNNER_TEMP/control-package-paths"
+          unzip -Z1 v2-function.zip > "$paths"
+          for required in runtime/node src/v2/cloud-server.mjs web-dist/index.html; do
+            grep -Fxq "$required" "$paths"
+          done
+          if grep -Eq '(^|/)(\.env(\..*)?|[^/]+\.(pem|key))$' "$paths"; then
+            echo "Unexpected credential-like path in control package" >&2
+            exit 1
+          fi
           digest="$(sha256sum v2-function.zip | cut -d' ' -f1)"
           bytes="$(wc -c < v2-function.zip | tr -d ' ')"
           test "${#digest}" = 64
@@ -89,7 +102,7 @@ jobs:
           const { V2_APPLICATION_SOURCE: applicationSource, GITHUB_SHA: workflowSource,
             GITHUB_RUN_ID: buildRunId, GITHUB_RUN_ATTEMPT: buildAttempt } = process.env;
           writeFileSync('control-build-source.json', JSON.stringify({
-            protocol:'shuduo-control-build-source/v1', applicationSource, applicationTree,
+            protocol:process.env.V2_CONTROL_BUILD_PROTOCOL, applicationSource, applicationTree,
             workflowSource, buildRunId, buildAttempt, sha256, bytes:Number(bytes),
           }) + '\n', {flag:'wx'});
           NODE
