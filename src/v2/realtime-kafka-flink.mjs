@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loopbackKafkaBootstrap, runLiveWindowProcess } from "./live-kafka-window-session.mjs";
 
 export const kafkaFlinkAdapter = "kafka-flink-local-v1";
 const repo = fileURLToPath(new URL("../../", import.meta.url));
@@ -105,9 +106,15 @@ export function createKafkaFlinkRunner(env, root) {
       ![env.JAVA_HOME, env.SHUDUO_REALTIME_MAVEN_REPO].every(path =>
         typeof path === "string" && isAbsolute(path))) return undefined;
   const workRoot = join(root, ".runtime", "realtime-kafka-flink");
-  const brokerCrash = env.V2_LOCAL_KAFKA_FLINK_BROKER_CRASH === "true";
-  const windowCrash = brokerCrash || env.V2_LOCAL_KAFKA_FLINK_WINDOW_CRASH === "true";
-  const checkpointCrash = !windowCrash && env.V2_LOCAL_KAFKA_FLINK_CHECKPOINT_CRASH === "true";
+  const configuredBootstrap=env.V2_LOCAL_KAFKA_FLINK_LIVE_BOOTSTRAP;
+  const bootstrap=loopbackKafkaBootstrap(configuredBootstrap);
+  if (configuredBootstrap!==undefined && !bootstrap) return undefined;
+  const brokerCrash = !bootstrap && env.V2_LOCAL_KAFKA_FLINK_BROKER_CRASH === "true";
+  const windowCrash = !bootstrap && (brokerCrash || env.V2_LOCAL_KAFKA_FLINK_WINDOW_CRASH === "true");
+  const checkpointCrash = !bootstrap && !windowCrash && env.V2_LOCAL_KAFKA_FLINK_CHECKPOINT_CRASH === "true";
+  const liveSqlDigest = bootstrap
+    ? createHash("sha256").update(readFileSync(join(repo,"scripts/realtime-lab/live-windows.sql"))).digest("hex")
+    : undefined;
   const windowSqlDigest = windowCrash
     ? createHash("sha256").update(readFileSync(join(repo,"scripts/realtime-lab/windows.sql"))).digest("hex")
     : undefined;
@@ -117,13 +124,16 @@ export function createKafkaFlinkRunner(env, root) {
     ...(env.MAVEN_BIN ? {MAVEN_BIN: env.MAVEN_BIN} : {}),
     SHUDUO_REALTIME_MAVEN_REPO: env.SHUDUO_REALTIME_MAVEN_REPO,
     SHUDUO_REALTIME_OFFLINE: "1",
+    ...(bootstrap ? {SHUDUO_REALTIME_LIVE_BOOTSTRAP:bootstrap} : {}),
   };
-  const run = async ({signal}) => {
+  const script=join(repo,"scripts/realtime-lab/run.sh");
+  const run = async ({signal,onProgress}) => {
     if (signal.aborted) throw new Error("KAFKA_FLINK_CANCELLED");
     mkdirSync(workRoot, {recursive:true,mode:0o700});
     const work = mkdtempSync(join(workRoot,"run-"));
+    if (bootstrap) return runLiveWindowProcess({script,work,repo,env:childEnvironment,signal,sqlDigest:liveSqlDigest,onProgress});
     return new Promise((resolve, reject) => {
-      const child = spawn("/bin/bash", [join(repo, "scripts/realtime-lab/run.sh"), work,
+      const child = spawn("/bin/bash", [script, work,
         ...(brokerCrash ? ["--broker-crash"] : windowCrash ? ["--window-crash"] : checkpointCrash ? ["--checkpoint-crash"] : [])], {
         cwd:repo, env:childEnvironment, detached:true, stdio:["ignore","pipe","ignore"],
       });
@@ -166,5 +176,5 @@ export function createKafkaFlinkRunner(env, root) {
       });
     });
   };
-  return Object.assign(run,{checkpointCrash,windowSqlDigest,brokerCrash});
+  return Object.assign(run,{checkpointCrash,windowSqlDigest,brokerCrash,liveSqlDigest});
 }

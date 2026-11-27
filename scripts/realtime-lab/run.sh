@@ -2,8 +2,8 @@
 set -euo pipefail
 umask 077
 
-if [[ $# -lt 1 || $# -gt 2 || ! -d "$1" || -z "${JAVA_HOME:-}" || (${2:-} != "" && ${2:-} != "--checkpoint-crash" && ${2:-} != "--window-crash" && ${2:-} != "--broker-crash") ]]; then
-  echo "Usage: JAVA_HOME=/path/to/jdk17 bash scripts/realtime-lab/run.sh EXISTING_PRIVATE_DIRECTORY [--checkpoint-crash|--window-crash|--broker-crash]" >&2
+if [[ $# -lt 1 || $# -gt 2 || ! -d "$1" || -z "${JAVA_HOME:-}" || (${2:-} != "" && ${2:-} != "--checkpoint-crash" && ${2:-} != "--window-crash" && ${2:-} != "--broker-crash" && ${2:-} != "--live-windows") ]]; then
+  echo "Usage: JAVA_HOME=/path/to/jdk17 bash scripts/realtime-lab/run.sh EXISTING_PRIVATE_DIRECTORY [--checkpoint-crash|--window-crash|--broker-crash|--live-windows]" >&2
   exit 2
 fi
 
@@ -26,6 +26,11 @@ if [[ ${SHUDUO_REALTIME_OFFLINE:-0} == 1 ]]; then maven_mode+=(-o); fi
 classpath=$(cat "$work/classpath.txt")
 "$JAVA_HOME/bin/javac" --release 17 -cp "$classpath" -d "$work/classes" \
   "$repo/scripts/realtime-lab/src/main/java/cn/shuduo/lab/"*.java
+
+if [[ ${2:-} == "--live-windows" ]]; then
+  exec "$JAVA_HOME/bin/java" -Xmx1024m -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
+    -cp "$work/classes:$classpath" cn.shuduo.lab.QuoteReplay "$repo" "$work/run" --live-windows 2> "$work/engine.log"
+fi
 
 "$JAVA_HOME/bin/java" -Xmx1024m -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
   -cp "$work/classes:$classpath" cn.shuduo.lab.QuoteReplay "$repo" "$work/run" "${@:2}" > "$work/engine.log" 2>&1

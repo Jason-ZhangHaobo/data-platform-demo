@@ -443,16 +443,21 @@ export class RealtimeManager {
     const job = this.#job(id);
     const runs = this.store.list("stream_run", this.project).filter(run => run.jobId === id);
     if (job.adapter === kafkaFlinkAdapter) {
+      const liveWindow=runs.find(run=>run.id===job.lastRunId)?.liveWindow;
       const verified = runs.find(run => run.engineResult);
       const evidence = verified?.engineResult;
       const recovery = evidence?.checkpointRecovery;
       const originalDigest = recovery?.checkpointDigest ?? evidence?.originalSavepointDigest;
       return {...job,runs,alerts:this.store.list("stream_alert",this.project).filter(alert => alert.jobId === id),
+        ...(this.kafkaFlinkRunner.liveSqlDigest ? {liveWindowEnabled:true,sourceTopic:"shuduo-live-quotes",targetTable:"shuduo-live-windows"} : {}),
+        ...(liveWindow ? {liveWindow:{...liveWindow,runId:job.lastRunId}} : {}),
         ...(this.kafkaFlinkRunner.windowSqlDigest ? {windowCrashEnabled:true,targetTable:"shuduo-quote-windows"} : {}),
         ...(this.kafkaFlinkRunner.brokerCrash ? {brokerCrashEnabled:true} : {}),
         ...(this.kafkaFlinkRunner.checkpointCrash ? {checkpointCrashEnabled:true} : {}),
         ...(evidence ? {engineEvidence: {...evidence,runId:verified.id}} : {}),
-        checkpoints: evidence ? [
+        checkpoints: liveWindow ? (liveWindow.savepointDigest ? [
+          {id:liveWindow.savepointDigest,runId:job.lastRunId,stateHash:liveWindow.savepointDigest,flinkJobId:liveWindow.flinkJobId},
+        ] : []) : evidence ? [
           ...(originalDigest ? [{id:originalDigest,runId:verified.id,stateHash:originalDigest,flinkJobId:evidence.originalJobId,
             ...(recovery ? {checkpointId:recovery.checkpointId} : {})}] : []),
           {id:evidence.restoredSavepointDigest,runId:verified.id,stateHash:evidence.restoredSavepointDigest,flinkJobId:evidence.restoredJobId},
@@ -574,7 +579,8 @@ export class RealtimeManager {
     if (!input.recovery && !["READY", "STOPPED", "CAUGHT_UP", ...(isEngine ? ["FAILED","INTERRUPTED"] : [])].includes(job.status))
       throw fail(409, "实时任务当前状态不能启动", "STREAM_INVALID_STATE");
     const windowSqlDigest = isEngine ? this.kafkaFlinkRunner.windowSqlDigest : undefined;
-    const engineFixture = isEngine && !windowSqlDigest ? this.#read("quotes_recovered.jsonl") : undefined;
+    const liveSqlDigest = isEngine ? this.kafkaFlinkRunner.liveSqlDigest : undefined;
+    const engineFixture = isEngine && !windowSqlDigest && !liveSqlDigest ? this.#read("quotes_recovered.jsonl") : undefined;
     const run = this.store.create("stream_run", this.project, {
         jobId: job.id,
         status: "RUNNING",
@@ -589,7 +595,7 @@ export class RealtimeManager {
         recoveryCheckpointId: input.recoveryCheckpointId,
         requestKey: input.requestKey,
         requestSignature: input.requestSignature,
-        ...(isEngine ? {adapter:kafkaFlinkAdapter,fixtureDigest:engineFixture?.contentHash,windowSqlDigest} : {}),
+        ...(isEngine ? {adapter:kafkaFlinkAdapter,fixtureDigest:engineFixture?.contentHash,windowSqlDigest,liveSqlDigest} : {}),
         startedAt: new Date(this.now()).toISOString(),
         actualExecution: true,
         publicDeployed: false,
@@ -614,39 +620,48 @@ export class RealtimeManager {
   }
 
   async #processEngine(job, run, fixture, signal) {
-    let status, engineResult, errorCode;
+    let status, engineResult, liveWindow, errorCode;
     try {
-      const latest = new Map();
-      for (const line of fixture?.lines ?? []) {
-        const quote = validateQuoteEvent(JSON.parse(line));
-        if (quote.sequence > (latest.get(quote.security_code)?.sequence ?? 0)) latest.set(quote.security_code,quote);
+      if (run.liveSqlDigest) {
+        liveWindow=await this.kafkaFlinkRunner({signal,onProgress:observation => {
+          if (!this.closed) this.store.update("stream_run",run.id,this.project,{liveWindow:observation});
+        }});
+        status="STOPPED";
+      } else {
+        const latest = new Map();
+        for (const line of fixture?.lines ?? []) {
+          const quote = validateQuoteEvent(JSON.parse(line));
+          if (quote.sequence > (latest.get(quote.security_code)?.sequence ?? 0)) latest.set(quote.security_code,quote);
+        }
+        const output = await this.kafkaFlinkRunner({signal});
+        if (signal.aborted) throw new Error("KAFKA_FLINK_CANCELLED");
+        engineResult = kafkaFlinkEvidence(output,{
+          fixtureDigest:fixture?.contentHash,
+          windowSqlDigest:run.windowSqlDigest,
+          checkpointCrash:this.kafkaFlinkRunner.checkpointCrash,
+          brokerCrash:this.kafkaFlinkRunner.brokerCrash,
+          quotes:[...latest.values()].sort((a,b) => a.security_code.localeCompare(b.security_code)),
+        });
+        status = "SUCCEEDED";
       }
-      const output = await this.kafkaFlinkRunner({signal});
-      if (signal.aborted) throw new Error("KAFKA_FLINK_CANCELLED");
-      engineResult = kafkaFlinkEvidence(output,{
-        fixtureDigest:fixture?.contentHash,
-        windowSqlDigest:run.windowSqlDigest,
-        checkpointCrash:this.kafkaFlinkRunner.checkpointCrash,
-        brokerCrash:this.kafkaFlinkRunner.brokerCrash,
-        quotes:[...latest.values()].sort((a,b) => a.security_code.localeCompare(b.security_code)),
-      });
-      status = "SUCCEEDED";
     } catch (error) {
-      status = signal.aborted ? "STOPPED" : "FAILED";
-      errorCode = signal.aborted ? "KAFKA_FLINK_CANCELLED" :
-        ["KAFKA_FLINK_EVIDENCE_MISMATCH","KAFKA_FLINK_TIMEOUT"].includes(error.message)
+      status = signal.aborted && !run.liveSqlDigest ? "STOPPED" : "FAILED";
+      errorCode = status==="STOPPED" ? "KAFKA_FLINK_CANCELLED" :
+        ["KAFKA_FLINK_EVIDENCE_MISMATCH","KAFKA_FLINK_TIMEOUT","LIVE_WINDOW_EVIDENCE_MISMATCH",
+          "LIVE_WINDOW_STOP_UNCONFIRMED","LIVE_WINDOW_STARTUP_TIMEOUT"].includes(error.message)
           ? error.message : "KAFKA_FLINK_EXECUTION_FAILED";
     }
     if (this.closed) return;
     const finishedAt = new Date(this.now()).toISOString();
     const error = status === "FAILED" ? "本机 Kafka / Flink 运行或证据核对失败" : undefined;
     this.store.update("stream_run",run.id,this.project,{status,engineResult,error,errorCode,finishedAt,
+      ...(liveWindow ? {liveWindow} : {}),
       durationMs:this.now()-Date.parse(run.startedAt)});
     this.store.update("stream_job",job.id,this.project,{status:status === "SUCCEEDED" ? "CAUGHT_UP" : status,error});
     if (error) this.store.create("stream_alert",this.project,{
       jobId:job.id,runId:run.id,status:"OPEN",severity:"ERROR",code:errorCode,message:error,openedAt:finishedAt,
     });
-    if (status === "SUCCEEDED")
+    if (status === "SUCCEEDED" || liveWindow?.savepointDigest)
       for (const alert of this.store.list("stream_alert",this.project))
         if (alert.jobId === job.id && alert.status === "OPEN")
           this.store.update("stream_alert",alert.id,this.project,{status:"RESOLVED",recoveryRunId:run.id,resolvedAt:finishedAt});
