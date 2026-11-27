@@ -45,6 +45,7 @@ import {agentConsumptionPath,agentConsumptionReceiptPath,readAgentConsumption} f
 import {createContextDerivedTask,readChatScopeChanges,submitChatScopeChange} from "../src/v2/agent-derivation-client.mjs";
 import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-change-delivery-client.mjs";
 import {readChatChangePublication,reviewedChatChangeInput,publishChatChange} from "../src/v2/chat-change-publication-client.mjs";
+import {readChatChangeConsumption} from "../src/v2/chat-change-consumption-client.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -99,6 +100,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent chat-delivery --id INTENT_ID --change-request-id CHANGE_ID
   shuduo agent prepare-chat-delivery --id INTENT_ID --change-request-id CHANGE_ID --source-run-id CHILD_RUN_ID --request-id PREPARATION_UUID --confirm
   shuduo agent chat-publication --id INTENT_ID --change-request-id CHANGE_ID
+  shuduo agent chat-batch-consumption --id INTENT_ID --change-request-id CHANGE_ID --batch-id BATCH_ID [--release-id RELEASE_ID]
   shuduo agent publish-chat-change --review-file SAVED_PUBLICATION_JSON --attest-code --attest-assertions --attest-delivery-files --attest-local-scope --confirm
   shuduo agent cancel-intent --id INTENT_ID
   shuduo agent cancel-child --id INTENT_ID --destination MODULE_ID
@@ -630,6 +632,9 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: { destinationId: required(parsed.options, "destination") },
         },
       );
+    else if(resource==="agent" && action==="chat-batch-consumption")
+      result=await readChatChangeConsumption(client,{intentId:required(parsed.options,"id"),changeRequestId:required(parsed.options,"change_request_id"),
+        batchId:required(parsed.options,"batch_id"),...(parsed.options.release_id===undefined?{}:{releaseId:required(parsed.options,"release_id")})});
     else if(resource==="agent" && action==="chat-publication")
       result=await readChatChangePublication(client,{intentId:required(parsed.options,"id"),changeRequestId:required(parsed.options,"change_request_id")});
     else if(resource==="agent" && action==="publish-chat-change") {

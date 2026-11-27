@@ -82,6 +82,21 @@ MCP 对应 `agent_chat_change_publication` 和 `agent_publish_chat_change`。本
 
 服务端为两个应用各设置 300 秒有效期。每批实际发出 15 个请求，覆盖金额、两页数据、无效参数、缺少或无效凭证、授权、限流和撤销后拒绝。六个接口版本均在调用记录中按批次核对。两个应用均已撤销，活动应用数为零。此用例证明测试期间实际调用的版本和结果，未验证普通应用在服务换版后的版本授权行为。
 
+### 在原对话逐批核对接口消费
+
+从所选口径变更的「两批运行监控」打开其中一批的接口消费。页面列出该批已登记的接口版本、DAPI 返回字段和 XAPI 固定的子版本。可以进一步查看已匹配的调用、应用状态和分页覆盖，也可以进入该批的数据服务工作区。浏览器链接保留所选对话、变更和批次。重新打开或切换批次只读保存的记录。
+
+股票案例中，持仓 DAPI 和组合 XAPI 均能查到同一已撤销应用的第 1、2 页调用。现金 DAPI 参与组合，并无该应用直接查询现金 DAPI 的成功记录。单次调用的行数与整个批次的行数分别展示。接口已发布、某页有成功记录、全部页已核对是三项不同的事实。缺页、混用版本、使用了不同应用或记录截断时，页面保留仍可读取的明细，并显示尚待核对。
+
+角色权限和证据范围沿用原会话。此处的 `MATCHED_ONLY` 表示本机保存的指定版本、调用及结果快照能够相互对照。独立客户端的 30 次 HTTP 测试由其原验收报告记录。本机界面不会把这些测试计入正式公网自主完成率。
+
+```sh
+shuduo agent chat-batch-consumption --id INTENT_ID --change-request-id CHANGE_ID \
+  --batch-id BATCH_ID --release-id RELEASE_ID
+```
+
+对应的 MCP 工具是 `agent_chat_batch_consumption`，HTTP 接口是 `GET /api/v2/agent/intents/:id/development/changes/:changeId/publication/batches/:batchId/consumption`。三种入口均无需调用令牌。
+
 ### 从已知开发版本创建派生任务
 
 沿用 `POST /api/v2/agent/tasks`，新增可选来源对象：

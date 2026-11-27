@@ -1,10 +1,12 @@
-import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import {lazy,Suspense,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {RefreshCw,Send} from 'lucide-react';
 import {readChatChangePublication,publishChatChange,reviewedChatChangeInput,type ChatChangePublicationReceipt as Receipt} from '../../src/v2/chat-change-publication-client.mjs';
 import type {ChatDeliverySource} from '../../src/v2/chat-change-delivery-client.mjs';
 import type {ChangeApi} from './chat-context-change';
+import {chatConsumptionLocation,consumptionFromLocation} from './chat-context-change';
 import {reviewAttestationsComplete} from './delivery-presentation';
 import {ChatPublicationReview,ChatPublicationMonitor} from './ChatPublicationEvidence';
+const ChatBatchConsumption=lazy(()=>import('./ChatBatchConsumption'));
 
 type Props={
   api:ChangeApi;intentId:string;changeRequestId:string;parent:ChatDeliverySource;child:ChatDeliverySource;
@@ -16,6 +18,7 @@ export default function ChatChangePublication({api,intentId,changeRequestId,pare
     [intentId,changeRequestId,parent,child,packageId,packageDigest,verificationId]);
   const [value,setValue]=useState<Receipt>(),[review,setReview]=useState<Receipt>(),[checked,setChecked]=useState<Record<string,boolean>>({});
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  const [batchId,setBatchId]=useState(()=>typeof location==='undefined'?undefined:consumptionFromLocation(location.href,intentId,changeRequestId));
   const live=useRef(false),flight=useRef(false),readOrder=useRef(0),access=useRef({canInteract,isCurrent});
   access.current={canInteract,isCurrent};
   const client=useMemo(()=>({
@@ -76,6 +79,14 @@ export default function ChatChangePublication({api,intentId,changeRequestId,pare
     flight.current=true;setBusy(true);setNotice('');setReview(undefined);setChecked({});
     try{await load();}finally{flight.current=false;if(live.current)setBusy(false);}
   }
+  function selectBatch(id?:string){
+    if (!active() || !value?.monitoringVerified || (id && !value.runs.some(run=>run.id===id&&run.status==='SUCCEEDED'))) return;
+    const next=id===batchId?undefined:id;
+    onPin();
+    window.history.replaceState(null,'',chatConsumptionLocation(location.href,intentId,changeRequestId,next));
+    setBatchId(next);
+  }
+  const batch=value?.monitoringVerified ? value.runs.find(run=>run.id===batchId&&run.status==='SUCCEEDED') : undefined;
   const writable=canInteract&&value?.canPublish===true;
   return <section aria-label="派生版本测试发布" className="chat-change-publication">
     <header><h4><Send size={16}/>本机测试发布</h4>
@@ -83,7 +94,15 @@ export default function ChatChangePublication({api,intentId,changeRequestId,pare
     {error?<div><p role="alert">{error}</p><button type="button" className="button" disabled={busy} onClick={()=>void refresh()}>核对原发布</button></div>
       :!value?<p role="status">正在读取原发布…</p>
       :value.phase==='PUBLISHED'?<>
-        <ChatPublicationMonitor value={value}/>
+        <ChatPublicationMonitor value={value} selectedBatchId={batchId} onChooseBatch={selectBatch}/>
+        {batch&&<Suspense fallback={<p role="status">正在加载批次接口记录…</p>}>
+          <ChatBatchConsumption key={[value.release!.id,batch.id,value.packageDigest].join(':')}
+            api={api} publication={value} batch={batch} onClose={()=>{
+              selectBatch();
+              requestAnimationFrame(()=>document.getElementById('chat-consumption-open-'+batch.id)?.focus());
+            }}/>
+        </Suspense>}
+        {batchId!==undefined&&!batch&&<p role="status">此链接中的消费批次尚未与当前发布核对。请从已核验的批次中重新选择。</p>}
         <button type="button" className="button" disabled={busy} onClick={()=>void refresh()}><RefreshCw size={13}/>刷新运行记录</button>
       </>:review&&writable?<ChatPublicationReview value={review} checked={checked} busy={busy}
         onCheck={(id,state)=>setChecked(previous=>({...previous,[id]:state}))} onPublish={()=>void publish()}

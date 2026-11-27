@@ -19,7 +19,7 @@ const digest=(x:unknown)=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
 const key=(x:unknown)=>typeof x==='string'&&/^chat-derive-v1-[a-f0-9]{64}$/.test(x);
 export function changeFromLocation(href:string,intentId:string):string|null|undefined {
   const q=new URL(href).searchParams;
-  if(!q.has('chat_change'))return;
+  if(!q.has('chat_change'))return q.has('chat_consumption')?null:undefined;
   const id=q.get('chat_change');
   if(q.getAll('chat_change').length!==1||q.getAll('chat_intent').length!==1||q.get('chat_intent')!==intentId||!key(id))return null;
   return id;
@@ -27,8 +27,22 @@ export function changeFromLocation(href:string,intentId:string):string|null|unde
 export function changeLocation(href:string,intentId:string,requestId:string) {
   if(!uuid(intentId)||!key(requestId))throw Error('请选择本次对话中的口径变更');
   const url=new URL(href);
+  if(changeFromLocation(href,intentId)!==requestId)url.searchParams.delete('chat_consumption');
   url.searchParams.set('chat_intent',intentId);
   url.searchParams.set('chat_change',requestId);
+  return url;
+}
+export function consumptionFromLocation(href:string,intentId:string,changeId:string):string|null|undefined {
+  const q=new URL(href).searchParams;
+  if(!q.has('chat_consumption'))return;
+  const id=q.get('chat_consumption');
+  return q.getAll('chat_consumption').length===1&&changeFromLocation(href,intentId)===changeId&&uuid(id)?id:null;
+}
+export function chatConsumptionLocation(href:string,intentId:string,changeId:string,batchId?:string){
+  const url=changeLocation(href,intentId,changeId);
+  if(batchId===undefined)url.searchParams.delete('chat_consumption');
+  else if(uuid(batchId))url.searchParams.set('chat_consumption',batchId);
+  else throw Error('请选择本次发布已核验的批次');
   return url;
 }
 export function chooseStoredChange<T extends {requestId:string}>(changes:T[],selection:string|null|undefined) {

@@ -282,6 +282,97 @@ async function readyChatPublication(t,options) {
   return {...f,path,child,ready,body,publish};
 }
 
+test('the original chat matches exact-batch consumption across both pages of one revoked grant',async t=>{
+  const f=await readyChatPublication(t);
+  const published=await f.publish();assert.ok([200,201].includes(published.status));
+  const release=await f.poll(f.path,row=>row.monitoringVerified);
+  const [batch,other]=release.runs;
+  const route=id=>f.path+'/batches/'+id+'/consumption';
+  assert.equal((await f.call(route(randomUUID()))).status,404);
+  assert.equal((await f.call(route(batch.id)+'?batch_id='+other.id)).status,422);
+  assert.equal((await f.call(route(batch.id),{})).status,405);
+  assert.equal((await f.call(route(batch.id),undefined,{headers:{authorization:'Bearer fixture-only'}})).status,403);
+  const probe=async id=>{
+    const response=await f.call(route(id));assert.equal(response.status,200,response.body.code);return response.body;
+  };
+  const start=await probe(batch.id);
+  assert.equal(start.status,'PENDING');assert.deepEqual(start.services,[]);
+  async function publishService(type,input,existing) {
+    const collection='/data-services/'+type+'s';
+    const draft=await f.call(existing?collection+'/'+existing.id+'/versions':collection,input);
+    assert.equal(draft.status,201,draft.body.code);
+    const serviceId=existing?.id??draft.body.id;
+    const path=collection+'/'+serviceId;
+    assert.equal((await f.call(path+'/test',{pageSize:1})).body.test.status,'PASSED');
+    const current=(await f.call(path)).body.currentVersion;
+    const v=await f.call(path+'/publish',{configHash:current.configHash});assert.equal(v.status,200,v.body.code);
+    return {id:serviceId,slug:input.slug??existing.slug,versionId:v.body.version.id};
+  }
+  const spec={sourceReleaseRunId:batch.id,fields:['client_id','holding_market_value','security_count'],timeoutMs:2000,rateLimitPerMinute:120};
+  const holdings=await publishService('dapi',{...spec,name:'虚构持仓查询',slug:'chat-consume-holdings'});
+  const cash=await publishService('dapi',{...spec,name:'虚构现金查询',slug:'chat-consume-cash',fields:['client_id','total_assets','available_cash']});
+  const combined=await publishService('xapi',{name:'虚构组合查询',slug:'chat-consume-total',timeoutMs:2000,rateLimitPerMinute:120,
+    steps:[{alias:'holding',dapiId:holdings.id,dapiVersionId:holdings.versionId},{alias:'cash',dapiId:cash.id,dapiVersionId:cash.versionId}]});
+  assert.equal((await probe(batch.id)).services.length,3);
+  async function grant(){
+    const issued=await f.call('/data-services/applications',{name:'虚构消费方',serviceIds:[holdings.id,combined.id],ttlSeconds:300});
+    assert.equal(issued.status,201);return {id:issued.body.application.id,token:issued.body.token};
+  }
+  const revoke=async a=>assert.equal((await f.call('/data-services/applications/'+a.id+'/revoke',{})).body.status,'REVOKED');
+  const query=async(a,type,service,page,size=1)=>{
+    const response=await fetch(f.base+'/open/'+type+'s/'+service.slug+'?page='+page+'&page_size='+size,{headers:{authorization:'Bearer '+a.token}});
+    assert.equal(response.status,200);
+    await response.arrayBuffer();
+  };
+  const a=await grant(),b=await grant();
+  for (const page of [1,2]){
+    await query(a,'dapi',holdings,page);await query(b,'xapi',combined,page);
+  }
+  await revoke(a);await revoke(b);
+  assert.equal((await probe(batch.id)).status,'PENDING','pages from different applications must not be combined');
+  const c=await grant();await query(c,'xapi',combined,1,20);await query(c,'dapi',holdings,1,20);await revoke(c);
+  assert.equal((await probe(batch.id)).status,'PENDING','a single large page does not demonstrate pagination across two rows');
+  const selected=await grant();
+  for(const page of [1,2]){await query(selected,'dapi',holdings,page);await query(selected,'xapi',combined,page);}
+  assert.equal((await probe(batch.id)).status,'PENDING','grant still active');
+  await revoke(selected);
+  const beforeCalls=f.store.list('service_call',PROJECT).length,beforeCounts={...f.counts};
+  const report=await probe(batch.id);
+  assert.equal(report.status,'MATCHED_ONLY');
+  assert.equal(report.evidenceScope,'LOCAL_OR_MANUAL_CONSISTENCY_ONLY');
+  assert.equal(report.externalSystemVerified,false);
+  assert.equal(report.batch.sequence,1);assert.equal(report.batch.rowCount,2);
+  assert.deepEqual(report.source,release.source);
+  assert.deepEqual(report.parent,release.parent);
+  const x=report.services.find(s=>s.serviceType==='XAPI'),holding=report.services.find(s=>s.serviceId===holdings.id);
+  for (const service of [x,holding]){
+    assert.equal(service.call.applicationId,selected.id);
+    assert.equal(service.pagination.applicationStatus,'REVOKED');
+    assert.deepEqual(service.pagination.verifiedPages,[1,2]);
+    assert.deepEqual(service.sourceRunIds,[batch.id]);
+    assert.match(service.call.callIdDigest,/^[a-f0-9]{64}$/);
+  }
+  assert.ok(x.sourceVersions.some(s=>s.versionId===cash.versionId&&s.sourceReleaseRunId===batch.id));
+  assert.equal(report.services.find(s=>s.serviceId===cash.id).call,undefined);
+  assert.equal((await probe(other.id)).status,'PENDING');assert.deepEqual((await probe(other.id)).services,[]);
+  assert.equal(f.store.list('service_call',PROJECT).length,beforeCalls);assert.deepEqual(f.counts,beforeCounts);
+  assert.doesNotMatch(JSON.stringify(report),/"parameters":|"token"\s*:|"tokenPrefix":|"tokenHash":|"rows":|CLIENT-00/);
+  const next=await publishService('dapi',{...spec,sourceReleaseRunId:other.id},cash);
+  const history=await probe(batch.id);
+  assert.equal(history.status,'MATCHED_ONLY');
+  assert.equal(history.services.find(s=>s.versionId===cash.versionId).versionStatus,'RETIRED');
+  assert.ok(!history.services.some(s=>s.versionId===next.versionId));
+  assert.equal((await probe(other.id)).services[0].versionId,next.versionId);
+  const page2=f.store.list('service_call',PROJECT).find(call=>call.applicationId===selected.id&&call.serviceId===holdings.id&&call.parameters.page===2);
+  f.store.update('service_call',page2.id,PROJECT,{resultHash:'0'.repeat(64)});
+  assert.equal((await probe(batch.id)).status,'PENDING');
+  f.store.update('service_call',page2.id,PROJECT,{resultHash:page2.resultHash});
+  const {id,projectId,createdAt,updatedAt,version,...repeated}=page2;
+  for(let i=0;i<100;i++) f.store.create('service_call',PROJECT,repeated);
+  const limited=await probe(batch.id);
+  assert.equal(limited.truncated,true);assert.equal(limited.status,'PENDING');
+});
+
 test('one explicit reviewed chat publication allocates two timed child batches and recovers original evidence',async t=>{
   const f=await readyChatPublication(t);
   assert.equal(f.ready.phase,'READY');assert.equal(f.ready.canPublish,true);assert.deepEqual(f.ready.runs,[]);

@@ -36,6 +36,7 @@ import{publishedReportSourceSchema,publishedReportMetricIds}from'../src/v2/publi
 import {createContextDerivedTask,readChatScopeChanges,submitChatScopeChange} from "../src/v2/agent-derivation-client.mjs";
 import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-change-delivery-client.mjs";
 import {readChatChangePublication,publishChatChange} from "../src/v2/chat-change-publication-client.mjs";
+import {readChatChangeConsumption} from "../src/v2/chat-change-consumption-client.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -147,6 +148,7 @@ const tools = [
   { name:"agent_chat_scope_changes", description:"查询原开发对话的来源、可选口径和已经提交的变更。", inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"}},required:["intentId"],additionalProperties:false},annotations:{readOnlyHint:true} },
   {name:"agent_chat_change_delivery",description:"从原会话读取指定口径变更的交付文件和已保存的演练记录。",inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"}},required:["intentId","changeRequestId"],additionalProperties:false},annotations:{readOnlyHint:true}},
   {name:"agent_chat_change_publication",description:"读取已演练子版本的本机发布预检、测试批次及调度监控证据。",inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"}},required:["intentId","changeRequestId"],additionalProperties:false},annotations:{readOnlyHint:true}},
+  {name:"agent_chat_batch_consumption",description:"查询原开发对话中指定发布批次的 DAPI、XAPI 版本，以及已记录的调用、分页和授权状态。",inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"},batchId:{type:"string",format:"uuid"},releaseId:{type:"string",format:"uuid"}},required:["intentId","changeRequestId","batchId"],additionalProperties:false},annotations:{readOnlyHint:true}},
   {name:"agent_publish_chat_change",description:"仅在工程师逐项审阅并批准后注册确切子版本的两个本机虚构测试批次，可能执行两次 Spark。",inputSchema:{type:"object",properties:{
     intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"},sourceRunId:{type:"string",format:"uuid"},
     packageId:{type:"string",format:"uuid"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},verificationId:{type:"string",format:"uuid"},
@@ -494,6 +496,7 @@ async function callTool(name, args = {}, client=defaultClient) {
   if (name === "agent_chat_scope_changes") return readChatScopeChanges(client,args);
   if (name === "agent_chat_change_delivery") return readChatChangeDelivery(client,args);
   if (name === "agent_chat_change_publication") return readChatChangePublication(client,args);
+  if (name === "agent_chat_batch_consumption") return readChatChangeConsumption(client,args);
   if (name === "agent_publish_chat_change") return publishChatChange(client,args);
   if (name === "agent_prepare_chat_change_delivery") return prepareChatChangeDelivery(client,args);
   if (name === "agent_change_chat_scope") return submitChatScopeChange(client,args);

@@ -9,8 +9,9 @@ const agentSource=record=>record&&[undefined,'AGENT'].includes(record.sourceKind
 
 // The HTTP route is local-only; every relationship is rebuilt from stored records.
 // No mutations, credential creation, model calls or Spark execution occur here.
-export async function localTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,batchId,manager,timeUnitMs,fundSignedExecutionFor,syncSourcesFor}) {
- if(batchId && !agent.syncInput) throw Object.assign(Error('本机精确批次仅适用于冻结持仓发布'),{status:422,code:'LOCAL_BATCH_SCOPE_UNSUPPORTED'});
+export async function localTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,batchId,nativeVersionHistory=false,manager,timeUnitMs,fundSignedExecutionFor,syncSourcesFor}) {
+ if(batchId && !agent.syncInput && !nativeVersionHistory) throw Object.assign(Error('本机精确批次仅适用于冻结持仓发布'),{status:422,code:'LOCAL_BATCH_SCOPE_UNSUPPORTED'});
+ if(nativeVersionHistory && (!batchId || !releaseId || agent.syncInput || agent.fundPreparation)) throw fail();
  if(agent.fundPreparation){
   if(!releaseId)throw Object.assign(Error('基金消费须指定原发布编号和包摘要'),{status:422,code:'FUND_AGENT_RELEASE_REQUIRED'});
   return fundAgentTaskConsumption({store,project,agent,packageDigest,releaseId,callIdDigest,manager,timeUnitMs,fundSignedExecutionFor});
@@ -27,10 +28,10 @@ export async function localTaskConsumption({store,project,agent,packageDigest,re
   const sync = selectedPackage?.manifest?.source?.syncInput;
   if (Boolean(agent.syncInput) !== Boolean(sync)) throw fail();
   const selection={taskId:agent.id,packageDigest,releaseId},sources=sync ? syncSourcesFor(selection) : localServiceSources({store,project,selection}),ids=new Set(sources.map(source=>source.id));
-  if (sync && (sources.length !== 2 || batchId && !ids.has(batchId))) throw fail();
+  if ((sync || nativeVersionHistory) && (sources.length !== 2 || batchId && !ids.has(batchId))) throw fail();
   const getRelease=id=>id===releaseId&&sources.length?{...store.get('release',id,project),sourceAgentTaskId:agent.id,sourceKind:'AGENT'}:undefined;
   const report = await privateTaskConsumption({taskId:agent.id,packageDigest,releaseId,callIdDigest,batchId,
-   includeRetiredBatchVersions:Boolean(sync&&batchId),scope:'LOCAL_TEST_ONLY',services:manager.list(),
+   includeRetiredBatchVersions:Boolean(sync&&batchId)||nativeVersionHistory,registeredBatchCatalog:nativeVersionHistory,scope:'LOCAL_TEST_ONLY',services:manager.list(),
    getPackage:id=>store.get('delivery_package',id,project),
    ownedService:id=>manager.detail(id),getVersion:id=>store.get('data_service_version',id,project),getRelease,
    source:id=>{if(!ids.has(id)||batchId&&id!==batchId)throw fail();return store.get('release_run',id,project);},

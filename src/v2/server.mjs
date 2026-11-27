@@ -57,6 +57,7 @@ import{standaloneManualPublicationSource}from"./standalone-manual-publication-so
 import { parseAgentReviewEvidencePath, publicationSelectorFromUrl } from "./publication-request.mjs";
 import { localTaskPublication } from "./local-task-publication.mjs";
 import { localTaskConsumption } from "./local-task-consumption.mjs";
+import { readChatBatchConsumption } from "./chat-batch-consumption.mjs";
 import { fundAgentTaskConsumption } from "./fund-agent-task-consumption.mjs";
 import { localServiceSources } from "./local-service-sources.mjs";
 import {servicePlanSourceBinding,servicePlanSourceQuery,resolveServicePlanSource,assertServicePlanVersions,bindServicePlanProposal,servicePlanDraftMatches,publicServicePlan} from './service-plan-source.mjs';
@@ -6860,8 +6861,9 @@ export function createV2Server(options = {}) {
           return json(res, 200, get("agent_delivery_task", item.id));
         }
       }
-      const chatPublicationRoute=path.match(/^\/api\/v2\/agent\/intents\/([a-f0-9-]{36})\/development\/changes\/(chat-derive-v1-[a-f0-9]{64})\/publication$/);
+      const chatPublicationRoute=path.match(/^\/api\/v2\/agent\/intents\/([a-f0-9-]{36})\/development\/changes\/(chat-derive-v1-[a-f0-9]{64})\/publication(?:\/batches\/([a-f0-9-]{36})\/consumption)?$/);
       if (chatPublicationRoute && (method==='GET' || method==='POST')) {
+        if (chatPublicationRoute[3] && method!=='GET') throw fail(405,'批次消费记录只支持读取');
         if (!local || options.ingress || !isLoopbackRequest(req)) throw fail(403,'派生版本的测试发布仅在本机工作台开放');
         if (url.searchParams.size) throw fail(422,'请直接选择原会话及变更版本');
         const body=method==='POST' ? await readBody(req) : undefined;
@@ -6882,6 +6884,9 @@ export function createV2Server(options = {}) {
           return {store,project:PROJECT,basis,bundle,actor,canPublish:canPublish(),timeUnitMs:releaseTimeUnitMs};
         };
         let state=readBasis(),view=chatPublicationView(state);
+        if (chatPublicationRoute[3]) return json(res,200,await readChatBatchConsumption({
+          store,project:PROJECT,manager:dataServices,agent:get('agent',view.source.taskId),publication:view,batchId:chatPublicationRoute[3],
+        }));
         if (method==='GET') return json(res,200,view);
         const checkConsent=()=>{
           if(!canPublish())throw fail(403,'请在已启用本机调度且具有发布权限的原工作台发布此版本');
