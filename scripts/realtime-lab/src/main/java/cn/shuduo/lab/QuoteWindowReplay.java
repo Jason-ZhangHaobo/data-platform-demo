@@ -1,6 +1,7 @@
 package cn.shuduo.lab;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.kafka.clients.admin.Admin;
@@ -41,29 +42,43 @@ final class QuoteWindowReplay {
     private record Quote(int partition, long offset, int second, String security, long volume) {}
     private record Totals(long count, long volume) {}
 
-    static void run(Path repo, Path run) throws Exception {
+    static void run(Path repo, Path run, boolean brokerCrash) throws Exception {
         Files.createDirectory(run);
         Path sqlPath = repo.resolve("scripts/realtime-lab/windows.sql");
         String sql = Files.readString(sqlPath);
-        int brokerPort;
-        int controllerPort;
-        try (var brokerSocket = loopbackSocket(); var controllerSocket = loopbackSocket()) {
-            brokerPort = brokerSocket.getLocalPort();
-            controllerPort = controllerSocket.getLocalPort();
+        Process broker = null;
+        QuoteKafkaQuorum quorum = null;
+        String address;
+        if (brokerCrash) {
+            quorum = QuoteKafkaQuorum.start(run,OUTPUT);
+            address = quorum.address();
+        } else {
+            int brokerPort;
+            int controllerPort;
+            try (var brokerSocket = loopbackSocket(); var controllerSocket = loopbackSocket()) {
+                brokerPort = brokerSocket.getLocalPort();
+                controllerPort = controllerSocket.getLocalPort();
+            }
+            address = "127.0.0.1:" + brokerPort;
+            broker = startBroker(run, address, controllerPort);
         }
-        String address = "127.0.0.1:" + brokerPort;
-        Process broker = startBroker(run, address, controllerPort);
         Process worker = null;
         JobClient restored = null;
         try {
-            createTopics(address, broker, OUTPUT, 2);
+            if (!brokerCrash) createTopics(address, broker, OUTPUT, 2);
             var early = List.of(new Quote(0, 0, 1, A, 100), new Quote(0, 1, 14, A, 30),
                 new Quote(1, 0, 8, A, 200), new Quote(1, 1, 4, B, 25));
             publish(address, early);
-            int originalPort = freePort();
-            worker = javaProcess(768, run.resolve("flink-before-crash.log"), QuoteReplay.class.getName(),
-                "--flink-worker", repo.toString(), run.toString(), address, String.valueOf(originalPort), "windows");
-            String originalJobId = awaitJobId(run, worker);
+            int originalPort = brokerCrash ? 0 : freePort();
+            String originalJobId;
+            if (brokerCrash) {
+                restored = submit(sql,address,run,null,0);
+                originalJobId = restored.getJobID().toString();
+            } else {
+                worker = javaProcess(768, run.resolve("flink-before-crash.log"), QuoteReplay.class.getName(),
+                    "--flink-worker", repo.toString(), run.toString(), address, String.valueOf(originalPort), "windows");
+                originalJobId = awaitJobId(run, worker);
+            }
             awaitOffsets(address, 2, 2);
             List<JsonNode> held = committedWindows(address, Map.of());
             System.out.println("WINDOWS_HELD_AT_COMMITTED_OFFSETS");
@@ -73,22 +88,31 @@ final class QuoteWindowReplay {
             publish(address, List.of(advanceRight));
             accepted.add(advanceRight);
             List<JsonNode> before = committedWindows(address, expected(accepted, 10));
-            Checkpoint checkpoint = nextCompletedCheckpoint(run, originalJobId, originalPort);
+            Checkpoint checkpoint = brokerCrash ? null : nextCompletedCheckpoint(run, originalJobId, originalPort);
 
             var beforeExit = new Quote(0, 2, 16, A, 50);
             publish(address, List.of(beforeExit));
             accepted.add(beforeExit);
-            require(worker.isAlive(), "WINDOW_JOB_EXITED_BEFORE_INJECTED_FAILURE");
-            worker.destroyForcibly();
-            require(worker.waitFor(8, TimeUnit.SECONDS) && worker.exitValue() == 137, "WINDOW_JOB_SIGKILL_UNCONFIRMED");
+            QuoteKafkaQuorum.Failover failover = null;
+            long restoredCheckpointId = 0;
+            if (brokerCrash) {
+                failover = quorum.stopInputLeader();
+                require(restored.getJobStatus().get(6,TimeUnit.SECONDS) == JobStatus.RUNNING,"WINDOW_JOB_NOT_RUNNING_AFTER_ELECTION");
+                System.out.println("KAFKA_WINDOW_LEADER_REELECTED");
+            } else {
+                require(worker.isAlive(), "WINDOW_JOB_EXITED_BEFORE_INJECTED_FAILURE");
+                worker.destroyForcibly();
+                require(worker.waitFor(8, TimeUnit.SECONDS) && worker.exitValue() == 137, "WINDOW_JOB_SIGKILL_UNCONFIRMED");
+            }
             require(committedWindows(address, expected(accepted, 10)).equals(before), "WINDOWS_CHANGED_BEFORE_RECOVERY");
-
-            int restoredPort = freePort();
-            restored = submit(sql, address, run, flinkFile(checkpoint.path()), restoredPort);
+            if (!brokerCrash) {
+                int restoredPort = freePort();
+                restored = submit(sql, address, run, flinkFile(checkpoint.path()), restoredPort);
+                require(!restored.getJobID().toString().equals(originalJobId), "WINDOW_JOB_NOT_RESTARTED");
+                restoredCheckpointId = verifyRestoredCheckpoint(restoredPort, restored.getJobID().toString(), checkpoint);
+                System.out.println("WINDOW_JOB_CHECKPOINT_RESTORED");
+            }
             String restoredJobId = restored.getJobID().toString();
-            require(!restoredJobId.equals(originalJobId), "WINDOW_JOB_NOT_RESTARTED");
-            long restoredCheckpointId = verifyRestoredCheckpoint(restoredPort, restoredJobId, checkpoint);
-            System.out.println("WINDOW_JOB_CHECKPOINT_RESTORED");
             var next = List.of(new Quote(0, 3, 25, A, 70), new Quote(1, 3, 24, B, 40));
             publish(address, next);
             accepted.addAll(next);
@@ -107,7 +131,7 @@ final class QuoteWindowReplay {
             require(committedWindows(address,expected(accepted,30)).equals(finalOutput),"OUTPUT_CHANGED_ON_STOP");
 
             var evidence = JSON.createObjectNode();
-            evidence.put("scope", "LOCAL_KAFKA_FLINK_EVENT_TIME_WINDOWS");
+            evidence.put("scope", brokerCrash ? "LOCAL_KAFKA_REPLICATED_WINDOWS" : "LOCAL_KAFKA_FLINK_EVENT_TIME_WINDOWS");
             evidence.put("result", "VERIFIED");
             evidence.put("kafkaVersion",org.apache.kafka.common.utils.AppInfoParser.getVersion());
             evidence.put("flinkVersion",org.apache.flink.runtime.util.EnvironmentInformation.getVersion());
@@ -119,11 +143,18 @@ final class QuoteWindowReplay {
             evidence.put("finalWindowRows", finalOutput.size());
             evidence.put("originalJobId", originalJobId);
             evidence.put("restoredJobId", restoredJobId);
-            evidence.put("checkpointId", checkpoint.id());
-            evidence.put("restoredCheckpointId", restoredCheckpointId);
-            evidence.put("checkpointDigest", checkpoint.digest());
+            if (brokerCrash) {
+                evidence.putObject("brokerFailover").put("partition",0)
+                    .put("leaderBefore",failover.leaderBefore()).put("leaderAfter",failover.leaderAfter())
+                    .put("replicasBefore",failover.replicasBefore()).put("replicasAfter",failover.replicasAfter())
+                    .put("minInSyncReplicas",2).put("exitCode",failover.exitCode());
+            } else {
+                evidence.put("checkpointId", checkpoint.id());
+                evidence.put("restoredCheckpointId", restoredCheckpointId);
+                evidence.put("checkpointDigest", checkpoint.digest());
+                evidence.put("exitCode", worker.exitValue());
+            }
             evidence.put("restoredSavepointDigest",fileDigest(localSavepoint(run,finalSavepoint).resolve("_metadata")));
-            evidence.put("exitCode", worker.exitValue());
             evidence.put("partitionBeforeExit",beforeExit.partition());
             evidence.put("inputOffsetBeforeExit",beforeExit.offset());
             evidence.putArray("windowRows").addAll(finalOutput);
@@ -134,10 +165,13 @@ final class QuoteWindowReplay {
                 worker.waitFor(8, TimeUnit.SECONDS);
             }
             stopJob(restored);
-            broker.destroy();
-            if (!broker.waitFor(8, TimeUnit.SECONDS)) {
-                broker.destroyForcibly();
-                broker.waitFor(8, TimeUnit.SECONDS);
+            if (quorum != null) quorum.close();
+            if (broker != null) {
+                broker.destroy();
+                if (!broker.waitFor(8, TimeUnit.SECONDS)) {
+                    broker.destroyForcibly();
+                    broker.waitFor(8, TimeUnit.SECONDS);
+                }
             }
         }
     }

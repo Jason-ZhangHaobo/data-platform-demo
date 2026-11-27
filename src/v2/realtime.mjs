@@ -449,11 +449,12 @@ export class RealtimeManager {
       const originalDigest = recovery?.checkpointDigest ?? evidence?.originalSavepointDigest;
       return {...job,runs,alerts:this.store.list("stream_alert",this.project).filter(alert => alert.jobId === id),
         ...(this.kafkaFlinkRunner.windowSqlDigest ? {windowCrashEnabled:true,targetTable:"shuduo-quote-windows"} : {}),
+        ...(this.kafkaFlinkRunner.brokerCrash ? {brokerCrashEnabled:true} : {}),
         ...(this.kafkaFlinkRunner.checkpointCrash ? {checkpointCrashEnabled:true} : {}),
         ...(evidence ? {engineEvidence: {...evidence,runId:verified.id}} : {}),
         checkpoints: evidence ? [
-          {id:originalDigest,runId:verified.id,stateHash:originalDigest,flinkJobId:evidence.originalJobId,
-            ...(recovery ? {checkpointId:recovery.checkpointId} : {})},
+          ...(originalDigest ? [{id:originalDigest,runId:verified.id,stateHash:originalDigest,flinkJobId:evidence.originalJobId,
+            ...(recovery ? {checkpointId:recovery.checkpointId} : {})}] : []),
           {id:evidence.restoredSavepointDigest,runId:verified.id,stateHash:evidence.restoredSavepointDigest,flinkJobId:evidence.restoredJobId},
         ] : [],
         state: evidence?.quotes?.map(quote => ({...quote,stateKey:quote.security_code,lastSequence:quote.sequence})) ?? [],
@@ -626,6 +627,7 @@ export class RealtimeManager {
         fixtureDigest:fixture?.contentHash,
         windowSqlDigest:run.windowSqlDigest,
         checkpointCrash:this.kafkaFlinkRunner.checkpointCrash,
+        brokerCrash:this.kafkaFlinkRunner.brokerCrash,
         quotes:[...latest.values()].sort((a,b) => a.security_code.localeCompare(b.security_code)),
       });
       status = "SUCCEEDED";

@@ -106,6 +106,7 @@ type StreamJob = {
   lastRunId?: string;
   checkpointCrashEnabled?: boolean;
   windowCrashEnabled?: boolean;
+  brokerCrashEnabled?: boolean;
   engineEvidence?: {
     runId: string;
     kafkaVersion: string;
@@ -121,6 +122,14 @@ type StreamJob = {
       event_count: number;
       total_volume: number;
     }[];
+    brokerFailover?: {
+      partition: number;
+      leaderBefore: number;
+      leaderAfter: number;
+      replicasBefore: number;
+      replicasAfter: number;
+      inputOffsetBeforeExit: number;
+    };
     checkpointRecovery?: {
       checkpointId: number;
       restoredCheckpointId: number;
@@ -189,13 +198,14 @@ const jobLabel = (job: StreamJob) => isKafkaFlink(job) && job.status === "CAUGHT
 function KafkaFlinkJobEvidence({job}:{job:StreamJob}) {
   const evidence = job.engineEvidence;
   const checkpointRecovery = evidence?.checkpointRecovery;
+  const brokerFailover = evidence?.brokerFailover;
   return <>
     {evidence ? <>
       {evidence.runId !== job.lastRunId && <p>下方为上一次通过核验的结果。</p>}
       <div className="stream-proof-grid">
         <div><span>状态</span><strong>{jobLabel(job)}</strong></div>
         <div><span>Kafka 输入</span><strong>{evidence.inputEvents} 条</strong></div>
-        <div><span>恢复前已提交</span><strong>{evidence.committedUpdatesBefore} 条</strong></div>
+        <div><span>{brokerFailover ? "切换前已提交" : "恢复前已提交"}</span><strong>{evidence.committedUpdatesBefore} 条</strong></div>
         <div><span>{evidence.windowRows ? "最终窗口结果" : "恢复后已提交"}</span><strong>{evidence.committedUpdatesAfter} 条</strong></div>
         <div><span>Kafka</span><strong>{evidence.kafkaVersion}</strong></div>
         <div><span>Flink</span><strong>{evidence.flinkVersion}</strong></div>
@@ -213,7 +223,7 @@ function KafkaFlinkJobEvidence({job}:{job:StreamJob}) {
           <header><h4>{checkpointRecovery ? "Flink 恢复记录" : "Flink 保存点"}</h4><span>{job.checkpoints.length} 个</span></header>
           <div className="stream-checkpoints">{job.checkpoints.map((item,index) =>
             <article key={item.id}><Clock3 size={14}/><div>
-              <strong>{item.checkpointId ? `恢复自检查点 #${item.checkpointId}` :
+              <strong>{brokerFailover ? "同一作业保存点" : item.checkpointId ? `恢复自检查点 #${item.checkpointId}` :
                 index === 0 ? "原作业" : "恢复后作业保存点"}</strong>
               <code title={item.flinkJobId}>{item.flinkJobId?.slice(0,12)} · SHA-256 {item.stateHash.slice(0,12)}</code>
             </div></article>)}</div>
@@ -224,6 +234,9 @@ function KafkaFlinkJobEvidence({job}:{job:StreamJob}) {
           Flink 退出码 ${checkpointRecovery.exitCode}。分区 ${checkpointRecovery.partitionBeforeExit} 的偏移 ${checkpointRecovery.inputOffsetBeforeExit} 纳入恢复后的窗口，迟到行情未改写已关闭结果。`
         : `原 Flink 进程退出码 ${checkpointRecovery.exitCode}。退出前 Kafka 已接收偏移 ${checkpointRecovery.inputOffsetBeforeExit}，恢复后只提交了一次对应更新。`}
       </p>}
+      {brokerFailover && <p>分区 {brokerFailover.partition} 的 Leader 从 Broker {brokerFailover.leaderBefore} 切换到
+        Broker {brokerFailover.leaderAfter}。同步副本由 {brokerFailover.replicasBefore} 个变为 {brokerFailover.replicasAfter} 个。
+        同一 Flink 作业继续运行，切换前已确认的偏移 {brokerFailover.inputOffsetBeforeExit} 进入窗口结果。</p>}
     </> : <div className="ingestion-empty"><Activity size={25}/><p>
       {isRunning(job.status) ? "正在写入 Kafka、运行 Flink 并核对保存点恢复。" :
         "启动后将显示 Kafka 的实际提交记录、两份 Flink 保存点和最新行情。"}
@@ -492,7 +505,7 @@ export function RealtimeWorkbench({
         </aside>
         <section className={isKafkaFlink(selectedJob) ? "stream-job-detail kafka-flink-detail" : "stream-job-detail"}>
           {selectedJob ? <>
-            <header><div><h3>{selectedJob.name}</h3><p>{selectedJob.sourceTopic ?? selectedSource?.topic} → {selectedJob.targetTable}</p></div><div className="stream-actions"><button className="button primary" onClick={start} disabled={!canWrite || !!busy || isRunning(selectedJob.status) || (!isKafkaFlink(selectedJob) && ["FAILED", "INTERRUPTED"].includes(selectedJob.status))}>{busy === "start" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{selectedJob.windowCrashEnabled ? "启动双分区验收" : selectedJob.checkpointCrashEnabled ? "启动异常恢复验收" : isKafkaFlink(selectedJob) ? "启动本机验收" : "启动"}</button><button className="button" onClick={stop} disabled={!canWrite || !!busy || !isRunning(selectedJob.status)}><Square size={14} />停止</button></div></header>
+            <header><div><h3>{selectedJob.name}</h3><p>{selectedJob.sourceTopic ?? selectedSource?.topic} → {selectedJob.targetTable}</p></div><div className="stream-actions"><button className="button primary" onClick={start} disabled={!canWrite || !!busy || isRunning(selectedJob.status) || (!isKafkaFlink(selectedJob) && ["FAILED", "INTERRUPTED"].includes(selectedJob.status))}>{busy === "start" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{selectedJob.brokerCrashEnabled ? "启动副本切换验收" : selectedJob.windowCrashEnabled ? "启动双分区验收" : selectedJob.checkpointCrashEnabled ? "启动异常恢复验收" : isKafkaFlink(selectedJob) ? "启动本机验收" : "启动"}</button><button className="button" onClick={stop} disabled={!canWrite || !!busy || !isRunning(selectedJob.status)}><Square size={14} />停止</button></div></header>
             {isKafkaFlink(selectedJob) ? <KafkaFlinkJobEvidence job={selectedJob}/> : <>
             <div className="stream-proof-grid"><div><span>状态</span><strong>{labels[selectedJob.status] ?? selectedJob.status}</strong></div><div><span>唯一事件</span><strong>{compact(selectedJob.processedEventCount)}</strong></div><div><span>重复事件</span><strong>{compact(selectedJob.duplicateCount)}</strong></div><div><span>Checkpoint</span><strong>{selectedJob.checkpoints.length}</strong></div><div><span>延迟</span><strong>{compact(selectedJob.lagMs)} ms</strong></div><div><span>吞吐</span><strong>{compact(selectedJob.throughputPerSecond)}/s</strong></div></div>
             {["FAILED", "INTERRUPTED"].includes(selectedJob.status) && <div className="stream-recovery"><AlertTriangle size={18} /><div><strong>恢复必须保留Checkpoint前缀</strong><p>先登记修正事件日志，再由后端比较已处理前缀；不一致时拒绝跳过。</p></div><button className="button" onClick={createRecoveryRevision} disabled={!canWrite || !!busy || latestRevision?.fileName === "quotes_recovered.jsonl"}><RefreshCw size={14} />登记修正版本</button><button className="button primary" onClick={recover} disabled={!canWrite || !!busy || latestRevision?.fileName !== "quotes_recovered.jsonl"}><RotateCcw size={14} />从Checkpoint恢复</button></div>}
