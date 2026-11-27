@@ -102,6 +102,18 @@ test("the first validated cloud receipt exposes its derived source in the offlin
   });
   assert.equal(report.cases.filter(candidate=>candidate.status==="SOURCE_VERIFIED").length,1);
   assert.equal(readFileSync(checkpoint,"utf8"),original);
+
+  const partial=structuredClone(state);
+  const incomplete=partial.outcomes[0].consumption[publication.batchIds[1]];
+  delete incomplete.reportDigest;
+  const partialPath=join(dir,"incomplete.json");
+  write(partialPath,partial);
+  const partialBytes=readFileSync(partialPath,"utf8");
+  const unsettled=readCloudV3Run(partialPath);
+  assert.equal(unsettled.cases[0].checkpointStage,"CONSUMPTION_UNCONFIRMED");
+  assert.equal(unsettled.verifiedCloudCaseCount,0);
+  assert.equal(unsettled.score.uncertainCases,1);
+  assert.equal(readFileSync(partialPath,"utf8"),partialBytes);
 });
 
 test("all twenty fixed V3 cases continue with distinct requests, checked parent bindings and retained approvals",async t=>{

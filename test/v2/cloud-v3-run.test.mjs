@@ -1,8 +1,38 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cloudV3CompletionReceipt, cloudV3CompletionScope, cloudV3FailureReceipt, summarizeCloudV3Progress } from "../../scripts/cloud-v3-run.mjs";
+import { cloudV3CompletionReceipt, cloudV3CompletionScope, cloudV3ConsumptionReadiness, cloudV3FailureReceipt, summarizeCloudV3Progress, validCloudV3Monitoring } from "../../scripts/cloud-v3-run.mjs";
 import { currentLiveLifecycleContract } from "../../src/v2/live-lifecycle-evaluation.mjs";
 import {cloudV3PhaseAttribution} from '../../src/v2/cloud-v3-phase-attribution.mjs';
+
+test("saved browser handoff requires two distinct monitor events and exact receipt scopes and calls", () => {
+  const uuid = n => "00000000-0000-4000-8000-" + String(n).padStart(12,"0");
+  const hex = n => n.toString(16).padStart(64,"0");
+  const batchIds = [uuid(1),uuid(2)];
+  const monitoring = batchIds.map((batchId,index)=>({batchId,eventId:uuid(3+index),observedAt:"2026-11-27T12:00:00.000Z"}));
+  const publication = {status:"CONFIRMED",batchIds,monitoring};
+  assert.equal(validCloudV3Monitoring(publication),true);
+  assert.equal(validCloudV3Monitoring({...publication,monitoring:[monitoring[0],{...monitoring[1],eventId:uuid(3)}]}),false);
+  assert.equal(validCloudV3Monitoring({...publication,monitoring:[monitoring[0],{...monitoring[1],observedAt:"unknown"}]}),false);
+  assert.equal(validCloudV3Monitoring({...publication,monitoring:[...monitoring].reverse()}),false);
+  assert.equal(validCloudV3Monitoring({...publication,approvalTiming:{readyAt:"2026-11-27T11:00:00Z",
+    reviewedAt:"2026-11-27T11:30:00Z",approvedAt:"2026-11-27T12:15:00Z"}}),false);
+
+  const proof=(batchId,base)=>({batchId,status:"MATCHED",sourceDigest:hex(base),planDigest:hex(base+1),
+    reportDigest:hex(base+2),dapiCallIdDigest:hex(base+3),xapiCallIdDigest:hex(base+4),
+    dapiRowsDigest:hex(base+5),xapiRowsDigest:hex(base+6)});
+  const [first,second]=batchIds, a=proof(first,10), b=proof(second,20);
+  const inspect=(consumption, origin="https://fixture.example")=>cloudV3ConsumptionReadiness(
+    {origin},{actions:{publication},consumption});
+  assert.deepEqual(inspect({[first]:a,[second]:b}),{pendingBatchIds:[],missingBatchIds:[],unconfirmedBatchIds:[]});
+  assert.deepEqual(inspect({[first]:a}),{pendingBatchIds:[second],missingBatchIds:[second],unconfirmedBatchIds:[]});
+  for (const invalid of [{batchId:second},{...b,status:"MATCHED_ONLY"},{...b,reportDigest:"unknown"},{...b,agent:{}}]) {
+    assert.deepEqual(inspect({[first]:a,[second]:invalid}),
+      {pendingBatchIds:[second],missingBatchIds:[],unconfirmedBatchIds:[second]});
+  }
+  assert.deepEqual(inspect({[first]:a,[second]:{...b,dapiCallIdDigest:a.xapiCallIdDigest}}),
+    {pendingBatchIds:batchIds,missingBatchIds:[],unconfirmedBatchIds:batchIds});
+  assert.deepEqual(inspect({[first]:a,[second]:b},"http://127.0.0.1:3100").unconfirmedBatchIds,batchIds);
+});
 
 test("an HTTPS completion requires both matched batches and the original approved application", () => {
   const source = "a".repeat(40);
