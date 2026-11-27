@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { getContext } from "./context.mjs";
 import {publishedSqlColumnLineage} from './sql-column-lineage.mjs';
 import { requiresStandardRunReceipt, verifyStandardRunReceipt } from "./sync-standard-receipt.mjs";
+import { kafkaFlinkAdapter } from "./realtime-kafka-flink.mjs";
 
 const fail = (status, message, code) =>
   Object.assign(new Error(message), { status, code });
@@ -627,6 +628,7 @@ export class AssetCatalogManager {
       });
     }
     for (const job of this.store.list("stream_job", this.project)) {
+      if (job.adapter === kafkaFlinkAdapter) continue;
       const state = this.stateStore.state(job.id);
       items.push({
         id: `stream:${job.id}`,

@@ -299,7 +299,7 @@ const tools = [
   { name: "stream_source_revision", description: "为实时源登记新的合成事件日志版本。", inputSchema: { type: "object", properties: { sourceId: { type: "string" }, fileName: { type: "string" } }, required: ["sourceId", "fileName"] } },
   { name: "stream_job_list", description: "列出实时任务、运行、Checkpoint、状态和告警。", inputSchema: { type: "object", properties: {} } },
   { name: "stream_job_create", description: "创建绑定源版本的实时任务草稿，不自动启动。", inputSchema: { type: "object", properties: { name: { type: "string" }, sourceId: { type: "string" }, targetTable: { type: "string" }, checkpointEvery: { type: "integer", minimum: 1, maximum: 100 }, maxOutOfOrderSeconds: { type: "integer", minimum: 0, maximum: 300 } }, required: ["name", "sourceId", "targetTable"] } },
-  { name: "stream_job_start", description: "启动本机事件日志实际逐事件处理。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
+  { name: "stream_job_start", description: "启动指定实时任务。依据已登记适配器运行 JSONL 或本机 Kafka / Flink 验收。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
   { name: "stream_job_stop", description: "停止当前运行中的实时任务并保留终止证据。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },
   { name: "stream_job_recover", description: "校验Checkpoint前缀后从指定修正版本断点恢复。", inputSchema: { type: "object", properties: { jobId: { type: "string" }, sourceRevisionId: { type: "string" } }, required: ["jobId", "sourceRevisionId"] } },
   { name: "stream_job_state", description: "读取实时任务实际物化的最新证券状态。", inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] } },

@@ -168,6 +168,7 @@ import {
   RealtimeManager,
   StreamStateStore,
 } from "./realtime.mjs";
+import { createKafkaFlinkRunner, kafkaFlinkAdapter } from "./realtime-kafka-flink.mjs";
 import { AssetCatalogManager } from "./assets.mjs";
 import { QualityManager } from "./quality.mjs";
 import { fundReportQuality } from "./fund-report-quality.mjs";
@@ -1401,7 +1402,11 @@ export function createV2Server(options = {}) {
       options.streamFixtureRoot ?? join(process.cwd(), "fixtures", "streams"),
     now: options.now,
     eventDelayMs: options.realtimeEventDelayMs ?? 40,
+    kafkaFlinkRunner:local && !options.ingress
+      ? options.kafkaFlinkRunner ?? createKafkaFlinkRunner(env,root)
+      : undefined,
   });
+  const mayReadKafkaFlink = req => local && !options.ingress && isLoopbackRequest(req) && Boolean(workspaceReadActor(req));
   const realtimePlanner =
     options.realtimePlanner ??
     (async (input) => {
@@ -2385,7 +2390,7 @@ export function createV2Server(options = {}) {
           },
           realtime: {
             sourceCount: realtime.listSources().length,
-            jobCount: realtime.listJobs().length,
+            jobCount: realtime.listJobs(mayReadKafkaFlink(req)).length,
             adapter: "local-event-log-v1",
             kafkaConnected: false,
             flinkConnected: false,
@@ -2753,7 +2758,7 @@ export function createV2Server(options = {}) {
       if (targetRows && method === "GET")
         return json(res, 200, ingestion.previewTarget(targetRows[1]));
       if (path === "/api/v2/streams/monitor" && method === "GET")
-        return json(res, 200, realtime.monitor());
+        return json(res, 200, realtime.monitor(mayReadKafkaFlink(req)));
       if (path === "/api/v2/streams/agent/plans" && method === "GET")
         return json(res, 200, store.list("realtime_agent_plan", PROJECT));
       if (path === "/api/v2/streams/agent/plans" && method === "POST") {
@@ -2866,7 +2871,7 @@ export function createV2Server(options = {}) {
         }
       }
       if (path === "/api/v2/streams/jobs" && method === "GET")
-        return json(res, 200, realtime.listJobs());
+        return json(res, 200, realtime.listJobs(mayReadKafkaFlink(req)));
       if (path === "/api/v2/streams/jobs" && method === "POST") {
         const body = await readBody(req),
           key = text(req.headers["idempotency-key"], 1, 100),
@@ -2887,13 +2892,18 @@ export function createV2Server(options = {}) {
       if (streamJobRecord) {
         const job = realtime.jobDetail(streamJobRecord[1]),
           action = streamJobRecord[2];
+        if (job.adapter === kafkaFlinkAdapter && !mayReadKafkaFlink(req))
+          throw fail(404,"未找到实时任务");
         if (method === "GET" && !action) return json(res, 200, job);
         if (method === "GET" && action === "state")
           return json(res, 200, job.state);
         if (method === "GET" && action === "checkpoints")
           return json(res, 200, job.checkpoints);
         if (method === "POST" && action === "start") {
-          await readBody(req);
+          const body = await readBody(req);
+          if (job.adapter === kafkaFlinkAdapter && (!body || typeof body !== "object" ||
+              Array.isArray(body) || Object.keys(body).length))
+            throw fail(422,"本机 Kafka / Flink 验收使用已登记的虚构输入");
           const requestKey = text(req.headers["idempotency-key"], 1, 100),
             requestSignature = hash(
               JSON.stringify({

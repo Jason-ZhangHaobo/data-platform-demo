@@ -23,9 +23,11 @@ import java.io.StringReader;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Properties;
 import java.util.TreeMap;
@@ -46,7 +48,8 @@ public final class QuoteReplay {
         Path repo = Path.of(args[0]).toRealPath();
         Path run = Path.of(args[1]).toAbsolutePath();
         Files.createDirectory(run);
-        List<String> fixture = Files.readAllLines(repo.resolve("fixtures/streams/quotes_recovered.jsonl"));
+        Path fixturePath = repo.resolve("fixtures/streams/quotes_recovered.jsonl");
+        List<String> fixture = Files.readAllLines(fixturePath);
         require(fixture.size() == 6 && fixture.get(4).equals(fixture.get(5)), "UNEXPECTED_QUOTE_FIXTURE");
         String sql = Files.readString(repo.resolve("scripts/realtime-lab/quotes.sql"));
         int brokerPort;
@@ -68,9 +71,7 @@ public final class QuoteReplay {
             List<Update> before = committedOutput(address, expectedInitial);
             String savepoint = original.stopWithSavepoint(false, flinkFile(run.resolve("savepoints")),
                 SavepointFormatType.CANONICAL).get(WAIT_SECONDS, TimeUnit.SECONDS);
-            Path savedState = Path.of(new org.apache.flink.core.fs.Path(savepoint).toUri().getPath());
-            require(savedState.getParent().equals(run.resolve("savepoints")) &&
-                Files.isRegularFile(savedState.resolve("_metadata")), "SAVEPOINT_METADATA_MISSING_OR_OUTSIDE_RUN");
+            Path savedState = localSavepoint(run, savepoint);
 
             var late = (ObjectNode) JSON.readTree(fixture.get(0));
             late.put("event_id", "EVT-Q-LATE");
@@ -87,7 +88,7 @@ public final class QuoteReplay {
             complete.addAll(additional);
             var expectedFinal = expected(complete);
             committedOutput(address, expectedFinal);
-            restored.stopWithSavepoint(false, flinkFile(run.resolve("savepoints")),
+            String finalSavepoint = restored.stopWithSavepoint(false, flinkFile(run.resolve("savepoints")),
                 SavepointFormatType.CANONICAL).get(WAIT_SECONDS, TimeUnit.SECONDS);
             List<Update> after = committedOutput(address, expectedFinal);
             require(after.size() == before.size() + 1 && after.subList(0, before.size()).equals(before),
@@ -100,11 +101,14 @@ public final class QuoteReplay {
             evidence.put("result", "VERIFIED");
             evidence.put("kafkaVersion", org.apache.kafka.common.utils.AppInfoParser.getVersion());
             evidence.put("flinkVersion", org.apache.flink.runtime.util.EnvironmentInformation.getVersion());
+            evidence.put("fixtureDigest", fileDigest(fixturePath));
             evidence.put("inputEvents", nextInputOffset);
             evidence.put("committedUpdatesBefore", before.size());
             evidence.put("committedUpdatesAfter", after.size());
             evidence.put("originalJobId", original.getJobID().toString());
             evidence.put("restoredJobId", restored.getJobID().toString());
+            evidence.put("originalSavepointDigest", fileDigest(savedState.resolve("_metadata")));
+            evidence.put("restoredSavepointDigest", fileDigest(localSavepoint(run, finalSavepoint).resolve("_metadata")));
             evidence.set("finalQuotes", JSON.valueToTree(expectedFinal));
             JSON.writerWithDefaultPrettyPrinter().writeValue(run.resolve("evidence.json").toFile(), evidence);
             System.out.println(evidence);
@@ -126,6 +130,19 @@ public final class QuoteReplay {
     private static String flinkFile(Path path) {
         // Flink encodes the supplied path itself, including Unicode and whitespace.
         return "file://" + path;
+    }
+
+    private static Path localSavepoint(Path run, String savepoint) {
+        Path path = Path.of(new org.apache.flink.core.fs.Path(savepoint).toUri().getPath());
+        require(path.getParent().equals(run.resolve("savepoints")) &&
+            Files.isRegularFile(path.resolve("_metadata")), "SAVEPOINT_METADATA_MISSING_OR_OUTSIDE_RUN");
+        return path;
+    }
+
+    private static String fileDigest(Path file) throws Exception {
+        byte[] bytes = Files.readAllBytes(file);
+        require(bytes.length > 0, "EVIDENCE_FILE_EMPTY");
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
     private static Process startBroker(Path run, String address, int controllerPort) throws Exception {

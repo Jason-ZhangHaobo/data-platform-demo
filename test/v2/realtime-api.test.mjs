@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { get } from "node:http";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MetadataStore } from "../../src/v2/store.mjs";
@@ -22,6 +24,7 @@ async function start({
   fixtureRoot,
   local = true,
   realtimePlanner,
+  kafkaFlinkRunner,
 }) {
   const app = createV2Server({
     store,
@@ -30,6 +33,7 @@ async function start({
     realtimeEventDelayMs: 1,
     env: { V2_LOCAL_DEVELOPMENT: String(local) },
     realtimePlanner,
+    kafkaFlinkRunner,
   });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   return {
@@ -65,6 +69,83 @@ async function waitForPlan(base, id, expected) {
   }
   throw new Error(`实时Agent方案未达到${expected}`);
 }
+
+test("the registered engine runs once per request and keeps verified Kafka results across restart",async t=>{
+  const root=mkdtempSync(join(tmpdir(),"shuduo-kafka-flink-api-"));
+  const store=new MetadataStore(join(root,"meta.sqlite"));
+  const stateStore=new StreamStateStore(join(root,"stream.sqlite"));
+  const fixture=readFileSync("fixtures/streams/quotes_recovered.jsonl","utf8");
+  const events=fixture.trim().split("\n").map(line=>JSON.parse(line));
+  const finalQuotes=Object.fromEntries(events.map(event=>[event.security_code,event]));
+  const value={scope:"LOCAL_KAFKA_FLINK_SYNTHETIC_QUOTES",result:"VERIFIED",kafkaVersion:"4.1.2",flinkVersion:"1.20.5",
+    inputEvents:9,committedUpdatesBefore:4,committedUpdatesAfter:5,originalJobId:"a".repeat(32),restoredJobId:"b".repeat(32),
+    originalSavepointDigest:"c".repeat(64),restoredSavepointDigest:"d".repeat(64),
+    fixtureDigest:createHash("sha256").update(fixture).digest("hex"),finalQuotes};
+  let calls=0, reply=Promise.withResolvers();
+  const runner=()=>{calls++;return reply.promise;};
+  const stop=server=>new Promise(resolve=>server.app.server.close(resolve));
+  let server=await start({store,stateStore,kafkaFlinkRunner:runner});
+  t.after(async ()=>{
+    if (server.app.server.listening) await stop(server);
+    store.close();
+    stateStore.close();
+  });
+
+  const firstList=await request(server.base,"/streams/jobs");
+  const [job]=firstList.body;
+  assert.equal(job.adapter,"kafka-flink-local-v1");
+  assert.equal(job.status,"READY");
+  const path="/streams/jobs/"+job.id;
+  assert.equal((await request(server.base,path+"/start",{topic:"arbitrary"})).status,422);
+  const foreignHostStatus=await new Promise((resolve,reject)=>{
+    get(server.base+path,{headers:{host:"example.invalid"}},res=>{res.resume();resolve(res.statusCode);}).on("error",reject);
+  });
+  assert.equal(foreignHostStatus,404);
+  const started=await request(server.base,path+"/start",{},"engine-1");
+  assert.equal(started.status,202);
+  assert.equal((await request(server.base,path+"/start",{},"engine-1")).body.id,started.body.id);
+  assert.equal((await request(server.base,path+"/start",{},"engine-overlap")).status,409);
+  assert.equal(calls,1);
+  reply.resolve(value);
+  const verified=await waitForJob(server.base,job.id,"CAUGHT_UP");
+  assert.equal(verified.engineEvidence.runId,started.body.id);
+  assert.equal(verified.engineEvidence.committedUpdatesAfter,5);
+  assert.deepEqual(verified.checkpoints.map(checkpoint=>checkpoint.stateHash),
+    [value.originalSavepointDigest,value.restoredSavepointDigest]);
+  assert.deepEqual((await request(server.base,path+"/state")).body,
+    verified.state);
+  assert.equal((await request(server.base,"/assets")).body.some(asset=>asset.id==="stream:"+job.id),false);
+  assert.equal((await request(server.base,"/streams/monitor")).body.kafkaFlinkLocalReady,true);
+
+  reply=Promise.withResolvers();
+  const second=await request(server.base,path+"/start",{},"engine-2");
+  assert.equal(second.status,202);
+  reply.resolve({...value,committedUpdatesAfter:6});
+  const failed=await waitForJob(server.base,job.id,"FAILED");
+  assert.equal(failed.runs[0].errorCode,"KAFKA_FLINK_EVIDENCE_MISMATCH");
+  assert.equal(failed.engineEvidence.runId,started.body.id);
+  assert.equal(failed.alerts[0].runId,second.body.id);
+
+  reply=Promise.withResolvers();
+  const retry=await request(server.base,path+"/start",{},"engine-stop");
+  assert.equal(retry.status,202);
+  assert.equal((await request(server.base,path+"/stop",{})).status,202);
+  reply.resolve(value);
+  const stopped=await waitForJob(server.base,job.id,"STOPPED");
+  assert.equal(stopped.runs[0].id,retry.body.id);
+  assert.equal(stopped.runs[0].engineResult,undefined);
+  assert.equal(stopped.engineEvidence.runId,started.body.id);
+  await stop(server);
+  server=await start({store,stateStore,kafkaFlinkRunner:runner});
+  const persisted=(await request(server.base,path)).body;
+  assert.equal(persisted.engineEvidence.runId,started.body.id);
+  assert.equal(persisted.runs.length,3);
+  assert.equal(calls,3);
+  await stop(server);
+  server=await start({store,stateStore,local:false,kafkaFlinkRunner:runner});
+  assert.equal(server.app.realtime.listJobs().some(candidate=>candidate.id===job.id),false);
+  assert.equal(calls,3);
+});
 
 test("V2 API records a failed stream checkpoint and resumes from a corrected revision", async () => {
   const root = mkdtempSync(join(tmpdir(), "shuduo-realtime-api-")),

@@ -4506,6 +4506,15 @@ kbd {
   .stream-agent-result > .status-pill {
     justify-self: start;
   }
+  .kafka-flink-detail > header {
+    flex-direction: column;
+  }
+  .kafka-flink-detail .stream-actions {
+    flex-wrap: wrap;
+  }
+  .kafka-flink-detail .stream-actions .button {
+    white-space: nowrap;
+  }
   .stream-proof-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

@@ -1,6 +1,6 @@
 # M4b：实时事件处理、Checkpoint与恢复
 
-日期：2026-09-14。当前使用仓库内虚构证券行情JSONL和`local-event-log-v1`；这是实际逐事件处理，不是Kafka/Flink连接，接口始终返回`kafkaConnected=false`、`flinkConnected=false`、`publicDeployed=false`。
+实时同步支持仓库内虚构行情的 JSONL 逐事件处理，以及可选的本机 Kafka / Flink 保存点验收。两种作业共用实时任务与监控接口。
 
 ## 本机真实 Kafka 与 Flink 保存点
 
@@ -15,7 +15,13 @@ mkdir -p -m 700 .runtime/realtime-lab
 JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/realtime-lab
 ```
 
-本次验收覆盖本机单 Broker、单分区、Flink SQL 去重和保存点续跑。数舵实时页面仍读取现有 JSONL 作业。产品侧接下来需要将真实作业和输出主题接入同一任务详情与监控，并单独验证多分区、事件时间 Watermark、故障恢复和公网权限。
+## 在数舵实时任务中启动引擎验收
+
+先完成一次上述脚本以准备 Maven 依赖，然后在常用本机 V2 启动命令前设置 `V2_LOCAL_KAFKA_FLINK_ENABLED=true`、`JAVA_HOME` 和 `SHUDUO_REALTIME_MAVEN_REPO`。后两项使用绝对路径，Maven 缓存默认为前一步运行目录中的 `maven-repo`。可用 `MAVEN_BIN` 指定 Maven 3.9。任务由本机控制面离线调用 Maven，所需依赖从已准备的缓存读取。
+
+打开「数据同步 → 实时同步」，选择「证券行情 · Kafka / Flink」，点击「启动本机验收」。返回运行编号后可关闭页面。同一详情读回 Kafka 实际输入条数、事务输出条数、两个 Flink 作业及各自保存点摘要、最终行情和运行记录。当前运行失败时保留上次已核验结果。相同幂等编号只返回原运行。CLI 和 MCP 复用已有实时任务启动、状态与保存点工具。[接口约定](v2-api.md)
+
+该任务使用本机单 Broker、单分区和受控虚构输入。可用时监控返回 `kafkaFlinkLocalReady`，表示可以发起本机验收。每次运行拥有独立引擎进程和保存点。持续运行、生产连接、多分区、事件时间 Watermark、异常退出自动恢复以及公网权限仍待单独验收。
 
 ## 实现语义
 

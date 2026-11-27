@@ -485,22 +485,15 @@ export function IngestionWorkbench({
         <div>
           <span className="eyebrow">{activeModule === "sync" && syncView === "realtime" ? "STREAMING CONTROL PLANE · M4B" : "INGESTION CONTROL PLANE · M4A"}</span>
           <h2>{activeModule === "sync" && syncView === "realtime" ? "从事件契约到可恢复实时处理" : "从真实连接证据到可追溯同步"}</h2>
-          <p>{activeModule === "sync" && syncView === "realtime" ? "实时源版本、任务配置、运行、Checkpoint、状态与告警逐层绑定；当前只处理仓库内虚构证券事件日志。" : `源版本、元数据、字段映射、运行和落地结果逐层绑定；当前以仓库虚构CSV为主${serverMysqlConfigured ? serverMysqlSyncEnabled ? "，服务端MySQL已开放有界白名单同步" : "，服务端MySQL仅开放连接与元数据" : "，服务端MySQL白名单尚未配置"}。`}</p>
+          <p>{activeModule === "sync" && syncView === "realtime" ? "查看虚构行情的实际运行、恢复记录、最新结果和告警。" : `源版本、元数据、字段映射、运行和落地结果逐层绑定；当前以仓库虚构CSV为主${serverMysqlConfigured ? serverMysqlSyncEnabled ? "，服务端MySQL已开放有界白名单同步" : "，服务端MySQL仅开放连接与元数据" : "，服务端MySQL白名单尚未配置"}。`}</p>
         </div>
-        <div className="ingestion-stats">
-          {activeModule === "sync" && syncView === "realtime" ? <>
-            <div><strong>JSONL</strong><span>当前适配器</span></div>
-            <div><strong>CP</strong><span>断点恢复</span></div>
-            <div><strong>WM</strong><span>Watermark</span></div>
-            <div><strong>0</strong><span>云连接</span></div>
-          </> : <>
+        {!(activeModule === "sync" && syncView === "realtime") && <div className="ingestion-stats">
             <div><strong>{catalogReady ? sources.length : "—"}</strong><span>数据源</span></div>
             <div><strong>{catalogReady ? tasks.length : "—"}</strong><span>同步任务</span></div>
             <div><strong>{catalogReady ? successfulRuns.length : "—"}</strong><span>成功运行</span></div>
             <div><strong>{previewReady ? targetRows.length : "—"}</strong><span title="仅 raw_positions 的本次预览，不是全平台总行数">默认表预览行</span></div>
             <button className="button ingestion-catalog-refresh" disabled={catalogRead.state === "LOADING" || !!busy} onClick={() => void reload().catch(() => {})}>刷新接入目录</button>
-          </>}
-        </div>
+        </div>}
       </section>
       <div className="ingestion-tabs" role="tablist" aria-label="接入与同步">
         <button
@@ -729,7 +722,7 @@ export function IngestionWorkbench({
           </section>
         </>
       )}
-      <footer className="ingestion-boundary"><FileSpreadsheet size={15} />{syncView === "realtime" && activeModule === "sync" ? "真实读取仓库内虚构JSONL并写入本机独立状态库；不是Kafka/Flink、真实CDC或公网流计算。" : `CSV源真实写入独立落地区；SERVER_MYSQL${serverMysqlConfigured ? serverMysqlSyncEnabled ? "可执行有界FULL/快照差异UPSERT（非CDC）" : "仅做白名单连接与元数据摘要" : "尚未配置"}；真实同VPC业务源仍需云端验收。`}</footer>
+      {!(syncView === "realtime" && activeModule === "sync") && <footer className="ingestion-boundary"><FileSpreadsheet size={15} />{`CSV源真实写入独立落地区；SERVER_MYSQL${serverMysqlConfigured ? serverMysqlSyncEnabled ? "可执行有界FULL/快照差异UPSERT（非CDC）" : "仅做白名单连接与元数据摘要" : "尚未配置"}；真实同VPC业务源仍需云端验收。`}</footer>}
     </div>
   );
 }
