@@ -173,9 +173,44 @@ test("the registered engine runs once per request and keeps verified Kafka resul
   assert.equal(recoveredJob.checkpoints[0].stateHash,checkpointDigest);
   assert.equal(calls,5);
   await stop(server);
+
+  runner.checkpointCrash=false;
+  runner.windowSqlDigest=createHash("sha256").update(readFileSync("scripts/realtime-lab/windows.sql")).digest("hex");
+  server=await start({store,stateStore,kafkaFlinkRunner:runner});
+  const windowMode=(await request(server.base,path)).body;
+  assert.equal(windowMode.windowCrashEnabled,true);
+  assert.equal(windowMode.targetTable,"shuduo-quote-windows");
+  assert.equal((await request(server.base,path+"/start",{},"engine-crash-proof")).status,409);
+  const windowRows=[
+    ["00","001",2,300],["00","002",1,25],["10","001",2,80],
+    ["10","002",1,20],["20","001",1,70],["20","002",1,40],
+  ].map(([second,security,event_count,total_volume])=>({
+    window_start_utc:"2026-09-14 09:30:"+second,security_code:"SEC-DEMO-"+security,event_count,total_volume,
+  }));
+  const windowResult={scope:"LOCAL_KAFKA_FLINK_EVENT_TIME_WINDOWS",result:"VERIFIED",kafkaVersion:"4.1.2",
+    flinkVersion:"1.20.5",sqlDigest:runner.windowSqlDigest,partitionInputCounts:[5,6],windowsWhilePartitionHeld:0,
+    windowsBeforeCrash:2,windowsAfterRestore:4,finalWindowRows:6,originalJobId:"e".repeat(32),restoredJobId:"f".repeat(32),
+    checkpointId:2,restoredCheckpointId:2,checkpointDigest,restoredSavepointDigest:shared.restoredSavepointDigest,
+    exitCode:137,partitionBeforeExit:0,inputOffsetBeforeExit:2,windowRows};
+  const windowExpectation={windowSqlDigest:runner.windowSqlDigest};
+  assert.throws(()=>kafkaFlinkEvidence({...windowResult,windowsWhilePartitionHeld:1},windowExpectation),/EVIDENCE_MISMATCH/);
+  assert.throws(()=>kafkaFlinkEvidence({...windowResult,windowRows:[...windowRows.slice(0,5),windowRows[0]]},
+    windowExpectation),/EVIDENCE_MISMATCH/);
+  assert.throws(()=>kafkaFlinkEvidence({...windowResult,windowRows:[
+    {...windowRows[0],total_volume:10299},...windowRows.slice(1)]},windowExpectation),/EVIDENCE_MISMATCH/);
+  reply=Promise.withResolvers();
+  const windowRun=await request(server.base,path+"/start",{},"engine-window-proof");
+  assert.equal(windowRun.status,202);
+  reply.resolve(windowResult);
+  const checkedWindows=await waitForJob(server.base,job.id,"CAUGHT_UP");
+  assert.equal(checkedWindows.engineEvidence.runId,windowRun.body.id);
+  assert.deepEqual(checkedWindows.engineEvidence.windowRows,windowRows);
+  assert.deepEqual(checkedWindows.state,[]);
+  assert.equal(calls,6);
+  await stop(server);
   server=await start({store,stateStore,local:false,kafkaFlinkRunner:runner});
   assert.equal(server.app.realtime.listJobs().some(candidate=>candidate.id===job.id),false);
-  assert.equal(calls,5);
+  assert.equal(calls,6);
 });
 
 test("V2 API records a failed stream checkpoint and resumes from a corrected revision", async () => {

@@ -21,7 +21,7 @@ JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/real
 
 打开「数据同步 → 实时同步」，选择「证券行情 · Kafka / Flink」，点击「启动本机验收」。返回运行编号后可关闭页面。同一详情读回 Kafka 实际输入条数、事务输出条数、两个 Flink 作业及各自保存点摘要、最终行情和运行记录。当前运行失败时保留上次已核验结果。相同幂等编号只返回原运行。CLI 和 MCP 复用已有实时任务启动、状态与保存点工具。[接口约定](v2-api.md)
 
-该任务使用本机单 Broker、单分区和受控虚构输入。可用时监控返回 `kafkaFlinkLocalReady`，表示可以发起本机验收。每次运行拥有独立引擎进程和保存点。持续运行、生产连接、多分区、事件时间 Watermark 及公网权限另行验收。
+该任务使用本机单 Broker 和受控虚构输入。可用时监控返回 `kafkaFlinkLocalReady`，表示可以发起本机验收。每次运行拥有独立引擎进程和保存点。持续运行、生产连接和公网权限另行验收。
 
 ### 从进程异常退出前的检查点恢复
 
@@ -32,6 +32,14 @@ JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/real
 此处按原作业的完成记录确认检查点类型。Flink 的 `NO_CLAIM` 恢复会把外部状态按类保存点属性载入，原路径、编号及元数据摘要可用来比对读回的确切状态。[Flink 1.20.5 恢复实现](https://github.com/apache/flink/blob/release-1.20.5/flink-runtime/src/main/java/org/apache/flink/runtime/checkpoint/CheckpointCoordinator.java#L1749) · [状态属性](https://github.com/apache/flink/blob/release-1.20.5/flink-runtime/src/main/java/org/apache/flink/runtime/checkpoint/CheckpointProperties.java#L286)
 
 详情、CLI 和 MCP 显示原检查点及恢复后保存点。任务详情的 `engineEvidence.checkpointRecovery` 保存原编号、实际恢复编号、退出码、退出前 Kafka 偏移和已提交条数。从异常模式重放旧保存点模式的启动请求时，服务返回幂等冲突。该方案针对本机故障验收，实际集群的自动重启和高可用仍需核验。
+
+### 双分区 Watermark 与事件时间窗口
+
+本机工作台设置 `V2_LOCAL_KAFKA_FLINK_WINDOW_CRASH=true` 后选择「启动双分区验收」。复跑脚本对应参数为 `--window-crash`。此模式使用两个实际 Kafka 分区，以 UTC 事件时间聚合十秒窗口，每个分区的 Watermark 取观测到的最大事件时间减两秒。按证券输出窗口事件数和成交量。输出主题启用 Kafka 事务，验收以 `read_committed` 读取。[跨分区 Watermark](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/connectors/table/kafka/#source-per-partition-watermarks) · [Flink SQL 滚动窗口](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/dev/table/sql/queries/window-tvf/#tumble)
+
+分区 0 先推进，分区 1 含乱序事件。Kafka 已确认两边各读取两条，输出仍为零。慢分区推进后，第一个窗口产生两条证券结果，其中包含先到八秒、后到四秒的乱序输入。随后从实际周期检查点恢复新 Flink 作业，将失败前 Kafka 已接收的分区 0 偏移 2 纳入第二个窗口。第三个窗口提交后，再核对已关闭窗口及 Kafka 输出前缀，确认迟到行情未改写结果。最终两分区共 11 条输入，输出 6 条，涉及 3 个窗口、2 只证券。
+
+任务详情与 `shuduo streams jobs` 的 `engineEvidence.windowRows` 返回窗口结果。MCP 可使用 `stream_job_list` 读同一回执。此处仍为本机单 Broker，生产多实例、分区变化及持续运行另行验收。
 
 ## 实现语义
 
