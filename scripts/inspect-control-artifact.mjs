@@ -35,12 +35,25 @@ export function verifyControlArtifactSources(sourceRoot,extract){
  return sources;
 }
 const controlBuildWorkflow='.github/workflows/build-v2-control-plane.yml';
+const trackedBuildProtocol='shuduo-control-build-source/v2';
+
+export function requiresTrackedControlSources(build, workflow) {
+ const marker=workflow.match(/^\s*V2_CONTROL_BUILD_PROTOCOL:\s*(\S+)\s*$/m);
+ if(marker) check(marker[1]===trackedBuildProtocol && build?.protocol===trackedBuildProtocol,'BUILD_SOURCE_PROTOCOL_MISMATCH');
+ return build?.protocol===trackedBuildProtocol;
+}
+
+export function verifyTrackedControlSources(sourceRoot,archive) {
+ const helper=fileURLToPath(new URL('./control-package-sources.py',import.meta.url));
+ const result=execFileSync('python3',[helper,'inspect',sourceRoot,archive],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:30000});
+ return JSON.parse(result);
+}
 
 export function validateArtifactIdentity(run,artifact,{source,buildRunId,artifactId},build){
  check(/^[a-f0-9]{40}$/.test(source)&&/^\d+$/.test(buildRunId)&&/^\d+$/.test(artifactId),'IDENTITY_INVALID');
  check(String(run.id)===buildRunId&&run.name==='Build V2 control plane package'&&run.conclusion==='success'&&run.status==='completed','BUILD_NOT_VERIFIED');
  if(build || run.head_sha!==source){
-  check(build?.protocol==='shuduo-control-build-source/v1'&&run.path===controlBuildWorkflow&&run.event==='workflow_dispatch'&&
+  check(['shuduo-control-build-source/v1',trackedBuildProtocol].includes(build?.protocol)&&run.path===controlBuildWorkflow&&run.event==='workflow_dispatch'&&
     (run.head_sha===source||run.head_branch==='main')&&/^[a-f0-9]{40}$/.test(run.head_sha??'')&&
     build.workflowSource===run.head_sha&&build.applicationSource===source&&build.buildRunId===buildRunId&&
     Number.isSafeInteger(run.run_attempt)&&run.run_attempt>0&&build.buildAttempt===String(run.run_attempt),'BUILD_SOURCE_NOT_VERIFIED');
@@ -70,9 +83,15 @@ export async function inspectControlArtifact(env=process.env){
  const names=execFileSync('unzip',['-Z1',path],{encoding:'utf8'}).trim().split('\n');
  check(!names.some(n=>/(^|\/)(\.env(?:\..*)?|[^/]+\.(?:pem|key))$/.test(n)||n.startsWith('/')||n.split('/').includes('..')),'UNSAFE_PACKAGE');
  const extract=name=>execFileSync('unzip',['-p',path,name],{maxBuffer:10000000});
- const sources=verifyControlArtifactSources('.artifact-source',extract);
+ // Read the declaration from the build run's Git revision, independently of
+ // the downloaded manifest. A missing or downgraded v2 receipt must fail.
+ const workflow=await api(`contents/${controlBuildWorkflow}?ref=${run.head_sha}`);
+ check(workflow.encoding==='base64'&&typeof workflow.content==='string','BUILD_WORKFLOW_NOT_VERIFIED');
+ const tracked=requiresTrackedControlSources(build,Buffer.from(workflow.content,'base64').toString('utf8'));
+ const sources=tracked ? verifyTrackedControlSources('.artifact-source',path) : verifyControlArtifactSources('.artifact-source',extract);
  const index=extract('web-dist/index.html');
  const report={protocol:'shuduo-control-artifact-inspection/v1',operatorSource:env.GITHUB_SHA,inspectionRunId:env.GITHUB_RUN_ID,applicationSource:identity.source,buildRunId:identity.buildRunId,artifactId:identity.artifactId,artifactDigest:artifact.digest,sha256:sha(bytes),bytes:bytes.length,webIndexSha256:sha(index),webIndexBytes:index.length,sourceChecks:sources.length,sourceFiles:sources,zipValid:true,sensitivePaths:0,
+  ...(tracked?{sourceCheckMode:'GIT_TRACKED_APPLICATION_TREE',buildProtocol:trackedBuildProtocol}:{}),
   ...(build?{buildWorkflowSource:build.workflowSource,applicationTree:build.applicationTree,buildAttempt:build.buildAttempt}:{})};
  writeFileSync('control-artifact-inspection.json',JSON.stringify(report,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify(report));
 }

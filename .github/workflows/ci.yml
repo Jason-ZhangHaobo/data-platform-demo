@@ -75,17 +75,7 @@ jobs:
       - name: Verify deployable V2 Function Compute package
         run: |
           scripts/build-v2-fc-package.sh "$GITHUB_WORKSPACE/v2-function.zip"
-          package_root=$(mktemp -d "$RUNNER_TEMP/fc-invited-XXXXXX")
-          unzip -q v2-function.zip -d "$package_root"
-          chmod 0755 "$package_root/runtime/node"
-          test "$("$package_root/runtime/node" -p 'process.platform + "/" + process.arch')" = "linux/x64"
-          # Supply the test driver and fictional fixture only. All application
-          # modules, dependencies, and the Node runtime come from the built ZIP.
-          mkdir -p "$package_root/test/v2/fixtures"
-          cp test/v2/invited-task-context.test.mjs "$package_root/test/v2/"
-          cp test/v2/fixtures/agent-context-derivation.mjs "$package_root/test/v2/fixtures/"
-          cd "$package_root"
-          ./runtime/node --test test/v2/invited-task-context.test.mjs
+          bash scripts/verify-v2-packaged-entry.sh "$GITHUB_WORKSPACE/v2-function.zip" "$GITHUB_WORKSPACE"
       - name: Deliver the two fictional customer reports
         id: wealth_reports
         uses: actions/upload-artifact@v6

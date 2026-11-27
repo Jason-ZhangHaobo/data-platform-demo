@@ -10,6 +10,8 @@ import { buildControlMultipartManifest, transferControlMultipart, cleanupControl
 
 const scope = 'CONTROL_CODE_MULTIPART_PRESTAGE_V1';
 const cleanupScope = 'CONTROL_CODE_MULTIPART_CLEANUP_V1';
+const reviewedScope = 'CONTROL_CODE_MULTIPART_PRESTAGE_V2';
+const reviewedCleanupScope = 'CONTROL_CODE_MULTIPART_CLEANUP_V2';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const sha256 = /^[a-f0-9]{64}$/, revision = /^[a-f0-9]{40}$/, runId = /^[1-9]\d{5,19}$/;
 const partBytes = 4 * 1024 * 1024;
@@ -31,7 +33,8 @@ export function validateRunner(env) {
 
 export function validateTransferPlan(plan, env, config, current, now) {
   const cleaning = env.V2_MULTIPART_CLEANUP_ONLY === 'true';
-  check(plan?.scope === (cleaning ? cleanupScope : scope) && /^[a-f0-9]{32}$/.test(plan.operationId) &&
+  const reviewed = plan?.scope === (cleaning ? reviewedCleanupScope : reviewedScope);
+  check((reviewed || plan?.scope === (cleaning ? cleanupScope : scope)) && /^[a-f0-9]{32}$/.test(plan.operationId) &&
     plan.operatorSource === env.GITHUB_SHA && revision.test(plan.applicationSource) &&
     plan.controlName === config.functionName && plan.buildRunId === env.V2_MULTIPART_BUILD_RUN &&
     plan.artifactId === env.V2_MULTIPART_ARTIFACT_ID && sha256.test(plan.approvalDigest) &&
@@ -50,10 +53,27 @@ export function validateTransferPlan(plan, env, config, current, now) {
     /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(vars.OSS_BUCKET) &&
     plan.bucketHash === hash(vars.OSS_BUCKET), 'MULTIPART_READONLY_BASELINE_CHANGED');
   const pre = plan.preflight, at = Date.parse(pre?.checkedAt);
+  // The original V1 plan was reviewed at exactly CNY 90. V2 carries the
+  // separately reviewed reserve and the owner's complete monthly bill summary
+  // from verifyV2MonthlyBillPages in the authenticated plan; no new cloud read.
+  const reserve = reviewed ? plan.budgetApproval?.retainedReserveCny : 90;
+  if (reviewed) {
+    const approval = plan.budgetApproval, bill = pre?.monthlyBill;
+    const month = new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'});
+    check(approval?.approvalDigest === plan.approvalDigest && approval.operationId === plan.operationId &&
+      approval.candidateSha256 === c.sha256 && Number.isFinite(reserve) && reserve >= 90,
+      'MULTIPART_BUDGET_APPROVAL_INVALID');
+    check(bill?.ok === true && bill.budgetCny === 200 && Number.isSafeInteger(bill.recordCount) && bill.recordCount >= 0 &&
+      Number.isFinite(at) && bill.billingCycle === month.format(now) && bill.billingCycle === month.format(at) &&
+      typeof bill.spendCny === 'string' && /^\d+\.\d{2}$/.test(bill.spendCny) && Number(bill.spendCny) === pre.billCny,
+      'MULTIPART_MONTHLY_BILL_INVALID');
+  } else {
+    check(!Object.hasOwn(plan, 'budgetApproval'), 'MULTIPART_BUDGET_APPROVAL_INVALID');
+  }
   check(Number.isFinite(at) && at <= plan.issuedAt && now-at < 3600000 &&
     pre.versioning === 'UNVERSIONED' && pre.candidateAbsent === true && pre.activeUploads === 0 &&
     pre.privacyVerified === true && Number.isFinite(pre.billCny) && pre.billCny >= 0 &&
-    pre.retainedReserveCny === 90 && pre.maxIncrementCny === 2 && pre.monthlyLimitCny === 200 &&
+    pre.retainedReserveCny === reserve && pre.maxIncrementCny === 2 && pre.monthlyLimitCny === 200 &&
     pre.billCny + pre.retainedReserveCny + pre.maxIncrementCny <= pre.monthlyLimitCny,
     'MULTIPART_OWNER_PREFLIGHT_INVALID');
   if (cleaning) {
@@ -136,7 +156,7 @@ function run(env) {
       const bucket=current.environmentVariables.OSS_BUCKET,key=controlPackageObject(plan.candidate.sha256);
       const credentials={accessKeyId:env.ALIBABA_CLOUD_ACCESS_KEY_ID,accessKeySecret:env.ALIBABA_CLOUD_ACCESS_KEY_SECRET,securityToken:env.ALIBABA_CLOUD_SECURITY_TOKEN};
       const request=args=>{const {url,options}=signedTransferRequest({bucket,key,credentials},args); return fetch(url,options);};
-      if (plan.scope===cleanupScope) {
+      if (env.V2_MULTIPART_CLEANUP_ONLY === 'true') {
         const prior = JSON.parse(execFileSync('gh',['api','repos/'+env.GITHUB_REPOSITORY+'/actions/runs/'+plan.priorRunId],
           {encoding:'utf8',stdio:['ignore','pipe','pipe'],env,timeout:20000,maxBuffer:524288}));
         check(String(prior.id)===plan.priorRunId && prior.event==='workflow_dispatch' && prior.status==='completed' &&

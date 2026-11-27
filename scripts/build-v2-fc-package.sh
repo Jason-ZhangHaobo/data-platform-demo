@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+script_root="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "${2:-$script_root/..}" && pwd)"
 output_path="${1:-$repo_root/v2-function.zip}"
 node_binary="${V2_NODE_BINARY:-$(command -v node)}"
 stage_root="$(mktemp -d)"
@@ -30,10 +31,8 @@ if [[ "$($node_binary -p 'Number(process.versions.node.split(".")[0])')" -lt 24 
 fi
 
 mkdir -p "$stage/runtime"
-cp -R "$repo_root/src" "$stage/src"
+python3 "$script_root/control-package-sources.py" stage "$repo_root" "$stage"
 cp -R "$repo_root/web-dist" "$stage/web-dist"
-cp -R "$repo_root/fixtures" "$stage/fixtures"
-cp "$repo_root/deploy/v2/package.json" "$repo_root/deploy/v2/package-lock.json" "$stage/"
 cp -L "$node_binary" "$stage/runtime/node"
 chmod 0755 "$stage/runtime/node"
 
@@ -44,7 +43,7 @@ npm ci \
   --no-audit \
   --no-fund
 
-if find "$stage" -type f \( -name '.env' -o -name '.env.local' -o -name '*.pem' -o -name '*.key' \) | grep -q .; then
+if [[ -n "$(find "$stage" \( -iname '.env' -o -iname '.env.*' -o -iname '*.pem' -o -iname '*.key' \) -print -quit)" ]]; then
   echo "Refusing to package credential-like files" >&2
   exit 1
 fi

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { validateTransferPlan, signedTransferRequest } from '../../scripts/run-control-multipart-prestage.mjs';
 import { functionDigest } from '../../scripts/refresh-v2-spark-readiness.mjs';
+import { verifyV2MonthlyBillPages } from '../../scripts/verify-v2-monthly-bill-pages.mjs';
 
 const now = Date.parse('2026-11-25T01:00:00Z');
 const hash = v=>createHash('sha256').update(v).digest('hex');
@@ -33,6 +34,44 @@ test('prestage binds the artifact, readonly baseline, recipient and bounded owne
   for(const patch of [{billCny:108.01},{retainedReserveCny:88},{activeUploads:1},{candidateAbsent:false},{privacyVerified:false},
     {versioning:'Suspended'},{checkedAt:new Date(now-3600000).toISOString()}]) assert.throws(()=>verify({...plan,preflight:{...plan.preflight,...patch}}));
   verify({...plan,preflight:{...plan.preflight,billCny:108}});
+});
+
+test('a newly reviewed multipart plan binds its reserve, complete current bill and exact operation', () => {
+  const {env, config, current, plan} = inputs();
+  const billPage = {Success:true, Data:{BillingCycle:'2026-11', PageNum:1, PageSize:300, TotalCount:1,
+    Items:{Item:[{Currency:'CNY', PretaxAmount:'101.25'}]}}};
+  const monthlyBill = verifyV2MonthlyBillPages([billPage]);
+  const retainedReserveCny = 96.75;
+  const budgetApproval = {approvalDigest:plan.approvalDigest, operationId:plan.operationId,
+    candidateSha256:plan.candidate.sha256, retainedReserveCny};
+  const preflight = {...plan.preflight, retainedReserveCny, monthlyBill, billCny:101.25};
+  const reviewed = {...plan, scope:'CONTROL_CODE_MULTIPART_PRESTAGE_V2', budgetApproval, preflight};
+  const verify = value => validateTransferPlan(value, env, config, current, now);
+  verify(reviewed); // 101.25 + 96.75 + 2 is exactly the approved monthly limit.
+  assert.throws(() => verify({...reviewed, scope:plan.scope}), {safeCode:'MULTIPART_BUDGET_APPROVAL_INVALID'});
+  assert.throws(() => verify({...plan, preflight}), {safeCode:'MULTIPART_OWNER_PREFLIGHT_INVALID'});
+  assert.throws(() => verify({...reviewed, budgetApproval:undefined}), {safeCode:'MULTIPART_BUDGET_APPROVAL_INVALID'});
+  for (const patch of [{approvalDigest:sha}, {operationId:'c'.repeat(32)}, {candidateSha256:plan.previous.sha256},
+    {retainedReserveCny:89.99}, {retainedReserveCny:'96.75'}]) {
+    assert.throws(() => verify({...reviewed, budgetApproval:{...budgetApproval, ...patch}}),
+      {safeCode:'MULTIPART_BUDGET_APPROVAL_INVALID'});
+  }
+  for (const patch of [{retainedReserveCny:90}, {retainedReserveCny:97}, {maxIncrementCny:1}, {monthlyLimitCny:201},
+    {monthlyBill:{...monthlyBill, spendCny:'101.26'}, billCny:101.26}]) {
+    assert.throws(() => verify({...reviewed, preflight:{...preflight, ...patch}}), {safeCode:'MULTIPART_OWNER_PREFLIGHT_INVALID'});
+  }
+  for (const patch of [{monthlyBill:undefined}, {monthlyBill:verifyV2MonthlyBillPages([])}, {billCny:100},
+    {monthlyBill:{...monthlyBill, billingCycle:'2026-10'}}, {monthlyBill:{...monthlyBill, recordCount:-1}}]) {
+    assert.throws(() => verify({...reviewed, preflight:{...preflight, ...patch}}), {safeCode:'MULTIPART_MONTHLY_BILL_INVALID'});
+  }
+  const cleanup = {...reviewed, scope:'CONTROL_CODE_MULTIPART_CLEANUP_V2', uploadId:'demo-id-123', priorRunId:'7111111',
+    priorRunTerminal:true, startedAt:new Date(now-10000).toISOString(), priorAbortAttempted:false};
+  const cleanupEnv = {...env, V2_MULTIPART_CLEANUP_ONLY:'true'};
+  validateTransferPlan(cleanup, cleanupEnv, config, current, now);
+  assert.throws(() => verify(cleanup), {safeCode:'MULTIPART_PLAN_BINDING_INVALID'});
+  assert.throws(() => validateTransferPlan(reviewed, cleanupEnv, config, current, now), {safeCode:'MULTIPART_PLAN_BINDING_INVALID'});
+  assert.throws(() => validateTransferPlan({...cleanup, priorRunTerminal:false}, cleanupEnv, config, current, now),
+    {safeCode:'MULTIPART_CLEANUP_PLAN_INVALID'});
 });
 
 test('a cleanup dispatch is separately bound to exactly one original run, session and abort history',()=>{
