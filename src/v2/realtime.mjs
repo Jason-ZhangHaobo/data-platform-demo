@@ -488,6 +488,20 @@ export class RealtimeManager {
 
   recoverJob(jobId, input, request = {}) {
     const job = this.#job(jobId);
+    if (job.adapter === kafkaFlinkAdapter && this.kafkaFlinkRunner.liveSqlDigest) {
+      const duplicate=requestDuplicate(this.store,this.project,request.requestKey,request.requestSignature);
+      if (duplicate) return duplicate;
+      if (job.status!=="STOPPED" || input.liveSourceRunId!==job.lastRunId)
+        throw fail(409,"持续窗口仅能接续最近一次已确认停止的原运行","LIVE_WINDOW_SOURCE_NOT_STOPPED");
+      const source=this.store.get("stream_run",input.liveSourceRunId,this.project);
+      if (source?.jobId!==job.id || source.status!=="STOPPED" ||
+          source.liveSqlDigest!==this.kafkaFlinkRunner.liveSqlDigest || !source.liveWindow)
+        throw fail(409,"原运行没有可用保存点","LIVE_WINDOW_RESTORE_UNVERIFIED");
+      let restore;
+      try { restore=this.kafkaFlinkRunner.verifyLiveRestore(source.id,source.liveWindow); }
+      catch { throw fail(409,"无法核对原保存点和启动计划","LIVE_WINDOW_RESTORE_UNVERIFIED"); }
+      return this.#start(job,{...request,liveSourceRunId:source.id,recovery:true,startOffset:0,restore});
+    }
     if (job.adapter === kafkaFlinkAdapter)
       throw fail(409, "本机引擎在每次验收中自动演练保存点恢复", "KAFKA_FLINK_RECOVERY_IS_INTERNAL");
     if (!["FAILED", "INTERRUPTED"].includes(job.status))
@@ -593,6 +607,7 @@ export class RealtimeManager {
         checkpointCount: 0,
         recovery: input.recovery,
         recoveryCheckpointId: input.recoveryCheckpointId,
+        liveSourceRunId: input.liveSourceRunId,
         requestKey: input.requestKey,
         requestSignature: input.requestSignature,
         ...(isEngine ? {adapter:kafkaFlinkAdapter,fixtureDigest:engineFixture?.contentHash,windowSqlDigest,liveSqlDigest} : {}),
@@ -609,7 +624,7 @@ export class RealtimeManager {
     });
     this.controls.set(job.id, controller);
     const processing = isEngine
-      ? this.#processEngine(job,run,engineFixture,controller.signal)
+      ? this.#processEngine(job,run,engineFixture,controller.signal,input.restore)
       : this.#process(run.id, controller.signal);
     const pending = processing.finally(() => {
       this.controls.delete(job.id);
@@ -619,12 +634,15 @@ export class RealtimeManager {
     return run;
   }
 
-  async #processEngine(job, run, fixture, signal) {
+  async #processEngine(job, run, fixture, signal, restore) {
     let status, engineResult, liveWindow, errorCode;
     try {
       if (run.liveSqlDigest) {
-        liveWindow=await this.kafkaFlinkRunner({signal,onProgress:observation => {
-          if (!this.closed) this.store.update("stream_run",run.id,this.project,{liveWindow:observation});
+        liveWindow=await this.kafkaFlinkRunner({signal,runId:run.id,restore,onProgress:observation => {
+          if (this.closed) return;
+          this.store.update("stream_run",run.id,this.project,{liveWindow:observation});
+          if (restore && this.#job(job.id).status==="RECOVERING")
+            this.store.update("stream_job",job.id,this.project,{status:"RUNNING"});
         }});
         status="STOPPED";
       } else {
@@ -648,7 +666,7 @@ export class RealtimeManager {
       status = signal.aborted && !run.liveSqlDigest ? "STOPPED" : "FAILED";
       errorCode = status==="STOPPED" ? "KAFKA_FLINK_CANCELLED" :
         ["KAFKA_FLINK_EVIDENCE_MISMATCH","KAFKA_FLINK_TIMEOUT","LIVE_WINDOW_EVIDENCE_MISMATCH",
-          "LIVE_WINDOW_STOP_UNCONFIRMED","LIVE_WINDOW_STARTUP_TIMEOUT"].includes(error.message)
+          "LIVE_WINDOW_STOP_UNCONFIRMED","LIVE_WINDOW_STARTUP_TIMEOUT","LIVE_WINDOW_RESTORE_UNVERIFIED"].includes(error.message)
           ? error.message : "KAFKA_FLINK_EXECUTION_FAILED";
     }
     if (this.closed) return;

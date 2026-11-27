@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loopbackKafkaBootstrap, runLiveWindowProcess } from "./live-kafka-window-session.mjs";
+import { liveWindowRestoreArtifacts, liveWindowWorkDirectory, loopbackKafkaBootstrap, runLiveWindowProcess } from "./live-kafka-window-session.mjs";
 
 export const kafkaFlinkAdapter = "kafka-flink-local-v1";
 const repo = fileURLToPath(new URL("../../", import.meta.url));
@@ -127,11 +127,23 @@ export function createKafkaFlinkRunner(env, root) {
     ...(bootstrap ? {SHUDUO_REALTIME_LIVE_BOOTSTRAP:bootstrap} : {}),
   };
   const script=join(repo,"scripts/realtime-lab/run.sh");
-  const run = async ({signal,onProgress}) => {
+  const run = async ({signal,onProgress,runId,restore}) => {
     if (signal.aborted) throw new Error("KAFKA_FLINK_CANCELLED");
     mkdirSync(workRoot, {recursive:true,mode:0o700});
+    if (bootstrap) {
+      const work=liveWindowWorkDirectory(workRoot,runId);
+      mkdirSync(work,{mode:0o700});
+      const env={...childEnvironment,...(restore ? {
+        SHUDUO_REALTIME_LIVE_RESTORE_PLAN:restore.plan,
+        SHUDUO_REALTIME_LIVE_RESTORE_PLAN_DIGEST:restore.planDigest,
+        SHUDUO_REALTIME_LIVE_RESTORE_SAVEPOINT:restore.savepoint,
+        SHUDUO_REALTIME_LIVE_RESTORE_DIGEST:restore.savepointDigest,
+      } : {})};
+      const final=await runLiveWindowProcess({script,work,repo,env,signal,sqlDigest:liveSqlDigest,onProgress,restore});
+      liveWindowRestoreArtifacts(workRoot,runId,final);
+      return final;
+    }
     const work = mkdtempSync(join(workRoot,"run-"));
-    if (bootstrap) return runLiveWindowProcess({script,work,repo,env:childEnvironment,signal,sqlDigest:liveSqlDigest,onProgress});
     return new Promise((resolve, reject) => {
       const child = spawn("/bin/bash", [script, work,
         ...(brokerCrash ? ["--broker-crash"] : windowCrash ? ["--window-crash"] : checkpointCrash ? ["--checkpoint-crash"] : [])], {
@@ -176,5 +188,6 @@ export function createKafkaFlinkRunner(env, root) {
       });
     });
   };
-  return Object.assign(run,{checkpointCrash,windowSqlDigest,brokerCrash,liveSqlDigest});
+  return Object.assign(run,{checkpointCrash,windowSqlDigest,brokerCrash,liveSqlDigest,
+    ...(bootstrap ? {verifyLiveRestore:(id,evidence)=>liveWindowRestoreArtifacts(workRoot,id,evidence)} : {})});
 }

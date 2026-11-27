@@ -9,7 +9,12 @@ fi
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 parent=$(cd "$1" && pwd -P)
-work=$(mktemp -d "$parent/quote-replay.XXXXXXXX")
+if [[ ${2:-} == "--live-windows" ]]; then
+  work="$parent/session"
+  mkdir -m 700 "$work"
+else
+  work=$(mktemp -d "$parent/quote-replay.XXXXXXXX")
+fi
 mkdir "$work/classes"
 printf 'Run directory: %s\n' "$work"
 

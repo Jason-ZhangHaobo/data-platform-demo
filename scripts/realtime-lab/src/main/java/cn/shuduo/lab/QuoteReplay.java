@@ -229,7 +229,7 @@ public final class QuoteReplay {
         throw new IllegalStateException("FLINK_WORKER_NOT_READY");
     }
 
-    private static JsonNode checkpointStats(int port, String jobId) throws Exception {
+    static JsonNode checkpointStats(int port, String jobId) throws Exception {
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/jobs/" + jobId + "/checkpoints"))
             .timeout(Duration.ofSeconds(3)).build();
         var response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
@@ -237,7 +237,7 @@ public final class QuoteReplay {
         return JSON.readTree(response.body()).path("latest");
     }
 
-    private static Path checkpointDirectory(String externalPath) {
+    static Path checkpointDirectory(String externalPath) {
         var location = new org.apache.flink.core.fs.Path(externalPath).toUri();
         require("file".equals(location.getScheme()), "CHECKPOINT_STORAGE_IS_NOT_LOCAL");
         Path path = Path.of(location.getPath()).normalize();

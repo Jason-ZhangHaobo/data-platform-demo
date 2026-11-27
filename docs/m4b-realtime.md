@@ -57,7 +57,15 @@ JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/real
 
 点击「停止」后等待真实 Flink 保存点。成功时状态为「已停止」并显示摘要，读取失败或超时会保留上一次结果并标记停止未确认。CLI 和 MCP 沿用原任务查询，同一作业的进度及保存点分别从 `liveWindow` 和 `checkpoints` 回读。[Flink 停止与保存点](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/ops/state/savepoints/#stopping-a-job-with-savepoint)
 
-真实本机验收预先送入两条历史记录，再在作业运行后分两次各送四条，其中第二次在关页后发送。历史记录被起始偏移排除，两个时段的四条提交结果经独立复算一致。重开浏览器后单次停止，原作业的保存点经摘要核对。该模式的生产认证、跨主机高可用及从持续作业保存点再启动仍待验收。
+真实本机验收预先送入两条历史记录，再在作业运行后分两次各送四条，其中第二次在关页后发送。历史记录被起始偏移排除，两个时段共四条提交结果经独立复算一致。重开浏览器后单次停止，原作业的保存点经摘要核对。该模式的生产认证和跨主机高可用仍待验收。
+
+### 从原持续窗口保存点继续
+
+最近一次运行已确认停止，并保存了启动计划及保存点摘要时，可在实时任务点击「从保存点继续」。CLI 使用 `shuduo streams recover --id JOB_ID --live-source-run-id RUN_ID`，MCP 使用 `stream_job_recover` 的 `liveSourceRunId`。请求只给原运行编号，服务从受保护的原运行目录核对启动计划和保存点。
+
+新 Flink 作业继续使用原 Kafka 集群、输入与输出主题标识和原事务会话。启动前验证 SQL 摘要和输入分区，启动后从 Flink 恢复回执核对保存点。新运行展示接续后提交的窗口；原运行的记录和保存点保留。恢复使用 Flink 默认的 NO_CLAIM 策略。[Flink 保存点所有权](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/ops/state/savepoints/#claim-mode)
+
+本机验收在停止首个作业后重启数舵，并在停止间隔送入四条事件。新作业恢复原未闭窗口并提交两条结果，成交量为 6 和 9。独立 Kafka 消费者确认总共六条，前四条的内容与顺序保持一致。该验收使用同一持续运行的本机 Kafka Broker。
 
 ## 实现语义
 
