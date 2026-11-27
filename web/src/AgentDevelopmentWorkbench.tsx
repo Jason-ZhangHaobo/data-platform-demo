@@ -21,6 +21,8 @@ import type { FundExecutionBinding, FundPreparationReceipt } from "../../src/v2/
 import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
 import {initialAgentTaskId,loadHistoryAfterTarget,mergeTaskHistory,checkedAgentTask,checkedAgentRun} from "./agent-history-loading";
 import {chatEditorSource,clearChatEditorSource} from "./agent-chat-editor-location";
+import {invitedEditorSource,invitedEditorLocation,invitedTaskSelection,clearInvitedEditorSource} from "./invited-task-location";
+import {readInvitedSqlContext} from '../../src/v2/invited-sql-context-client.mjs';
 import {readChatSqlDevelopment} from "./chat-sql-development";
 import {agentBackgroundAction,agentBackgroundLabel,agentTaskFinished,mayEditScopedTask} from "./agent-task-scope";
 import {AgentRepairAction} from "./AgentRepairAction";
@@ -79,6 +81,8 @@ const resultFieldLabels: Record<string,string> = { client_id:"客户", holding_m
 
 type WorkbenchProps = {
   initialContextId?:string;
+  invitedChatLink?:{current:string|undefined};
+  onReturnToInvitedChat?:()=>void;
   api: Api; contexts: Context[]; canWrite: boolean; canPublish?: boolean; publicationTarget?: PublicationTarget; ready: boolean; readinessReason?:string; loading: boolean; privatePreview: boolean; runtimeMode?: "LOCAL_DEVELOPMENT" | "PUBLIC_INVITATION"; backgroundAvailable?:boolean; fundPilotAvailable?:boolean; readOnly?:boolean; taskOnly?:boolean; targetTaskId?:string; onLogin: () => void; onDirtyChange: (dirty: boolean) => void; onOpenServices?: (source:ServiceSourceBinding) => void;
   expectedSourceBinding?:ServiceSourceBinding;expectedManualSource?:import("./service-source-binding").StandaloneServiceSourceBinding;expectedSourceError?:string;
 };
@@ -94,9 +98,12 @@ export function AgentDevelopmentWorkbench(props: WorkbenchProps) {
   return <DevelopmentWorkspace {...props}/>;
 }
 
-function DevelopmentWorkspace({ api, contexts: availableContexts, initialContextId, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, fundPilotAvailable=false, readOnly:requestedReadOnly=false, taskOnly=false, targetTaskId, expectedSourceBinding,expectedManualSource,expectedSourceError,onLogin, onDirtyChange, onOpenServices }: WorkbenchProps) {
+function DevelopmentWorkspace({ api, contexts: availableContexts, initialContextId, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, fundPilotAvailable=false, readOnly:requestedReadOnly=false, taskOnly=false, targetTaskId, expectedSourceBinding,expectedManualSource,expectedSourceError,onLogin, onDirtyChange, invitedChatLink, onReturnToInvitedChat, onOpenServices }: WorkbenchProps) {
   const contexts=availableContexts.filter(context=>context.capabilities?.agentDevelopment!==false);
   const chatSource=typeof location==='undefined'?undefined:chatEditorSource(location.href);
+  const invitedSource=typeof location==='undefined'?undefined:invitedEditorSource(location.href);
+  const editorSource=chatSource??invitedSource;
+  const pinnedEditor=chatSource!==undefined||invitedSource!==undefined;
   const [chatEditorError,setChatEditorError]=useState('');
   const [chatEditorVerified,setChatEditorVerified]=useState(false);
   const fundContexts=availableContexts.filter(context=>context.capabilities?.fundPreparation===true);
@@ -295,10 +302,10 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   }
   async function loadHistoryOnce() {
     setHistoryError("");setHistoryState("loading");
-    if(chatSource!==undefined){
-      if(chatSource&&(!taskOnly||targetTaskId===chatSource.taskId)&&!sourceReturnActive&&
-        (!publicationTarget||publicationTarget.taskId===chatSource.taskId)){
-        await selectTask(chatSource.taskId,false);
+    if(pinnedEditor){
+      if(editorSource&&(invitedSource===undefined||runtimeMode==='PUBLIC_INVITATION')&&(!taskOnly||targetTaskId===editorSource.taskId)&&!sourceReturnActive&&
+        (!publicationTarget||publicationTarget.taskId===editorSource.taskId)){
+        await selectTask(editorSource.taskId,false);
       }else setChatEditorError('会话链接不完整，或当前窗口无法查看这项开发任务。');
       if(alive.current)setHistoryState("deferred");
       return;
@@ -392,7 +399,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     selectedId.current = id;
     setTaskReadFailure(undefined);
     const url = clearContextDerivation(location.href);
-    if(!keepChatSource)clearChatEditorSource(url);
+    if(!keepChatSource)clearInvitedEditorSource(clearChatEditorSource(url));
     if (url.searchParams.get("task") !== id) clearAgentArchivePin(url);
     if (id) url.searchParams.set("task", id); else url.searchParams.delete("task");
     setDerivationActive(false);derivationActiveRef.current=false;setDerivationDraft(undefined);derivationRef.current=undefined;
@@ -408,7 +415,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const rememberManual = (revisionId: string, runId?: string, requestKey?: string, origin?:string) => {
     selectedId.current = undefined;
     restoredManual.current=JSON.stringify([revisionId,runId,requestKey]);
-    const url = clearChatEditorSource(manualRunLocation(location.href, {revisionId, runId, requestKey, originTaskId:expectedManualSource?undefined:origin}));
+    const url = clearInvitedEditorSource(clearChatEditorSource(manualRunLocation(location.href, {revisionId, runId, requestKey, originTaskId:expectedManualSource?undefined:origin})));
     history.replaceState(null, "", url);
   };
   async function selectTask(id: string, protectDraft = true, backgroundFailure?: string) {
@@ -423,22 +430,35 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     setAutomatic(false); setBusy(true); setError(""); setRetryConsent(false); setTaskReadFailure(undefined);
     let readingRun = false;
     try {
-      if(chatSource?.taskId===id){
-        const proof=await readChatSqlDevelopment(api,chatSource.intentId,chatSource);
+      if(editorSource?.taskId===id){
+        let storedSql:string, taskStatus:string,runStatus:string|undefined;
+        if(chatSource){
+          const proof=await readChatSqlDevelopment(api,chatSource.intentId,chatSource);
+          storedSql=proof.sql;taskStatus=proof.taskStatus;runStatus=proof.runStatus;
+        }else{
+          const proof=await readInvitedSqlContext({request:path=>api(path)},{taskId:id,requestId:invitedSource?.requestId});
+          if(proof.evidenceState==='UNCONFIRMED'||proof.contextId!==editorSource.contextId||!proof.revision||
+            proof.revision.id!==editorSource.revisionId||proof.revision.hash!==editorSource.revisionHash||proof.run?.id!==editorSource.runId)
+            throw Error('原对话查看的版本或批次已变化，请返回对话核对。');
+          storedSql=proof.revision.sql;taskStatus=proof.taskStatus;runStatus=proof.run?.status;
+        }
         if(!isCurrent())return;
-        const [taskValue,runValue]=await Promise.all([api('/agent/tasks/'+id),api('/runs/'+chatSource.runId)]);
+        // Pending invited runs can reconcile a Worker on the ordinary run endpoint.
+        // Show the checked SQL until a terminal saved result is available instead.
+        const readRun=editorSource.runId&&(chatSource||terminal(runStatus));
+        const [taskValue,runValue]=await Promise.all([api('/agent/tasks/'+id),readRun?api('/runs/'+editorSource.runId):undefined]);
         if(!isCurrent())return;
         const current=checkedAgentTask<Task>(taskValue,id);
-        const actual=checkedAgentRun<Run>(runValue,{id,contextId:chatSource.contextId,revisionId:chatSource.revisionId,runId:chatSource.runId});
+        const actual=runValue===undefined?undefined:checkedAgentRun<Run>(runValue,{id,contextId:editorSource.contextId,revisionId:editorSource.revisionId,runId:editorSource.runId});
         const last=current.attempts.at(-1);
-        if(current.contextId!==chatSource.contextId||current.revisionId!==chatSource.revisionId||current.sql!==proof.sql||
-          last?.revisionId!==chatSource.revisionId||last.runId!==chatSource.runId||
-          (current.runId!==undefined&&current.runId!==chatSource.runId)||current.status!==proof.taskStatus||
-          actual.agentTaskId!==id||actual.revisionHash!==chatSource.revisionHash||actual.status!==proof.runStatus)
+        if(current.contextId!==editorSource.contextId||current.revisionId!==editorSource.revisionId||current.sql!==storedSql||
+          last?.revisionId!==editorSource.revisionId||last.runId!==editorSource.runId||
+          (current.runId!==undefined&&current.runId!==editorSource.runId)||current.status!==taskStatus||
+          actual&&(actual.agentTaskId!==id||actual.revisionHash!==editorSource.revisionHash||actual.status!==runStatus))
           throw Error('会话的代码版本与当前任务或运行回执不一致');
-        rememberSelection(id,true);accept(current);setContextId(chatSource.contextId);
-        if(!keepDraft){setDraft(proof.sql);setDiff(false);}
-        setBaseline(proof.sql);setBaselineRevisionId(chatSource.revisionId);setRun(actual);
+        rememberSelection(id,true);accept(current);setContextId(editorSource.contextId);
+        if(!keepDraft){setDraft(storedSql);setDiff(false);}
+        setBaseline(storedSql);setBaselineRevisionId(editorSource.revisionId);setRun(actual);
         setChatEditorError('');setChatEditorVerified(true);return;
       }
       const current = checkedAgentTask<Task>(await api<unknown>(`/agent/tasks/${id}`),id);
@@ -470,7 +490,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     } catch (e) {
       if (!isCurrent()) return;
       const message = e instanceof Error ? e.message : "暂时无法读取，请重试。";
-      if(chatSource?.taskId===id){
+      if(editorSource?.taskId===id){
         setChatEditorVerified(false);setChatEditorError(message);setRun(undefined);
       }else if (sourceReturnActive) {
         setReturnSourceError(message); setTask(undefined); setRun(undefined); setDraft(""); setBaseline(""); setBaselineRevisionId(undefined);
@@ -716,7 +736,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
         const key=crypto.randomUUID(), origin=task?.id ?? originTaskId;
         revisionRequest.current={key,sql:draft,contextId,originAgentTaskId:origin};
         setPendingSaveKey(key);
-        history.replaceState(null,"",clearChatEditorSource(manualSaveLocation(location.href,key,origin)));
+        history.replaceState(null,"",clearInvitedEditorSource(clearChatEditorSource(manualSaveLocation(location.href,key,origin))));
         revision=await api<SavedRevision>("/revisions",{sql:draft,contextId,...(origin ? {originAgentTaskId:origin} : {})},{idempotencyKey:key});
         setPendingSaveKey(undefined); revisionRequest.current=undefined;
       }
@@ -796,21 +816,38 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const assistedChatReason=(task?.sourceKind==='MANUAL'||!task&&confirmedManualRevision.current?.source==='MANUAL')&&!derivationActive&&task?.status!=='SUCCEEDED'&&!manualSuccessReady&&
     !(run&&['FAILED','VALIDATION_FAILED'].includes(run.status)&&run.revisionId===baselineRevisionId&&!dirty)?'当前尚无可续改的成功辅助任务或可引用的失败批次；请先继续原任务，或在编辑器保存核验。新的修改意图保留，不会改作无来源的新任务。':'';
   const resultFields = run?.rows?.[0] ? Object.keys(run.rows[0]) : [];
-  const chatIntent=chatSource?.intentId;
+  useEffect(()=>{
+    if(!invitedChatLink||runtimeMode!=='PUBLIC_INVITATION')return;
+    const selected=invitedTaskSelection(location.href);
+    if(selected&&task?.id===selected.taskId&&run?.agentTaskId===task.id&&run.contextId===task.contextId&&
+      task.runId===run.id&&task.revisionId&&baselineRevisionId===task.revisionId&&
+      run.revisionId===task.revisionId&&run.revisionHash&&/^[a-f0-9]{64}$/.test(run.revisionHash)){
+      const url=invitedEditorLocation(location.href,selected,{...selected,contextId:task.contextId,
+        revisionId:task.revisionId,revisionHash:run.revisionHash,runId:run.id});
+      url.hash='agent-chat';invitedChatLink.current=url.href;
+    }
+    return()=>{invitedChatLink.current=undefined;};
+  },[invitedChatLink,runtimeMode,task,run,baselineRevisionId]);
+  const chatIntent=chatSource?.intentId??invitedSource?.taskId;
+  const backToChat=chatSource?'?module=agent-center&chat_intent='+chatSource.intentId+'#agent-chat':
+    invitedSource?location.search+'#agent-chat':undefined;
+  const returnChatControl=invitedSource&&onReturnToInvitedChat?
+    <button className="button" disabled={working||dirty||Boolean(message.trim()||pendingSaveKey||pendingAgentKey)||fundDirty||manualUnconfirmed} onClick={onReturnToInvitedChat}>返回原对话</button>:
+    backToChat&&<a className="button" href={backToChat}>返回原对话</a>;
   useEffect(()=>{
     if(!chatIntent||!chatEditorVerified)return;
     const frame=requestAnimationFrame(()=>document.getElementById('agent-code')?.scrollIntoView({block:'start'}));
     return ()=>cancelAnimationFrame(frame);
   },[chatIntent,chatEditorVerified]);
-  if(chatSource!==undefined&&!chatEditorVerified)return <section className="agent-dev" aria-label="会话代码接管">
+  if(pinnedEditor&&!chatEditorVerified)return <section className="agent-dev" aria-label="会话代码接管">
     <h2>打开会话中的 SQL 版本</h2>
     <p role={chatEditorError?'alert':'status'}>{chatEditorError||'正在核对原会话、任务与运行…'}</p>
-    {chatEditorError&&chatSource&&<button className="button" onClick={()=>void loadHistory()}>重新核对原会话</button>}
-    {chatIntent&&<a className="button" href={'?module=agent-center&chat_intent='+chatIntent+'#agent-chat'}>返回原对话</a>}
+    {chatEditorError&&editorSource&&<button className="button" onClick={()=>void loadHistory()}>重新核对原会话</button>}
+    {returnChatControl}
   </section>;
   return <section className="agent-dev" aria-label="Agent 数据开发工作台">
-    {chatSource&&<div className="agent-dev-notice" aria-label="会话接管来源"><span>原对话 · 版本 {chatSource.revisionId.slice(0,8)} · 批次 {chatSource.runId.slice(0,8)}</span>
-      <a className="button" href={'?module=agent-center&chat_intent='+chatSource.intentId+'#agent-chat'}>返回原对话</a></div>}
+    {editorSource&&<div className="agent-dev-notice" aria-label="会话接管来源"><span>原对话 · 版本 {editorSource.revisionId.slice(0,8)}{editorSource.runId&&<> · 批次 {editorSource.runId.slice(0,8)}</>}</span>
+      {returnChatControl}</div>}
     <header className="agent-dev-heading">
       <div>
         <div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div>

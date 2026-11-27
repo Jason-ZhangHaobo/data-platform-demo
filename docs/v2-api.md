@@ -289,6 +289,7 @@ FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查�
 | GET /agent/intents | 受邀用户的跨模块Agent意图记录 | 路由、风险、摘要和模型用量；公网匿名拒绝读取 |
 | POST /agent/intents | message、可选 reportSource 和 approvalMode、幂等键 | 202；返回已保存意图，绑定来源的报表规划须沿同一批次执行 |
 | GET /agent/intent-requests/:requestId | 本人原报表会话请求编号 | 只读找回原意图、发布来源和消息摘要，其他账号无法借用 |
+| GET /agent/tasks/:taskId/chat-context | 受邀项目会话，可选 `request_id` 核对原创建请求 | 创建者读取原生持久 SQL 任务的需求、代码版本、已存运行及断言。回执区分已记录、待运行和待核对。CLI 为 `agent invited-task-context --id TASK_ID`，MCP 为 `agent_invited_task_context`。[协议与操作](agent-development-workflow.md#从受邀任务打开独立对话) |
 | GET /agent/intents/:id/development | 本人已关联 SQL 开发任务的对话编号 | 从同一任务、代码与批次读取 SQL、摘要、调试尝试和回归断言。来源不一致时返回 409。CLI 为 `agent chat-development --id`，MCP 为 `agent_chat_sql_development` |
 | GET /agent/intents/:id/development/changes | 本人原开发对话 | 读取绑定的原版本、登记口径、可用请求编号及已有派生任务。按 `requestId` 找回应答，读取不触发计算 |
 | GET /agent/intents/:id/development/changes/:changeId/delivery | 本机原开发会话及所选变更编号 | 返回父子来源、准备请求 UUID 和已保存的八文件交付、演练回执。对账使用只读查询 |

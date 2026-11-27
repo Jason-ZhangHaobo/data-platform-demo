@@ -1,0 +1,19 @@
+.agent-os-v2[data-invited-context]{grid-template-columns:minmax(150px,210px) minmax(0,1fr)}
+.invited-chat-selection{display:flex;align-items:center;gap:8px;padding:10px 4px;color:#225940;font-size:13px}
+.invited-task-chat{margin:0;overflow:auto;min-height:0;padding:clamp(16px,3vw,36px);border:1px solid #d9e4d8;border-radius:12px;background:#fff;color:#244437;min-width:0}
+.invited-task-chat>header,.invited-chat-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.invited-task-chat header h2{margin:5px 0;font-size:clamp(23px,3vw,32px);line-height:1.2}
+.invited-task-chat header small,.invited-task-chat button,.invited-task-chat a.button,.invited-chat-evidence h3{display:inline-flex;align-items:center;gap:7px}
+.invited-chat-toolbar{margin:14px 0;color:#51685a;font-size:13px}
+.invited-chat-demand,.invited-chat-evidence,.invited-chat-access{margin:16px 0;padding:clamp(12px,2vw,22px);border-radius:8px}
+.invited-chat-demand{background:#edf4ef;border-left:3px solid #36795e}
+.invited-chat-demand h3,.invited-chat-evidence h3{margin:0 0 8px;font-size:15px}
+.invited-chat-demand p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.invited-chat-evidence{border:1px solid #dce6dc;background:#fcfdfb}
+.invited-chat-evidence dl{display:flex;gap:14px 24px;flex-wrap:wrap;margin:8px 0}
+.invited-chat-evidence dt{font-size:12px;color:#586c61}.invited-chat-evidence dd{margin:3px 0;font-weight:600;overflow-wrap:anywhere}
+.invited-chat-evidence pre{box-sizing:border-box;max-height:320px;max-width:100%;overflow:auto;white-space:pre;margin:14px 0;padding:14px;border-radius:6px;background:#162b22;color:#eef6ef;font:13px/1.6 ui-monospace,monospace}
+.invited-chat-evidence h4{margin-bottom:5px}.invited-chat-evidence p{margin:6px 0}
+.invited-chat-checks{padding:0;list-style:none}.invited-chat-checks li{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid #dce6dc;font-size:13px;overflow-wrap:anywhere}
+.invited-chat-checks strong{white-space:nowrap}
+@media(max-width:600px){.agent-os-v2[data-invited-context]{grid-template-columns:minmax(0,1fr)}.invited-task-chat{padding:12px}.invited-chat-demand,.invited-chat-evidence{padding:10px}.invited-chat-evidence dl{gap:8px 15px}}

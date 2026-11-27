@@ -193,6 +193,7 @@ import{compareSqlRuns}from'./run-comparison.mjs';
 import { agentEvidenceJourney } from "./agent-journey.mjs";
 import { storedAgentReviewEvidence } from "./agent-review-evidence.mjs";
 import { storedAgentExecutionEvidence } from "./agent-execution-evidence.mjs";
+import { invitedTaskContext } from "./invited-task-context.mjs";
 import { storedBackgroundPreparationEvidence } from "./delivery-preparation-evidence.mjs";
 import { storedDevelopmentDrivers } from "./agent-execution-drivers.mjs";
 import { readDeliveryAdvance, readDeliveryPreparationSource } from "./delivery-preparation-request.mjs";
@@ -4276,6 +4277,16 @@ export function createV2Server(options = {}) {
           }
           return json(res, 200, exposeValidationRecord(get("python_run", run.id)));
         }
+      }
+      const invitedContextRoute=path.match(/^\/api\/v2\/agent\/tasks\/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/chat-context$/);
+      if (invitedContextRoute && method==='GET') {
+        if (local) throw fail(404,'此入口属于受邀开发工作台');
+        const session=auth.sessionFromHeaders(req.headers);
+        if (req.headers.authorization!==undefined || !session) throw fail(403,'请使用原开发任务创建者的项目会话');
+        const requestId=url.searchParams.has('request_id')?url.searchParams.get('request_id'):undefined;
+        if (url.searchParams.size && (url.searchParams.size!==1 || typeof requestId!=='string' || !/^[A-Za-z0-9_-]{1,100}$/.test(requestId)))
+          throw fail(422,'请指定原任务编号和可选原创建请求编号');
+        return json(res,200,invitedTaskContext({store,project:PROJECT,actorId:session.user.id,taskId:invitedContextRoute[1],requestId}));
       }
       const agentRequestLookup=path.match(/^\/api\/v2\/agent\/requests\/([A-Za-z0-9_-]{1,100})(\/execution-evidence)?$/);
       if(agentRequestLookup&&method==="GET"){
