@@ -40,7 +40,7 @@ export function ChatPublicationReview({value,checked,busy,onCheck,onPublish,onCa
   </fieldset>;
 }
 
-export function ChatPublicationMonitor({value}:{value:Receipt}){
+export function ChatPublicationMonitor({value,selectedBatchId,onChooseBatch}:{value:Receipt;selectedBatchId?:string|null;onChooseBatch?:(batchId:string)=>void}){
   const release=value.release;
   if(!release)return null;
   const attention=value.runs.some(run=>run.resultUnknown||['FAILED','VALIDATION_FAILED','INTERRUPTED'].includes(run.status))||
@@ -64,6 +64,9 @@ export function ChatPublicationMonitor({value}:{value:Receipt}){
           {run.totalAssets!==undefined&&<div><dt>口径内资产合计</dt><dd>{run.totalAssets} 元</dd></div>}
         </>}
       </dl>
+      {value.monitoringVerified&&run.status==='SUCCEEDED'&&onChooseBatch&&<button type="button" className="button chat-consumption-open"
+        id={'chat-consumption-open-'+run.id} aria-expanded={selectedBatchId===run.id} aria-controls="chat-consumption-panel" onClick={()=>onChooseBatch(run.id)}>
+        {selectedBatchId===run.id?'收起':'查看'}第 {run.sequence} 批接口消费</button>}
     </li>)}</ol>
     <details><summary>查看监控事件和发布依据</summary>
       <p>监控事件 {value.events.length} 条 · 开放告警 {value.alerts.filter(a=>a.status==='OPEN').length} 条</p>

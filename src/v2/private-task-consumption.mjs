@@ -5,7 +5,7 @@ import {consumerDigest,validateConsumerSource} from "./consumer-source.mjs";
 const assetFields = ["client_id", "holding_market_value", "available_cash", "total_assets", "security_count"];
 // Private, owner-authorized projection of persisted calls. No tokens, rows,
 // parameters, rematerialization, model invocation or new consumer calls.
-export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId, includeRetiredBatchVersions = false, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, callAttribution, scope = "PRIVATE_CLOUD_TEST",now=Date.now }) {
+export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, packageDigest, releaseId, callIdDigest, batchId, includeRetiredBatchVersions = false, registeredBatchCatalog = false, services, ownedService, getVersion, source, getRelease, getPackage, application, calls, recheckCall, callAttribution, scope = "PRIVATE_CLOUD_TEST",now=Date.now }) {
   if (!["PRIVATE_CLOUD_TEST", "LOCAL_TEST_ONLY"].includes(scope)) throw new Error("Unsupported consumption scope");
   const entries = [], limit = 20;
   const sourceField=manualDeliveryTaskId?'manualDeliveryTaskId':'sourceAgentTaskId',sourceId=manualDeliveryTaskId??taskId,identity=manualDeliveryTaskId?{manualDeliveryTaskId}:{taskId},matches=r=>r?.[sourceField]===sourceId&&(!manualDeliveryTaskId||r.sourceAgentTaskId===undefined);
@@ -14,6 +14,7 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
     throw Error("Invalid exact consumption call");
   if (includeRetiredBatchVersions && (scope !== "LOCAL_TEST_ONLY" || !batchId || !releaseId))
     throw Error("Invalid frozen batch version history");
+  if (registeredBatchCatalog && !includeRetiredBatchVersions) throw Error("Exact batch history is required");
   const selectedRelease=releaseId===undefined?undefined:getRelease(releaseId);
   const selectedMatches=releaseId===undefined||selectedRelease?.id===releaseId&&matches(selectedRelease)&&selectedRelease.packageDigest===packageDigest;
   const attribution=release=>({sourceKind:release.sourceKind??"AGENT",
@@ -26,6 +27,9 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
     if (callIdDigest !== undefined)
       return exactCall?.serviceId === service.id ? [{service,root:getVersion(exactCall.serviceVersionId)}] : [];
     if (!includeRetiredBatchVersions || !selectedMatches) return [{service,root:service.publishedVersion}];
+    // A batch catalog also needs cash components never called directly. Its
+    // caller verifies page receipts across grants instead of choosing one call.
+    if (registeredBatchCatalog) return (service.versions ?? []).filter(v=>['PUBLISHED','RETIRED'].includes(v.status)).map(root=>({service,root}));
     const savedCalls = calls(service.id);
     const roots = [service.publishedVersion];
     const retiredIds = new Set(savedCalls.filter(call=>successfulReceipt(call) && typeof call.serviceVersionId === "string")
@@ -112,10 +116,10 @@ export async function privateTaskConsumption({ taskId, manualDeliveryTaskId, pac
       // A later restricted receipt should remain readable by exact ID, but
       // cannot stand in for or displace the ordinary batch evidence.
       const limited = call => call.customerAccessHash !== undefined || Object.hasOwn(application(call.applicationId) ?? {}, "customerAccess");
-      const candidates = exactCall ? [] : (savedCalls ?? calls(service.id)).filter(c=>successful(c) && granted(c))
+      const candidates = exactCall || registeredBatchCatalog ? [] : (savedCalls ?? calls(service.id)).filter(c=>successful(c) && granted(c))
         .sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt)));
       const call = exactCall ?? candidates.find(candidate=>!limited(candidate)) ?? candidates[0];
-      if (historical && !call) { matchingCount--; continue; }
+      if (historical && !call && !registeredBatchCatalog) { matchingCount--; continue; }
       if (call) {
         const proof = await recheckCall(service.id, call.id, exactCall || historical ? { pinnedVersionId: root.id } : undefined);
         if (proof.coverage !== (limited(call) ? "SINGLE_CUSTOMER" : undefined))
