@@ -18,3 +18,22 @@
   .agent-os-chat-v2:has(.agent-chat-report-result[open]) .agent-os-thread-v2 {overflow:visible}
   .agent-os-thread-v2:has(.agent-chat-report-result) {padding:12px 8px}
 }
+
+.agent-chat-question,.agent-chat-clarification-history {
+  max-width: 840px;
+  margin: 0 auto 16px;
+  padding: 14px 18px;
+  border: 1px solid #cbdccd;
+  border-radius: 12px;
+  background: #f8fbf7;
+  overflow-wrap: anywhere;
+}
+.agent-chat-question small,.agent-chat-clarification-history dt {color:#4f6655;font-size:12px}
+.agent-chat-question h3 {margin:6px 0 12px;color:#294434;font-size:16px;line-height:1.55}
+.agent-chat-question label {display:grid;gap:6px;font-size:13px}
+.agent-chat-question textarea {box-sizing:border-box;width:100%;min-height:60px;resize:vertical;padding:8px;border:1px solid #b7ccbb;border-radius:6px;font:inherit}
+.agent-chat-question button {margin:8px 8px 0 0}
+.agent-chat-question [role=status],.agent-chat-question [role=alert] {font-size:13px;line-height:1.5}
+.agent-chat-clarification-history summary {cursor:pointer;font-size:13px;font-weight:600}
+.agent-chat-clarification-history dl,.agent-chat-clarification-history dd {margin:0}
+.agent-chat-clarification-history dd {margin:4px 0 10px;font-size:14px}

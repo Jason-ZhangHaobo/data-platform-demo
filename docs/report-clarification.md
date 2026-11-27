@@ -26,4 +26,6 @@ CLI：`shuduo reports clarification --id PLAN_ID`、`shuduo reports clarify --id
 
 `test/v2/report-clarification.test.mjs`核验单次派生、幂等、不同回答冲突、三轮上限、原问题／用量变化、剥离来源后重算摘要的拒绝、提供方前后核对、无模型配置的已受理回读及提示隐私。实际隔离本机验收使用原真实Spark结果和合成模型响应，完成未受理／丢失回执恢复及报表生成；真实模型0、新Spark0，不计当前真实完整E2E。
 
-当前报表结果仍通过原任务／创建请求关联澄清记录；离线交付中独立冻结需求与审阅溯源列为下一项，不能仅凭CSV推断完整对话或审批依据。
+在独立 Agent 会话里，每个父问题使用固定答复编号 `chat-clarify-<父方案 UUID>`。重开会话先核对原发起人和来源，再逐轮读取这条会话内已受理的回答。专业工作台可以按自己的请求编号探索其他答案。只有服务端明确返回 `REPORT_PLAN_REQUEST_NOT_FOUND` 才表示该账号尚无此编号；已登记请求但回执缺失返回 `REPORT_PLAN_REQUEST_UNCONFIRMED`，应继续核对已有记录。
+
+应用后的报表运行已保存本次采纳的原始需求、澄清问答、审阅摘要和固定产物摘要。复核交付时，下载运行的[需求与审阅溯源](report-provenance.md)与单客户 CSV 配套使用。
