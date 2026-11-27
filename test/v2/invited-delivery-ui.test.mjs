@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {invitedRehearsalStatus,invitedDeliveryWriteWindow} from '../../web/src/invited-delivery-state.ts';
-import {pinInvitedDelivery,invitedEditorSource,invitedEditorLocation,invitedTaskSelection} from '../../web/src/invited-task-location.ts';
+import {pinInvitedDelivery,pinInvitedPublication,invitedPublicationPin,invitedEditorSource,invitedEditorLocation,invitedTaskSelection} from '../../web/src/invited-task-location.ts';
 import {validationFamilyForContextId} from '../../web/src/validation-family.ts';
 
 const taskId=randomUUID(),other=randomUUID(),now=Date.now();
@@ -51,4 +51,24 @@ test('a completed Spark record needs the original signed evidence and the full r
   assert.match(invitedRehearsalStatus({report,package:{},delivery:{stage:'PACKAGE_READY'}},true),/委托待核对/);
   assert.match(invitedRehearsalStatus({report,verification:{status:'FAILED'},invitedRehearsalEvidence:'FAILED'},false),/^演练失败$/);
   assert.match(invitedRehearsalStatus({report,verification:{status:'FAILED'}},false),/失败记录待核对/);
+});
+
+test('a reopened approval keeps its exact version, rehearsal, original window and release through the editor',()=>{
+  const webWindow={startsAt:new Date(now-1000).toISOString(),expiresAt:new Date(now+60000).toISOString()};
+  const approval={requestId:'approval-'+'b'.repeat(64),reviewDigest:'c'.repeat(64),...webWindow};
+  const deliveryId=randomUUID(),releaseId=randomUUID();
+  const review=pinInvitedPublication(start,source,deliveryId,approval);
+  assert.deepEqual(invitedPublicationPin(review.href),{approval});
+  const published=pinInvitedPublication(review.href,source,deliveryId,undefined,releaseId);
+  assert.deepEqual(invitedPublicationPin(published.href),{approval,releaseId});
+  assert.deepEqual(invitedEditorSource(published.href),source);
+  assert.deepEqual(invitedPublicationPin(invitedEditorLocation(published.href,source,source).href),{approval,releaseId});
+  assert.deepEqual(invitedPublicationPin(invitedEditorLocation(published.href,source,{...source,runId:other}).href),{});
+  assert.throws(()=>pinInvitedPublication(published.href,source,deliveryId,undefined,other));
+  assert.throws(()=>pinInvitedPublication(published.href,source,other,undefined,releaseId));
+  for(const mutate of [q=>q.delete('invited_review'),q=>q.delete('invited_rehearsal'),q=>q.set('invited_release','other'),
+    q=>q.set('invited_approval','arbitrary'),q=>q.append('invited_approval',approval.requestId),
+    q=>q.set('invited_starts',webWindow.expiresAt)]){
+    const url=new URL(published.href);mutate(url.searchParams);assert.equal(invitedTaskSelection(url.href),null);
+  }
 });

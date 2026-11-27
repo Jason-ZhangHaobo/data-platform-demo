@@ -25,6 +25,14 @@
 .invited-delivery .agent-delivery-file{max-height:235px;max-width:100%;overflow:auto}
 .invited-rehearsal{display:flex;flex-wrap:wrap;gap:10px 22px;background:#f0f5ed;border-radius:6px;padding:12px}
 .invited-rehearsal dt{font-size:12px;color:#536958}.invited-rehearsal dd{margin:4px 0 0;font-size:13px;overflow-wrap:anywhere}
+.invited-publication{margin-top:22px;padding-top:18px;border-top:1px solid #dce6dc;min-width:0}
+.invited-publication>header{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.invited-publication .agent-review-form,.invited-publication-basis{margin-top:14px;min-width:0}
+.invited-publication .delivery-review-source dd,.invited-batch-history small{overflow-wrap:anywhere}
+.invited-batch-history ol{list-style:none;margin:12px 0;padding:0}
+.invited-batch-history li{display:block;border-bottom:1px solid #dce6dc;padding:12px 0;font-size:13px}
+.invited-batch-history h4{margin:0 0 10px}.invited-batch-history li dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:5px 14px;margin:0}
+.invited-batch-history li dt{color:#536958}.invited-batch-history li dd{margin:0;overflow-wrap:anywhere}
 @media(max-width:600px){.invited-delivery .delivery-file-layout nav{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .invited-chat-checks strong{white-space:nowrap}
 .invited-sql-compose form{display:grid;gap:10px;max-width:720px;margin-top:24px}

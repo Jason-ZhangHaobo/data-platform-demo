@@ -266,6 +266,8 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
       throw fail(422, "请逐项审阅代码、核验、交付文件和云端测试范围");
     const requested = validatePublicationSelector({ sourceKind, ...(sourceRunId === undefined ? {} : { sourceRunId }), packageDigest, verificationId }, actorId);
     const input = { ...identity(subject.id), ...requested }, initial = reviewedSource(input);
+    if (approvalWindow && sourceKind==="AGENT" && initial.delivery.sourcePinned && !reviewDigest)
+      throw fail(422,"固定开发版本须先核对原包、文件演练及审阅摘要");
     await ensure(initial.item);
     // The immutable artifact check yields. Reload every source record and reject
     // changes before approving; an earlier in-memory success is not authority.
@@ -647,6 +649,7 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
           release.reviewDigest!==hash(JSON.stringify(reviewBasis(source,release.submittedBy)))))
         throw savedUnconfirmed();
       const view = publicationView(release);
+      const monitoring = release.reviewDigest === undefined ? undefined : exactReceipt(release).monitoring;
       const validatedRun = run => fund ? get("release_run",run.id) : run;
       const successfulEvent = run => {
         const events = view.events.filter(event => event.releaseRunId === run.id && event.type === "BATCH_SUCCEEDED");
@@ -668,9 +671,9 @@ export function createCloudPublication({ store, project, runner, artifactStore, 
           [...view.events, ...view.alerts].some(item => (item.packageDigest !== undefined && item.packageDigest !== bundle.digest) ||
             [item.releaseRunId, item.recoveryRunId].some(id => id !== undefined && !view.runs.some(run => run.id === id)) ||
             (item.recoveryReleaseId !== undefined && item.recoveryReleaseId !== release.id)) ||
-          (release.reviewDigest !== undefined && exactReceipt(release).monitoring.status === "UNCONFIRMED"))
+          monitoring?.status === "UNCONFIRMED")
         throw savedUnconfirmed();
-      return historical ? {...view,readMode:"SAVED_HISTORY"} : view;
+      return historical ? {...view,readMode:"SAVED_HISTORY",...(monitoring?{monitoringVerified:monitoring.status==="VERIFIED"}:{})} : view;
     } catch {
       throw savedUnconfirmed();
     }

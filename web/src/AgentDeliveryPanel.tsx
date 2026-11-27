@@ -161,7 +161,9 @@ export function AgentDeliveryPanel({ api, taskId, contextId, revisionId, runId, 
   const packageInput=(workflow?.package?.manifest as {source?:{syncInput?:PackageSyncInput}}|undefined)?.source?.syncInput;
   const knownMysql=Boolean(mysqlSnapshotHash && packageInput?.snapshotHash===mysqlSnapshotHash);
   const cloud = workflow?.publication.scope === "PRIVATE_CLOUD_TEST";
-  const exactCloudReview = cloud && pinPreparation;
+  // A package prepared in the invited chat can also be opened from the
+  // professional editor, even when the original task predates request binding.
+  const exactCloudReview = cloud && (pinPreparation || (!manual && Boolean(publicationTarget) && delivery?.sourcePinned===true));
   // A retained, successfully read workflow may still select read-only history
   // while refreshing; write gates continue to require fresh READY evidence.
   const selected=publicationSelector({taskId,manual,runId,revisionId,contextId},workflow,Boolean(workflow));

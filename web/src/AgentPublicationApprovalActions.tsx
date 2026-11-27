@@ -14,7 +14,7 @@ type Props = {
   backgroundSupported?:boolean;
   api:<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
   beforeWrite:()=>Promise<void>;
-  onSaved:()=>void;
+  onSaved:(approval:Approval)=>void;
   onReleased:(releaseId:string)=>void;
   onClose:()=>void;
 };
@@ -37,7 +37,7 @@ export function AgentPublicationApprovalActions({requestId,expected,window,disab
         const saved=checkedExactPublicationApproval(value,expected,window);
         if (approval && approval.approvalId!==saved.approvalId) throw Error("原批准编号发生变化。");
         setState({phase:"READY",approval:saved});
-        onSaved();
+        onSaved(saved);
       }
     } catch (cause) {
       if (epoch.current!==current) return;
@@ -69,7 +69,7 @@ export function AgentPublicationApprovalActions({requestId,expected,window,disab
         const saved=checkedExactPublicationApproval(value,expected,window);
         if(approval && (saved.approvalId!==approval.approvalId || !saved.background))throw Error("原后台发布请求尚未确认。");
         setState({phase:"READY",approval:saved});
-        onSaved();
+        onSaved(saved);
       }
     } catch (cause) {
       if (epoch.current===current) setState({phase:"UNKNOWN",approval,message:`${(cause as Error).message} 请先核对原请求回执。`});

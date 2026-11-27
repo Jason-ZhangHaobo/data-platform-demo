@@ -30,7 +30,7 @@ import { fundRequirementScope } from '../../src/v2/fund-requirement-contract.mjs
 import { fundExecutionBody } from '../../src/v2/fund-preparation-client.mjs';
 import { sqlRequirementBasis } from '../../src/v2/sql-requirements.mjs';
 import { fundDeliveryBinding } from '../../src/v2/fund-delivery.mjs';
-import { agentReviewEvidencePath, publicationPreflightPath, publicationRequestReceiptPath } from '../../src/v2/publication-request.mjs';
+import { agentReviewEvidencePath, publicationHistoryPath, publicationPreflightPath, publicationRequestReceiptPath } from '../../src/v2/publication-request.mjs';
 import { validatePrivateApplicationRequest } from '../../src/v2/private-application.mjs';
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
 import { runConsumerAcceptance } from '../../scripts/verify-service-consumer.mjs';
@@ -1580,6 +1580,7 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   await f.restart();
   const selector={sourceKind:'AGENT',sourceRunId:current.runId,packageDigest:bundle.digest,verificationId};
   const preflightPath=publicationPreflightPath(created.body.id,selector);
+  const historyPath=publicationHistoryPath(created.body.id,selector);
   const rehearsalResult=f.store.get('delivery_verification',verificationId,PROJECT);
   const rehearsalQueue=f.queueCounts();
   f.store.update('delivery_verification',verificationId,PROJECT,{workerResultDigest:'f'.repeat(64)});
@@ -1722,6 +1723,13 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
     assert.deepEqual(replay,accepted.body);
   }
   assert.deepEqual(accepted.body.runs.map(run=>[run.sequence,run.status,run.schedulerTriggered]),[[1,'SCHEDULED',false],[2,'SCHEDULED',false]]);
+  const queueBeforeHistory=f.queueCounts();
+  const savedHistory=await f.call(historyPath);
+  assert.equal(savedHistory.status,200,savedHistory.body.message);
+  assert.equal(savedHistory.body.readMode,'SAVED_HISTORY');
+  assert.equal(savedHistory.body.release.id,accepted.body.release.id);
+  assert.equal(savedHistory.body.monitoringVerified,false);
+  assert.deepEqual(f.queueCounts(),queueBeforeHistory);
   const original=await f.call(publicationRequestReceiptPath(created.body.id,request.idempotencyKey));
   assert.deepEqual(original.body,accepted.body);
   const aliasKey=randomUUID();
@@ -1825,6 +1833,12 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
     closePublicationWindow();
     await f.restart();
     assert.equal((await f.call('/auth/session')).body.readOnly,true);
+    const completedHistoryQueue=f.queueCounts();
+    const completedHistory=await f.call(historyPath);
+    assert.equal(completedHistory.status,200,completedHistory.body.message);
+    assert.equal(completedHistory.body.monitoringVerified,true);
+    assert.deepEqual(completedHistory.body.runs.map(run=>run.id),batchIds);
+    assert.deepEqual(f.queueCounts(),completedHistoryQueue);
     for(const [kind,id] of [['release_approval',initialRelease.approvalId],['release',releaseId]]){
       assert.deepEqual(f.store.list(kind,PROJECT).map(item=>item.id),[id]);
     }

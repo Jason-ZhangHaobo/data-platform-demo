@@ -34,7 +34,7 @@ import {checkedPrivateBatchReport, readPrivateBatchSummary} from "../src/v2/priv
 import {checkedBatchArchive, prepareBatchArchive, readBatchArchive, submitBatchArchive} from "../src/v2/private-batch-archive-client.mjs";
 import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-contract-gate-client.mjs';
 import {agentReviewEvidencePath,publicationApprovalStep,publicationSelectorInput,publicationPreflightPath,
-  publicationReadPath,publicationRequestReceiptPath} from "../src/v2/publication-request.mjs";
+  publicationReadPath,publicationHistoryPath,publicationRequestReceiptPath} from "../src/v2/publication-request.mjs";
 import {readCloudV3Review} from "../src/v2/cloud-v3-review.mjs";
 import {advanceCloudV3Rehearsal,bindCloudV3Consumption,checkCloudV3PreparedEntry,continueCloudV3Start,exportCloudV3PublicationReview,exportCloudV3SourceReview,inspectCloudV3Execution,prepareCloudV3Delivery,prepareCloudV3Start,prepareCloudV3Next,rebindCloudV3PreparedSource,settleCloudV3Failure,submitCloudV3Publication,verifyCloudV3Completion} from "../scripts/start-cloud-v3-case.mjs";
 import {readCloudV3Run} from "../scripts/cloud-v3-run.mjs";
@@ -173,6 +173,7 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent stop-background --id TASK_ID --confirm
   shuduo agent publication --id AGENT_TASK_ID [--source-kind AGENT|MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --release-id ID]
   shuduo agent publication-preflight --id AGENT_TASK_ID --source-kind AGENT --source-run-id RUN_ID --package-digest SHA256 --verification-id ID
+  shuduo agent publication-history --id AGENT_TASK_ID --source-kind AGENT --source-run-id RUN_ID --package-digest SHA256 --verification-id ID [--release-id RELEASE_ID]
   shuduo agent publish --id AGENT_TASK_ID --file REVIEW_JSON [--source-kind MANUAL --source-run-id RUN_ID --package-digest SHA256 --verification-id ID --request-id ORIGINAL_REQUEST_ID]
   shuduo agent publish --id AGENT_TASK_ID --file EXACT_REVIEW_JSON --request-id ORIGINAL_REQUEST_ID --approve-only
   shuduo agent publish --id AGENT_TASK_ID --file EXACT_REVIEW_JSON --request-id ORIGINAL_REQUEST_ID --approval-id ORIGINAL_APPROVAL_ID [--dispatch-in-background]
@@ -940,9 +941,10 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
       validateManualDeliveryFlags(parsed,argv);
       result = parsed.options.source_kind==='MANUAL'?await readManualDeliveryWorkflow(client,{taskId:required(parsed.options,'id'),sourceRunId:required(parsed.options,'source_run_id')}):await client.request(`/agent/tasks/${encodeURIComponent(required(parsed.options, "id"))}/workflow`);
     }
-    else if (resource === "agent" && ["publication","publication-preflight","publication-request","publish","stop-publication"].includes(action)) {
+    else if (resource === "agent" && ["publication","publication-history","publication-preflight","publication-request","publish","stop-publication"].includes(action)) {
       const flags=publicationCliOptions(argv,parsed.options,action),taskId=required(parsed.options,"id");
       if(action==="publication")result=await client.request(publicationReadPath(taskId,publicationSelectorInput(flags)));
+      else if(action==="publication-history")result=await client.request(publicationHistoryPath(taskId,flags));
       else if(action==="publication-preflight")result=await client.request(publicationPreflightPath(taskId,publicationSelectorInput(flags)));
       else if(action==="publication-request"){
         if(Object.keys(flags).length)throw Error("回执读取只接受原任务和原请求编号");

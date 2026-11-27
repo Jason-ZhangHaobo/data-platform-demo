@@ -122,7 +122,7 @@ type Capability = {
 type Status = {
   dataServices?: { privateEnabled: boolean; localSourcesEnabled?: boolean; sourceBoundAgentPlansEnabled?:boolean; sourceBoundAgentContextEnabled?:boolean; durableServiceAgentEnabled?:boolean;durableServiceAgentReadEnabled?:boolean;scope: string };
   site?: { registeredName: string; icpNumber: string; icpUrl: string };
-  agentDevelopment?: { durableEnabled: boolean; eventBackgroundAvailable?: boolean; invitedSqlStartSupported?:boolean; invitedTaskDeliverySupported?:boolean; fundPilotAvailable?: boolean; fundContexts?: Context[] };
+  agentDevelopment?: { durableEnabled: boolean; eventBackgroundAvailable?: boolean; invitedSqlStartSupported?:boolean; invitedTaskDeliverySupported?:boolean; invitedTaskPublicationSupported?:boolean; fundPilotAvailable?: boolean; fundContexts?: Context[] };
   validationContract?: { id: string; fixtureCount: number };
   mode: string;
   projectId: string;
@@ -1032,6 +1032,7 @@ function App() {
               start:{developmentOnly:session.developmentOnly===true,taskOnly:session.developmentTaskOnly===true,requestOnly:session.developmentRequestOnly===true,
                 canWrite,ready:coreReady&&contextsReady&&agentDevelopmentReadiness(status).ready&&status?.agentDevelopment?.invitedSqlStartSupported===true,startsAt:session.developmentStartsAt,
                 deliverySupported:status?.agentDevelopment?.invitedTaskDeliverySupported===true,targetTaskId:session.developmentTaskId,
+                publicationSupported:status?.agentDevelopment?.invitedTaskPublicationSupported===true,publicationTarget:canPublish?publicationTarget:undefined,
                 expiresAt:session.developmentExpiresAt,sessionExpiresAt:session.expiresAt,windowTaskId:session.developmentWindowTaskId,used:session.developmentWindowUsed,backgroundAvailable:status?.agentDevelopment?.eventBackgroundAvailable===true,contexts},
               observeDevelopment:session.authenticated&&session.developmentOnly===true&&!session.readOnly&&status?.agentDevelopment?.eventBackgroundAvailable===true&&
                 publicationClock>=Date.parse(session.developmentStartsAt??'')&&publicationClock<Math.min(Date.parse(session.developmentExpiresAt??''),Date.parse(session.expiresAt??'')),

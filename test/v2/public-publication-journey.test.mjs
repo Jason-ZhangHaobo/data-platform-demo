@@ -14,6 +14,7 @@ import { createDeliveryPackage, sha256 } from '../../src/v2/delivery.mjs';
 import { contextIds, getContext, referenceSql, validationContractId } from '../../src/v2/context.mjs';
 import { RemoteSparkQueueClient, SPARK_QUEUE_PREFIXES, createQueuedSparkResult } from '../../src/v2/remote-spark-queue.mjs';
 import { signSchedulerTick } from '../../src/v2/scheduler-tick.mjs';
+import { publicationHistoryPath } from '../../src/v2/publication-request.mjs';
 import { BusinessQueryStore } from '../../src/v2/data-services.mjs';
 import { consumerDigest } from '../../src/v2/consumer-source.mjs';
 import { agentCallHistoryHref, agentCallHistoryTarget, readAgentCallHistory } from '../../web/src/agent-call-history.ts';
@@ -151,6 +152,13 @@ test('read-only ingress returns saved release history without an executor, and s
   const selector = new URLSearchParams({ sourceKind: 'AGENT', sourceRunId: f.item.sourceRunId,
     packageDigest: f.item.digest, verificationId: f.verification.id });
   const path = f.path + '?' + selector;
+  const historyPath=publicationHistoryPath(f.agent.id,Object.fromEntries(selector));
+  assert.deepEqual((await f.call(historyPath)).body,{runs:[],alerts:[],events:[],readMode:'SAVED_HISTORY'});
+  assert.equal((await f.call(historyPath,undefined,{identity:null})).status,401);
+  assert.equal((await f.call(historyPath,undefined,{identity:'other'})).status,403);
+  assert.equal((await f.call(f.path+'/history?packageDigest='+f.item.digest)).status,422);
+  assert.equal((await f.call(historyPath+'&verificationId='+f.verification.id)).status,422);
+  assert.equal((await f.call(historyPath.replace(f.item.digest,'0'.repeat(64)))).status,409);
   const accepted = await f.call(f.path, f.body);
   assert.equal(accepted.status, 202);
   const releaseId = accepted.body.release.id;
@@ -161,6 +169,9 @@ test('read-only ingress returns saved release history without an executor, and s
   const pendingHistory = await f.call(saved);
   assert.equal(pendingHistory.status, 200);
   assert.equal(pendingHistory.body.readMode, 'SAVED_HISTORY');
+  const discovered=await f.call(historyPath);
+  assert.equal(discovered.status,200);
+  assert.deepEqual(discovered.body,pendingHistory.body);
   assert.equal(pendingHistory.body.runs[0].status, 'RUNNING', 'explicit history does not reconcile a waiting receipt');
   assert.equal(f.store.get('release_run', first.id, PROJECT).version, first.version);
   await f.restartReadOnly();
@@ -211,6 +222,16 @@ test('read-only ingress returns saved release history without an executor, and s
   assert.equal(unconfirmed.status, 409);
   assert.equal(unconfirmed.body.code, 'PUBLICATION_HISTORY_UNCONFIRMED');
   assert.deepEqual(f.counts(), counts);
+});
+
+test('a confirmed source-pinned package cannot use the legacy publication submission without a review digest',async t=>{
+  const f=await fixture(t);
+  const deliver=f.store.list('agent_delivery_task',PROJECT)[0];
+  f.store.update('agent_delivery_task',deliver.id,PROJECT,{sourcePinned:true});
+  assert.equal((await f.call(f.path,f.body)).status,422);
+  assert.equal(f.store.list('release_approval',PROJECT).length,0);
+  assert.equal(f.store.list('release',PROJECT).length,0);
+  assert.equal(f.store.list('release_run',PROJECT).length,0);
 });
 
 test('the owner can recheck DAPI and XAPI receipts for the same saved publication with both drivers off', async t => {
