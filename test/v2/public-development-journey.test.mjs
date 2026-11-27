@@ -1885,7 +1885,10 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   const secondResult=f.store.get('release_run',batchIds[1],PROJECT);
   assert.notEqual(firstResult.workerResultDigest,secondResult.workerResultDigest);
   f.store.update('release_run',batchIds[0],PROJECT,{workerResultDigest:secondResult.workerResultDigest});
-  assert.equal((await cli('v3-publish',['--reconcile'])).publication.monitoringStatus,'UNCONFIRMED');
+  const inconsistentMonitoring=await cli('v3-reconcile');
+  assert.equal(inconsistentMonitoring.step,'PUBLICATION');
+  assert.equal(inconsistentMonitoring.publication.monitoringStatus,'UNCONFIRMED');
+  assert.equal(inconsistentMonitoring.next,undefined);
   assert.equal((await f.call('/releases/'+releaseId)).body.monitoringEvidence.status,'UNCONFIRMED');
   await cli('v3-consumption',['--batch-id',batchIds[0],'--out-file',join(f.directory,'wrong-worker-source.json')],1);
   assert.equal(existsSync(join(f.directory,'wrong-worker-source.json')),false);
@@ -1899,6 +1902,8 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   const monitored=await cli('v3-reconcile');
   assert.equal(monitored.step,'PUBLICATION');
   assert.equal(monitored.publication.monitoringStatus,'VERIFIED');
+  assert.deepEqual(monitored.next,{step:'CONSUMPTION',status:'HANDOFF_REQUIRED',
+    reason:'ORIGINAL_CONSUMPTION_EVIDENCE_REQUIRED',pendingBatchIds:batchIds});
   assert.deepEqual(monitored.publication.monitoring.map(row=>row.batchId),batchIds);
   const scheduledBatches=[firstResult,secondResult].map(row=>({
     batchId:row.id,clockMode:'FC_TIMER',scheduledTriggerAt:row.scheduledTriggerAt,
