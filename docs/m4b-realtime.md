@@ -2,6 +2,21 @@
 
 日期：2026-09-14。当前使用仓库内虚构证券行情JSONL和`local-event-log-v1`；这是实际逐事件处理，不是Kafka/Flink连接，接口始终返回`kafkaConnected=false`、`flinkConnected=false`、`publicDeployed=false`。
 
+## 本机真实 Kafka 与 Flink 保存点
+
+独立验收程序使用 Java 17、Kafka 4.1.2、Flink 1.20.5 和 Kafka SQL Connector 3.4.0。在回环启动一台临时 Kafka Broker 和嵌入式 Flink 集群，使用仓库的虚构行情。Flink SQL 以事件编号去重，过滤非正价格，按每只证券最高序号更新行情。输出按证券代码写入 Kafka，开启事务写入，验收客户端按 `read_committed` 读取。[Flink Kafka 事务输出](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/connectors/table/upsert-kafka/#consistency-guarantees) · [Kafka 快速开始](https://kafka.apache.org/41/getting-started/quickstart/)
+
+在第 4 条输入落地后停止原作业并保存状态。在 Kafka 追加一条已处理事件、一条低序号行情、一条负价格行情和两条相同的新行情。用原保存点启动另一份作业。Broker 确认输入偏移连续，共 9 条。输出保留原 4 条已提交更新且只追加 1 条。独立程序按源事件复算三条最新行情，逐字段核对。该过程有真实保存点、两个不同的 Flink 作业编号及事务消费证据。[Flink 保存点](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/ops/state/savepoints/)
+
+在仓库根目录用以下命令复跑。指定已有 Java 17 和 Maven 3.9，默认在所选运行目录缓存 Maven 依赖，可通过 `MAVEN_BIN` 指定 Maven 路径。脚本为本次运行创建独立目录，退出后可查看 `run/evidence.json`、`engine.log`、Broker 日志和原保存点。
+
+```sh
+mkdir -p -m 700 .runtime/realtime-lab
+JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/realtime-lab
+```
+
+本次验收覆盖本机单 Broker、单分区、Flink SQL 去重和保存点续跑。数舵实时页面仍读取现有 JSONL 作业。产品侧接下来需要将真实作业和输出主题接入同一任务详情与监控，并单独验证多分区、事件时间 Watermark、故障恢复和公网权限。
+
 ## 实现语义
 
 1. 实时源和事件日志版本保存行数与内容SHA-256；只允许合成目录普通JSONL，拒绝任意路径与符号链接。
