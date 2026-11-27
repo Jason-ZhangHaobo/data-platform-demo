@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,7 +9,49 @@ const repo = fileURLToPath(new URL("../../", import.meta.url));
 const hex = (value, length) =>
   typeof value === "string" && value.length === length && /^[a-f0-9]+$/.test(value);
 
+const expectedWindows = new Map([
+  ["00/001", [2,300]], ["00/002", [1,25]],
+  ["10/001", [2,80]], ["10/002", [1,20]],
+  ["20/001", [1,70]], ["20/002", [1,40]],
+]);
+
+function kafkaFlinkWindowEvidence(value, expectedSqlDigest) {
+  const {scope,result,kafkaVersion,flinkVersion,sqlDigest,partitionInputCounts,windowsWhilePartitionHeld,
+    windowsBeforeCrash,windowsAfterRestore,finalWindowRows,originalJobId,restoredJobId,checkpointId,
+    restoredCheckpointId,checkpointDigest,restoredSavepointDigest,exitCode,partitionBeforeExit,inputOffsetBeforeExit,
+    windowRows} = value ?? {};
+  const fail = () => { throw new Error("KAFKA_FLINK_EVIDENCE_MISMATCH"); };
+  if (scope !== "LOCAL_KAFKA_FLINK_EVENT_TIME_WINDOWS" || result !== "VERIFIED" ||
+      kafkaVersion !== "4.1.2" || flinkVersion !== "1.20.5" ||
+      !hex(sqlDigest,64) || sqlDigest !== expectedSqlDigest ||
+      !Array.isArray(partitionInputCounts) || partitionInputCounts.length !== 2 ||
+      partitionInputCounts[0] !== 5 || partitionInputCounts[1] !== 6 ||
+      windowsWhilePartitionHeld !== 0 || windowsBeforeCrash !== 2 || windowsAfterRestore !== 4 || finalWindowRows !== 6 ||
+      !hex(originalJobId,32) || !hex(restoredJobId,32) || originalJobId === restoredJobId ||
+      !Number.isSafeInteger(checkpointId) || checkpointId < 1 || checkpointId !== restoredCheckpointId ||
+      !hex(checkpointDigest,64) || !hex(restoredSavepointDigest,64) || checkpointDigest === restoredSavepointDigest ||
+      exitCode !== 137 || partitionBeforeExit !== 0 || inputOffsetBeforeExit !== 2 ||
+      !Array.isArray(windowRows) || windowRows.length !== expectedWindows.size) fail();
+  const keys = new Set();
+  for (const row of windowRows) {
+    if (typeof row?.window_start_utc !== "string" || typeof row.security_code !== "string") fail();
+    const time = row.window_start_utc.match(/^2026-09-14 09:30:(00|10|20)$/)?.[1];
+    const security = row.security_code.match(/^SEC-DEMO-(001|002)$/)?.[1];
+    const key = `${time}/${security}`;
+    const expected = expectedWindows.get(key);
+    if (keys.has(key) || !expected || Object.keys(row).length !== 4 ||
+        row.event_count !== expected[0] || row.total_volume !== expected[1]) fail();
+    keys.add(key);
+  }
+  return {scope,result,kafkaVersion,flinkVersion,sqlDigest,partitionInputCounts,
+    inputEvents:11,committedUpdatesBefore:windowsBeforeCrash,committedUpdatesAfter:finalWindowRows,
+    windowsWhilePartitionHeld,windowsAfterRestore,originalJobId,restoredJobId,restoredSavepointDigest,windowRows,
+    checkpointRecovery:{checkpointId,restoredCheckpointId,checkpointDigest,exitCode,partitionBeforeExit,inputOffsetBeforeExit,
+      committedUpdatesAtExit:windowsBeforeCrash}};
+}
+
 export function kafkaFlinkEvidence(value, expected) {
+  if (expected.windowSqlDigest) return kafkaFlinkWindowEvidence(value,expected.windowSqlDigest);
   const {scope, result, kafkaVersion, flinkVersion, inputEvents, committedUpdatesBefore, committedUpdatesAfter,
     originalJobId, restoredJobId, originalSavepointDigest, restoredSavepointDigest, finalQuotes, fixtureDigest,
     checkpointRecovery} = value ?? {};
@@ -48,7 +91,11 @@ export function createKafkaFlinkRunner(env, root) {
       ![env.JAVA_HOME, env.SHUDUO_REALTIME_MAVEN_REPO].every(path =>
         typeof path === "string" && isAbsolute(path))) return undefined;
   const workRoot = join(root, ".runtime", "realtime-kafka-flink");
-  const checkpointCrash = env.V2_LOCAL_KAFKA_FLINK_CHECKPOINT_CRASH === "true";
+  const windowCrash = env.V2_LOCAL_KAFKA_FLINK_WINDOW_CRASH === "true";
+  const checkpointCrash = !windowCrash && env.V2_LOCAL_KAFKA_FLINK_CHECKPOINT_CRASH === "true";
+  const windowSqlDigest = windowCrash
+    ? createHash("sha256").update(readFileSync(join(repo,"scripts/realtime-lab/windows.sql"))).digest("hex")
+    : undefined;
   const childEnvironment = {
     PATH: env.PATH || "/usr/bin:/bin",
     JAVA_HOME: env.JAVA_HOME,
@@ -62,7 +109,7 @@ export function createKafkaFlinkRunner(env, root) {
     const work = mkdtempSync(join(workRoot,"run-"));
     return new Promise((resolve, reject) => {
       const child = spawn("/bin/bash", [join(repo, "scripts/realtime-lab/run.sh"), work,
-        ...(checkpointCrash ? ["--checkpoint-crash"] : [])], {
+        ...(windowCrash ? ["--window-crash"] : checkpointCrash ? ["--checkpoint-crash"] : [])], {
         cwd:repo, env:childEnvironment, detached:true, stdio:["ignore","pipe","ignore"],
       });
       let output = "", failure, killTimer;
@@ -104,5 +151,5 @@ export function createKafkaFlinkRunner(env, root) {
       });
     });
   };
-  return Object.assign(run,{checkpointCrash});
+  return Object.assign(run,{checkpointCrash,windowSqlDigest});
 }

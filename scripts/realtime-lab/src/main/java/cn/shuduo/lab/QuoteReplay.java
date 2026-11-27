@@ -40,23 +40,27 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 public final class QuoteReplay {
-    private static final String INPUT = "shuduo-quote-events";
+    static final String INPUT = "shuduo-quote-events";
     private static final String OUTPUT = "shuduo-latest-quotes";
-    private static final ObjectMapper JSON = new ObjectMapper();
+    static final ObjectMapper JSON = new ObjectMapper();
     private static final long WAIT_SECONDS = 45;
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
 
     private record Update(String security, JsonNode value) {}
-    private record Checkpoint(long id, Path path, String digest) {}
+    record Checkpoint(long id, Path path, String digest) {}
 
     public static void main(String[] args) throws Exception {
-        if (args.length == 5 && args[0].equals("--flink-worker")) {
+        if ((args.length == 5 || args.length == 6) && args[0].equals("--flink-worker")) {
             runFlinkWorker(args);
+            return;
+        }
+        if (args.length == 3 && args[2].equals("--window-crash")) {
+            QuoteWindowReplay.run(Path.of(args[0]).toRealPath(), Path.of(args[1]).toAbsolutePath());
             return;
         }
         boolean crash = args.length == 3 && args[2].equals("--checkpoint-crash");
         if (args.length != 2 && !crash)
-            throw new IllegalArgumentException("Usage: QuoteReplay REPO_ROOT NEW_RUN_DIR [--checkpoint-crash]");
+            throw new IllegalArgumentException("Usage: QuoteReplay REPO_ROOT NEW_RUN_DIR [--checkpoint-crash|--window-crash]");
         Path repo = Path.of(args[0]).toRealPath();
         Path run = Path.of(args[1]).toAbsolutePath();
         Files.createDirectory(run);
@@ -175,22 +179,22 @@ public final class QuoteReplay {
         }
     }
 
-    private static ServerSocket loopbackSocket() throws Exception {
+    static ServerSocket loopbackSocket() throws Exception {
         return new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
     }
 
-    private static int freePort() throws Exception {
+    static int freePort() throws Exception {
         try (ServerSocket socket = loopbackSocket()) {
             return socket.getLocalPort();
         }
     }
 
-    private static String flinkFile(Path path) {
+    static String flinkFile(Path path) {
         // Flink encodes the supplied path itself, including Unicode and whitespace.
         return "file://" + path;
     }
 
-    private static Path localSavepoint(Path run, String savepoint) {
+    static Path localSavepoint(Path run, String savepoint) {
         Path path = Path.of(new org.apache.flink.core.fs.Path(savepoint).toUri().getPath());
         require(path.getParent().equals(run.resolve("savepoints")) &&
             Files.isRegularFile(path.resolve("_metadata")), "SAVEPOINT_METADATA_MISSING_OR_OUTSIDE_RUN");
@@ -200,13 +204,15 @@ public final class QuoteReplay {
     private static void runFlinkWorker(String[] args) throws Exception {
         Path repo = Path.of(args[1]);
         Path run = Path.of(args[2]);
-        String sql = Files.readString(repo.resolve("scripts/realtime-lab/quotes.sql"));
+        require(args.length == 5 || args[5].equals("windows"), "UNKNOWN_FLINK_WORKER_PROFILE");
+        String sql = Files.readString(repo.resolve(args.length == 5
+            ? "scripts/realtime-lab/quotes.sql" : "scripts/realtime-lab/windows.sql"));
         JobClient job = submit(sql, args[3], run, null, Integer.parseInt(args[4]));
         Files.writeString(run.resolve("flink-before-crash.job"), job.getJobID().toString());
         job.getJobExecutionResult().get();
     }
 
-    private static String awaitJobId(Path run, Process process) throws Exception {
+    static String awaitJobId(Path run, Process process) throws Exception {
         Path marker = run.resolve("flink-before-crash.job");
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
         while (System.nanoTime() < deadline && process.isAlive()) {
@@ -234,7 +240,7 @@ public final class QuoteReplay {
         return path.getFileName().toString().equals("_metadata") ? path.getParent() : path;
     }
 
-    private static Checkpoint nextCompletedCheckpoint(Path run, String jobId, int port) throws Exception {
+    static Checkpoint nextCompletedCheckpoint(Path run, String jobId, int port) throws Exception {
         long previous = checkpointStats(port, jobId).path("completed").path("id").asLong(-1);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
         while (System.nanoTime() < deadline) {
@@ -253,7 +259,7 @@ public final class QuoteReplay {
         throw new IllegalStateException("NO_NEW_COMPLETED_CHECKPOINT");
     }
 
-    private static long verifyRestoredCheckpoint(int port, String jobId, Checkpoint checkpoint) throws Exception {
+    static long verifyRestoredCheckpoint(int port, String jobId, Checkpoint checkpoint) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
         while (System.nanoTime() < deadline) {
             JsonNode restored = checkpointStats(port, jobId).path("restored");
@@ -272,13 +278,13 @@ public final class QuoteReplay {
         throw new IllegalStateException("FLINK_RESTORED_CHECKPOINT_UNCONFIRMED");
     }
 
-    private static String fileDigest(Path file) throws Exception {
+    static String fileDigest(Path file) throws Exception {
         byte[] bytes = Files.readAllBytes(file);
         require(bytes.length > 0, "EVIDENCE_FILE_EMPTY");
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
-    private static Process startBroker(Path run, String address, int controllerPort) throws Exception {
+    static Process startBroker(Path run, String address, int controllerPort) throws Exception {
         Path config = run.resolve("kafka.properties");
         var properties = new Properties();
         properties.load(new StringReader("""
@@ -314,7 +320,7 @@ public final class QuoteReplay {
         return javaProcess(384, log, main, args);
     }
 
-    private static Process javaProcess(int heapMb, Path log, String main, String... args) throws Exception {
+    static Process javaProcess(int heapMb, Path log, String main, String... args) throws Exception {
         var command = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
             "-Xmx" + heapMb + "m", "-Dorg.slf4j.simpleLogger.defaultLogLevel=warn", "-cp",
             System.getProperty("java.class.path"), main));
@@ -323,14 +329,18 @@ public final class QuoteReplay {
     }
 
     private static void createTopics(String address, Process broker) throws Exception {
+        createTopics(address,broker,OUTPUT,1);
+    }
+
+    static void createTopics(String address, Process broker, String output, int inputPartitions) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
         try (Admin admin = Admin.create(Map.of("bootstrap.servers", address, "request.timeout.ms", 2500,
             "default.api.timeout.ms", 3000))) {
             while (System.nanoTime() < deadline && broker.isAlive()) {
                 try {
                     admin.describeCluster().nodes().get(3, TimeUnit.SECONDS);
-                    admin.createTopics(List.of(new NewTopic(INPUT, 1, (short) 1),
-                        new NewTopic(OUTPUT, 1, (short) 1))).all().get(10, TimeUnit.SECONDS);
+                    admin.createTopics(List.of(new NewTopic(INPUT, inputPartitions, (short) 1),
+                        new NewTopic(output, 1, (short) 1))).all().get(10, TimeUnit.SECONDS);
                     return;
                 } catch (ExecutionException | TimeoutException error) {
                     Thread.sleep(250);
@@ -353,9 +363,10 @@ public final class QuoteReplay {
         return nextOffset;
     }
 
-    private static JobClient submit(String sql, String address, Path run, String restorePath, int port) {
+    static JobClient submit(String sql, String address, Path run, String restorePath, int port) {
         EnvironmentSettings settings = EnvironmentSettings.newInstance().inStreamingMode().build();
         TableEnvironment table = TableEnvironment.create(settings);
+        table.getConfig().setLocalTimeZone(java.time.ZoneId.of("UTC"));
         table.getConfig().set("parallelism.default", "1");
         table.getConfig().set("taskmanager.numberOfTaskSlots", "1");
         table.getConfig().set("rest.bind-address", "127.0.0.1");
@@ -422,7 +433,7 @@ public final class QuoteReplay {
         throw new IllegalStateException("COMMITTED_OUTPUT_MISMATCH");
     }
 
-    private static void stopJob(JobClient job) {
+    static void stopJob(JobClient job) {
         if (job == null) return;
         try {
             if (!job.getJobStatus().get(2, TimeUnit.SECONDS).isGloballyTerminalState())
@@ -432,7 +443,7 @@ public final class QuoteReplay {
         }
     }
 
-    private static void require(boolean condition, String error) {
+    static void require(boolean condition, String error) {
         if (!condition) throw new IllegalStateException(error);
     }
 }

@@ -448,6 +448,7 @@ export class RealtimeManager {
       const recovery = evidence?.checkpointRecovery;
       const originalDigest = recovery?.checkpointDigest ?? evidence?.originalSavepointDigest;
       return {...job,runs,alerts:this.store.list("stream_alert",this.project).filter(alert => alert.jobId === id),
+        ...(this.kafkaFlinkRunner.windowSqlDigest ? {windowCrashEnabled:true,targetTable:"shuduo-quote-windows"} : {}),
         ...(this.kafkaFlinkRunner.checkpointCrash ? {checkpointCrashEnabled:true} : {}),
         ...(evidence ? {engineEvidence: {...evidence,runId:verified.id}} : {}),
         checkpoints: evidence ? [
@@ -455,7 +456,7 @@ export class RealtimeManager {
             ...(recovery ? {checkpointId:recovery.checkpointId} : {})},
           {id:evidence.restoredSavepointDigest,runId:verified.id,stateHash:evidence.restoredSavepointDigest,flinkJobId:evidence.restoredJobId},
         ] : [],
-        state: evidence?.quotes.map(quote => ({...quote,stateKey:quote.security_code,lastSequence:quote.sequence})) ?? [],
+        state: evidence?.quotes?.map(quote => ({...quote,stateKey:quote.security_code,lastSequence:quote.sequence})) ?? [],
       };
     }
     return {
@@ -571,7 +572,8 @@ export class RealtimeManager {
     const isEngine = job.adapter === kafkaFlinkAdapter;
     if (!input.recovery && !["READY", "STOPPED", "CAUGHT_UP", ...(isEngine ? ["FAILED","INTERRUPTED"] : [])].includes(job.status))
       throw fail(409, "实时任务当前状态不能启动", "STREAM_INVALID_STATE");
-    const engineFixture = isEngine ? this.#read("quotes_recovered.jsonl") : undefined;
+    const windowSqlDigest = isEngine ? this.kafkaFlinkRunner.windowSqlDigest : undefined;
+    const engineFixture = isEngine && !windowSqlDigest ? this.#read("quotes_recovered.jsonl") : undefined;
     const run = this.store.create("stream_run", this.project, {
         jobId: job.id,
         status: "RUNNING",
@@ -586,7 +588,7 @@ export class RealtimeManager {
         recoveryCheckpointId: input.recoveryCheckpointId,
         requestKey: input.requestKey,
         requestSignature: input.requestSignature,
-        ...(isEngine ? {adapter:kafkaFlinkAdapter,fixtureDigest:engineFixture.contentHash} : {}),
+        ...(isEngine ? {adapter:kafkaFlinkAdapter,fixtureDigest:engineFixture?.contentHash,windowSqlDigest} : {}),
         startedAt: new Date(this.now()).toISOString(),
         actualExecution: true,
         publicDeployed: false,
@@ -614,14 +616,15 @@ export class RealtimeManager {
     let status, engineResult, errorCode;
     try {
       const latest = new Map();
-      for (const line of fixture.lines) {
+      for (const line of fixture?.lines ?? []) {
         const quote = validateQuoteEvent(JSON.parse(line));
         if (quote.sequence > (latest.get(quote.security_code)?.sequence ?? 0)) latest.set(quote.security_code,quote);
       }
       const output = await this.kafkaFlinkRunner({signal});
       if (signal.aborted) throw new Error("KAFKA_FLINK_CANCELLED");
       engineResult = kafkaFlinkEvidence(output,{
-        fixtureDigest:fixture.contentHash,
+        fixtureDigest:fixture?.contentHash,
+        windowSqlDigest:run.windowSqlDigest,
         checkpointCrash:this.kafkaFlinkRunner.checkpointCrash,
         quotes:[...latest.values()].sort((a,b) => a.security_code.localeCompare(b.security_code)),
       });
