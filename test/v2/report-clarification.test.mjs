@@ -1,6 +1,7 @@
 import test from'node:test';import assert from'node:assert/strict';import{randomUUID}from'node:crypto';
 import{distributionPublicationFixture}from'./fixtures/distribution-publication.mjs';import{PROJECT}from'../../src/v2/server.mjs';import{publishedReportPlanHash}from'../../src/v2/published-report-plan.mjs';import{publishedReportHash}from'../../src/v2/published-report-source.mjs';
-import{checkedSourceReportPlan}from'../../web/src/source-report-plan.ts';import{generateReportPlan}from'../../src/v2/model.mjs';
+import{checkedSourceReportPlan,readChatReportPlan}from'../../web/src/source-report-plan.ts';import{generateReportPlan}from'../../src/v2/model.mjs';
+import{reportChatReplyKey}from'../../src/v2/report-clarification-contract.mjs';
 async function fixture(t,options={}){let calls=0,inputs=[];const f=await distributionPublicationFixture(t,{reportPlanner:async input=>{calls++;inputs.push(input);if(input.clarification&&options.afterChild)await options.afterChild(input);return{plan:input.message.includes('仍需')?{kind:'CLARIFICATION_REQUIRED',question:'只使用当前持仓分布是否可以？'}:input.clarification?{kind:'PUBLISHED_REPORT',name:'澄清后的持仓报告',metricIds:['asset_class_distribution','distribution_security_count','distribution_ratio']}:{kind:'CLARIFICATION_REQUIRED',question:'当前没有现金，是否先按持仓分布分析？'},model:'SYNTHETIC_CLARIFICATION',mode:'TEST_DOUBLE',usage:{total_tokens:40}};}}),p=await f.packageSource('holdings-asset-class-t1','local-engineer'),{release}=await f.publish(p);await f.runNext(release.id);await f.runNext(release.id);const batch=f.store.list('release_run',PROJECT).find(r=>r.releaseId===release.id),source={kind:'AGENT',taskId:p.agent.id,releaseId:release.id,packageDigest:p.pkg.digest,revisionId:p.revision.id,runId:p.run.id,batchId:batch.id};return{...f,p,source,calls:()=>calls,inputs};}
 async function settle(f,id){for(let i=0;i<100;i++){const r=await f.call('/reports/agent/plans/'+id);if(!['QUEUED','RUNNING'].includes(r.body.status))return r.body;await new Promise(r=>setTimeout(r,5));}throw Error('clarification plan did not settle');}
 async function parent(f,message='分析现金与总资产'){const r=await f.call('/reports/agent/plans',{message,source:f.source});return settle(f,r.body.id);}
@@ -27,8 +28,63 @@ test('changed question, usage or missing lineage cannot be resigned into approva
 });
 
 test('three explicit rounds preserve all prior questions and stop a fourth before creating or calling',async t=>{
- const f=await fixture(t);let p=await parent(f,'仍需明确报告');for(let i=1;i<=3;i++){const next=await reply(f,p,'仍需进一步澄清');p=next.child;assert.equal(p.status,'NEEDS_CLARIFICATION');assert.equal(p.clarification.depth,i);}
+ const f=await fixture(t),root=await parent(f,'仍需明确报告');let p=root;for(let i=1;i<=3;i++){const next=await reply(f,p,'仍需进一步澄清',reportChatReplyKey(p.id));p=next.child;assert.equal(p.status,'NEEDS_CLARIFICATION');assert.equal(p.clarification.depth,i);}
  const read=await f.call('/reports/agent/plans/'+p.id+'/clarification');assert.equal(read.body.canReply,false);const count=f.store.list('report_agent_plan',PROJECT).length,calls=f.calls();const blocked=await f.call('/reports/agent/plans/'+p.id+'/clarify',{evidenceDigest:read.body.evidenceDigest,answer:'继续'});assert.equal(blocked.status,409);assert.equal(f.store.list('report_agent_plan',PROJECT).length,count);assert.equal(f.calls(),calls);
+ let reads=0;
+ const restored=await readChatReportPlan({request:async path=>{
+   reads++;const result=await f.call(path);assert.equal(result.status,200);return result.body;
+ }},{root,source:f.source});
+ assert.equal(restored.id,p.id);assert.equal(reads,3);assert.equal(f.calls(),calls);
+});
+
+test('chat reopens its own replies and applied result, independently of alternative specialist answers', async t => {
+  const f = await fixture(t);
+  const root = await parent(f);
+  const key = reportChatReplyKey(root.id);
+  const client = {request: async path => {
+    const result = await f.call(path);
+    if (result.status !== 200) throw Object.assign(Error('read failed'), {status:result.status, code:result.body.code});
+    return result.body;
+  }};
+  const reopen = () => readChatReportPlan(client, {root, source:f.source});
+  const alternative = await reply(f,root,'在专业工作台仅分析持仓');
+  assert.equal((await reopen()).id,root.id);
+  const first = await reply(f,root,'仍需明确可用指标',key);
+  assert.equal((await reopen()).id,first.child.id);
+  const endpoint='http://127.0.0.1:'+f.app.server.address().port+'/api/v2/reports/agent/requests/'+key;
+  const user=f.app.auth.bootstrapAdmin({email:'report-reader@example.invalid',displayName:'示例管理员',password:'ExampleReport#9013'});
+  const session=f.app.auth.login({email:user.email,password:'ExampleReport#9013'});
+  const foreign=await fetch(endpoint,{headers:{cookie:'shuduo_session='+session.rawToken}});
+  assert.equal(foreign.status,404);assert.equal((await foreign.json()).code,'REPORT_PLAN_REQUEST_NOT_FOUND');
+  const expired=await fetch(endpoint,{headers:{cookie:'shuduo_session=expired'}});
+  assert.equal(expired.status,401);
+  const second = await reply(f,first.child,'按可用的持仓指标规划',reportChatReplyKey(first.child.id));
+  assert.equal((await reopen()).id,second.child.id);
+  assert.notEqual(second.child.id,alternative.child.id);
+  const duplicate = await f.call('/reports/agent/plans/'+root.id+'/clarify',first.body,key);
+  assert.equal(duplicate.body.id,first.child.id);
+  const conflict = await f.call('/reports/agent/plans/'+root.id+'/clarify',{...first.body,answer:'改用另一种回答'},key);
+  assert.equal(conflict.status,409);
+  const applied = await f.call('/reports/agent/plans/'+second.child.id+'/apply',{proposalHash:second.child.proposalHash});
+  assert.equal(applied.status,200);
+  const recovered = await reopen();
+  assert.equal(recovered.status,'APPLIED');
+  assert.equal(recovered.reportCreation.reportRunId,applied.body.reportRunId);
+  assert.equal(recovered.clarification.turns.length,2);
+  assert.equal(f.calls(),4);
+  assert.equal(f.store.list('report_run',PROJECT).length,1);
+
+  for (const error of [{status:404}, {status:404,code:'ROUTE_NOT_FOUND'}, {status:403}, {status:500}]) {
+    await assert.rejects(readChatReportPlan({request:async()=>{throw error;}},{root,source:f.source}), e=>e===error);
+  }
+  await assert.rejects(readChatReportPlan({request:async()=>({...first.child,requestBasisState:'UNCONFIRMED'})},{root,source:f.source}));
+  await assert.rejects(readChatReportPlan({request:async()=>({...first.child,originPlanId:alternative.child.id})},{root,source:f.source}));
+  await assert.rejects(readChatReportPlan({request:async()=>({...first.child,contextHash:'a'.repeat(64)})},{root,source:f.source}));
+  await assert.rejects(readChatReportPlan(client,{root:first.child,source:f.source}));
+  await assert.rejects(readChatReportPlan(client,{root,source:{...f.source,batchId:randomUUID()}}));
+  f.store.db.prepare("DELETE FROM documents WHERE kind='report_agent_plan' AND id=?").run(first.child.id);
+  await assert.rejects(reopen(),e=>e.status===409 && e.code==='REPORT_PLAN_REQUEST_UNCONFIRMED');
+  assert.equal(f.calls(),4);
 });
 
 test('the production adapter includes only original request and question/answer text from clarification history',async()=>{

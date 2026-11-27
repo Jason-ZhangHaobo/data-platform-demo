@@ -67,7 +67,7 @@ test("Agent develops from a historical MySQL batch and its reviewed package serv
   // keep only source code linked while databases and execution files stay temporary.
   await symlink(join(process.cwd(), "src"), join(root, "src"), "dir");
   let generations = 0;
-  const {intentPlanner, reportPlanner, counts:planningCalls} = fixtureWealthReportPlanners();
+  const {intentPlanner, reportPlanner, counts:planningCalls} = fixtureWealthReportPlanners({clarification:true});
   const app = createV2Server({ root, intentPlanner, reportPlanner, generator: async ({context}) => {
     assert.equal(++generations, 1, "Unexpected repeated generation");
     assert.equal(context.expected, undefined);
@@ -397,7 +397,7 @@ test("Agent develops from a historical MySQL batch and its reviewed package serv
   const consumption = await verifyMysqlReleaseServices({
     base,api,taskId:taskResult.id,releaseId,packageId:bundle.id,packageDigest:bundle.digest,batchIds,expectedRows:expectedAssetRows,
   });
-  const reports=await verifyMysqlCustomerReports({client:publisher,batchIds,
+  const reports=await verifyMysqlCustomerReports({client:publisher,batchIds,clarification:true,
     source:{kind:"AGENT",taskId:taskResult.id,releaseId,packageDigest:bundle.digest,revisionId:run.revisionId,runId:run.id},
     originalInput:{syncTaskId:full.id,syncRunId:baseline.id,metadataVersionId:metadata.id,
       sourceRevisionId:metadata.revisionId,landingReceiptHash:baseline.landingReceiptHash,
@@ -409,7 +409,7 @@ test("Agent develops from a historical MySQL batch and its reviewed package serv
   assert.deepEqual(releases.map(item=>item.id),[releaseId]);
   assert.deepEqual((await api("/release/runs",200)).map(item=>item.id).sort(),[...batchIds].sort());
   assert.equal(generations,1);
-  assert.deepEqual(planningCalls,{intent:1,report:1});
+  assert.deepEqual(planningCalls,{intent:1,report:2});
   t.diagnostic(JSON.stringify({engine:"MySQL", version:probe.serverVersion, sourceTable:table, metadataFields:fields.length,
     fullRows:baseline.finalCount, inserted:change.inserted, updated:change.updated, unchanged:change.unchanged,
     finalRows:landed.length, totalMarketValue:"1900.00", watermark:change.watermark, originalRequestRecovered:true,
@@ -425,5 +425,6 @@ test("Agent develops from a historical MySQL batch and its reviewed package serv
     scheduledCustomerAssets:batches.map(batch=>batch.rows.map(row=>row.total_assets)),
     monitoringEvents:monitor.monitorEventCount, openAlerts:monitor.openAlertCount, originalReleaseRecovered:true,
     agentReportIntentCalls:planningCalls.intent,agentReportPlannerCalls:planningCalls.report,agentReportStepApprovals:1,
-    agentReportIntentRecovered:true,agentReportAppliedInChat:true,agentReportFiveMetrics:true,...consumption,...reports}));
+    agentReportIntentRecovered:true,agentReportAppliedInChat:true,agentReportFiveMetrics:true,
+    agentReportClarificationRecovered:true,agentReportClarificationProvenance:true,...consumption,...reports}));
 });

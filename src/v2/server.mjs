@@ -3719,9 +3719,15 @@ export function createV2Server(options = {}) {
       }
       const sourceReportRequest=path.match(/^\/api\/v2\/reports\/agent\/requests\/([A-Za-z0-9_-]{1,100})$/);
       if(sourceReportRequest&&method==='GET'){
-        if(!local)throw fail(403,'同源报表原请求仅供本机读取');
-        const id=store.deduplicatedId(`${PROJECT}:source-report-plan:${workspaceReadActor(req)}:${sourceReportRequest[1]}`),task=id?store.get('report_agent_plan',id,PROJECT):undefined;
-        if(!task)throw fail(404,'未找到本账号的原报表规划请求');requireReportPlanOwner(task,req);return json(res,200,publicReportPlan(task));
+        const actor=workspaceReadActor(req);
+        if(!local||!actor)throw fail(403,'请在本机以原项目账号读取同源报表请求');
+        const key=sourceReportRequest[1],id=store.deduplicatedId(`${PROJECT}:source-report-plan:${actor}:${key}`);
+        if(id===undefined)throw Object.assign(fail(404,'未找到本账号的原报表规划请求'),{code:'REPORT_PLAN_REQUEST_NOT_FOUND'});
+        const task=store.get('report_agent_plan',id,PROJECT);
+        if(!task||task.requestId!==key||!task.sourceBinding||task.submittedBy!==actor)
+          throw Object.assign(fail(409,'原报表请求已受理，方案回执尚未核实'),{code:'REPORT_PLAN_REQUEST_UNCONFIRMED'});
+        requireReportPlanOwner(task,req);
+        return json(res,200,publicReportPlan(task));
       }
       if (path === "/api/v2/reports/agent/plans" && method === "POST") {
         const body = await readBody(req),

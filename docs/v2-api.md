@@ -430,6 +430,9 @@ FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查�
 | POST /reports/:id/run | 空对象 + 幂等键 | 实际执行KPI/BAR/PIE受限聚合并保存摘要 |
 | GET /reports/:id/export | 无 | 导出最后成功运行的聚合CSV，不含明细行 |
 | GET/POST /reports/agent/plans | 列表或自然语言需求 | 真实模型基于字段和快照摘要生成报表方案 |
+| GET /reports/agent/plans/:id/clarification | 本人原问题 | 读取来源、原需求、问题摘要与可答复轮数 |
+| POST /reports/agent/plans/:id/clarify | 问题摘要、答复、幂等键 | 对同一来源规划后续方案。独立会话按父问题固定答复编号，专业工作台可有独立分支 |
+| GET /reports/agent/requests/:requestId | 本人原规划或答复请求编号 | 返回原方案及已有结果。业务码 `REPORT_PLAN_REQUEST_NOT_FOUND` 表示本账号尚无该编号，`REPORT_PLAN_REQUEST_UNCONFIRMED` 表示已受理但回执尚待核对 |
 | GET /reports/agent/plans?source_batch_id=UUID | 确切批次 | 本机本账号同源方案；默认列表仍只展示传统方案 |
 | GET /reports/agent/requests/:requestId | 原请求键 | 只读恢复原同源规划，不再次调用模型 |
 | GET /reports/agent/plans/:id | 无 | 受治理方案、解释、模型与用量 |

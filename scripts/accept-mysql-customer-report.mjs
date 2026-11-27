@@ -47,14 +47,14 @@ export async function exportFixtureCustomerReports(directory,client,selection,or
     landingSnapshotHash:report.source.landingSnapshotHash,files:hashes};
 }
 
-export async function verifyMysqlCustomerReports({client, source, batchIds, originalInput}) {
+export async function verifyMysqlCustomerReports({client, source, batchIds, originalInput, clarification=false}) {
   const saved = [];
   const before = (await client.request("/reports/overview")).counts;
   for (const [index,batchId] of batchIds.entries()) {
     const selected = {...source,batchId};
     const receipt = index===0
       ? await submitPublishedReport(client,{requestId:randomUUID(),name:"虚构客户资产分析 · 第1批",source:selected})
-      : await createWealthReportFromConversation(client,selected,batchIds[0]);
+      : await createWealthReportFromConversation(client,selected,batchIds[0],{clarification});
     const args = {requestId:receipt.requestId,name:receipt.name,source:selected};
     assert.equal(receipt.status,"SUCCEEDED");
     assert.deepEqual(receipt.source,args.source);

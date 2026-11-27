@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
+import {checkedSourceReportPlan} from '../../web/src/source-report-plan.ts';
+import {customerAnalysisKind,customerAnalysisMetrics,customerBalanceMetrics,customerDistributionMetrics} from '../../src/v2/customer-analysis-plan-contract.mjs';
 import {serviceHandoffLocation} from '../../web/src/service-source-binding.ts';
 import {appliedChatReport,chatBatchCandidates,chatBatchFromServiceHref,chatBatchLocation,chatBatchTarget,sameReportSource} from '../../web/src/agent-report-chat.ts';
 
@@ -46,4 +48,25 @@ test('a shared report receipt is usable only for the matching specialist and ori
   assert.throws(()=>chatBatchLocation(origin,manual));
   assert.ok(!sameReportSource(manual,s));
   assert.deepEqual(chatBatchCandidates([{sourceKind:'MANUAL_NO_ARCHIVE'}]),[]);
+});
+
+
+test('five-metric plan binds three balance widgets and both verified archive distributions',()=>{
+  const widgets=customerBalanceMetrics.map(id=>({id,title:'虚构指标 '+id}));
+  const proposal={kind:'PUBLISHED_REPORT',name:'顾问持仓分析',metricIds:[...customerAnalysisMetrics],widgets,
+    customerAnalysis:{kind:customerAnalysisKind,metricIds:[...customerDistributionMetrics]}};
+  const plan={id:randomUUID(),requestId:randomUUID(),planMode:'PUBLISHED_SOURCE_REPORT_V1',status:'SUCCEEDED',
+    message:'分析本批的五项指标',sourceBinding:source,sourceEvidenceHash:'b'.repeat(64),contextHash:'c'.repeat(64),proposalHash:'d'.repeat(64),proposal};
+  assert.equal(checkedSourceReportPlan(plan,source),plan);
+  for(const bad of [
+    {...proposal,customerAnalysis:undefined}, {...proposal,widgets:widgets.slice(0,2)},
+    {...proposal,widgets:[widgets[0],widgets[0],widgets[2]]},
+    {...proposal,customerAnalysis:{...proposal.customerAnalysis,metricIds:['asset_class_distribution']}},
+    {...proposal,customerAnalysis:{...proposal.customerAnalysis,metricIds:['asset_class_distribution','asset_class_distribution']}},
+    {...proposal,metricIds:customerBalanceMetrics},
+  ])assert.throws(()=>checkedSourceReportPlan({...plan,proposal:bad},source));
+  const manual={...source,kind:'MANUAL'};delete manual.taskId;
+  assert.throws(()=>checkedSourceReportPlan({...plan,sourceBinding:manual},manual));
+  const ordinary={...plan,sourceBinding:manual,proposal:{kind:'PUBLISHED_REPORT',name:'持仓基本指标',metricIds:customerBalanceMetrics,widgets}};
+  assert.equal(checkedSourceReportPlan(ordinary,manual),ordinary);
 });

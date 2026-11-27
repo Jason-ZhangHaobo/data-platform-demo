@@ -22,6 +22,9 @@ import {
 } from "lucide-react";
 
 import './agent-report-chat.css';
+import {ReportClarificationReply} from './ReportClarificationReply';
+import {readChatReportPlan, type SourceReportPlan} from './source-report-plan';
+import {reportChatReplyKey} from '../../src/v2/report-clarification-contract.mjs';
 import {readReportIntent} from '../../src/v2/report-intent-client.mjs';
 import {AgentReportBatchPicker} from './AgentReportBatchPicker';
 import {appliedChatReport, chatBatchLocation, chatBatchTarget, readWealthBatch, sameReportSource, type ChatTarget} from './agent-report-chat';
@@ -80,6 +83,7 @@ type SpecialistActivity = {
   result?: Record<string, unknown>;
   error?: string;
   applied?: boolean;
+  boundPlan?: SourceReportPlan;
 };
 
 const destinations: Destination[] = [
@@ -106,6 +110,19 @@ const riskLabel: Record<Risk, string> = {
 const reportMessageHash=async(text:string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text))),n=>n.toString(16).padStart(2,'0')).join('');
 const fillToolPath = (template: string, id: string) =>
   template.replace("{id}", encodeURIComponent(id));
+function reportPhase(activity?:SpecialistActivity) {
+  switch(activity?.status) {
+    case 'NEEDS_CLARIFICATION': return '等待回答';
+    case 'SUCCEEDED': return '方案待审阅';
+    case 'APPLYING': return '报表生成中';
+    case 'APPLIED': return '报表回执待核对';
+    case 'UNCONFIRMED': return '原方案待核对';
+    case 'FAILED': return '规划失败';
+    case 'CANCELLED': return '规划已取消';
+    case 'INTERRUPTED': return '规划已中断';
+    default: return '规划报表';
+  }
+}
 const activityArtifactRows = (activity?: SpecialistActivity) => {
   if (!activity?.result) return [] as { label: string; value: string | string[] }[];
   const source = activity.result,
@@ -248,6 +265,17 @@ export function AgentCenter({
           );
           try {
             const result = await api<Record<string, unknown>>(getPath);
+            if(item.destinationId==='reports'&&selected.reportSource&&selected.reportPlanningProfile==='MYSQL_HOLDINGS_CUSTOMER_ANALYSIS'){
+              if(nextGraph.intentId!==selected.id||item.executionEvidence!=='SPECIALIST_TASK_LINKED'||result.id!==item.specialistTaskId)
+                throw Error('任务图与原报表方案不匹配');
+              const plan=await readChatReportPlan({request:path=>api(path)},{root:result,source:selected.reportSource});
+              restored.reports={
+                destinationId:'reports',id:plan.id,status:plan.status,
+                getPath:fillToolPath(requireTool('reports',catalog).detailPath,plan.id),
+                result:{...plan},boundPlan:plan,applied:plan.status==='APPLIED',
+              };
+              return;
+            }
             restored[item.destinationId] = {
               destinationId: item.destinationId,
               id: item.specialistTaskId!,
@@ -260,7 +288,7 @@ export function AgentCenter({
             restored[item.destinationId] = {
               destinationId: item.destinationId,
               id: item.specialistTaskId!,
-              status: "FAILED",
+              status: item.destinationId==='reports'&&selected.reportPlanningProfile==='MYSQL_HOLDINGS_CUSTOMER_ANALYSIS' ? "UNCONFIRMED" : "FAILED",
               getPath,
               error: (cause as Error).message,
             };
@@ -335,38 +363,43 @@ export function AgentCenter({
     return () => clearInterval(timer);
   }, [task?.id, task?.status, toolCatalog?.version]);
   useEffect(() => {
-    const pendingActivities = Object.values(activities).filter((item) => pending(item.status));
-    if (!pendingActivities.length) return;
+    const pendingActivities=Object.values(activities).filter(item=>pending(item.status)&&item.getPath);
+    if(!pendingActivities.length)return;
     const ticket=selectionEpoch.current;
-    const timer = setInterval(async () => {
-      for (const item of pendingActivities) {
-        if(!item.getPath || selectionEpoch.current!==ticket)continue;
-        try {
-          const current = await api<Record<string, unknown>>(item.getPath);
-          if(selectionEpoch.current!==ticket)return;
-          setActivities((all) => ({
-            ...all,
-            [item.destinationId]: {
-              ...item,
-              status: String(current.status ?? item.status),
-              result: current,
-            },
-          }));
-          if (!pending(String(current.status ?? item.status)) && task?.id) {
-            const nextGraph=await api<IntentGraph>(`/agent/intents/${task.id}/graph`);
-            if(selectionEpoch.current===ticket)setGraph(nextGraph);
+    let disposed=false,reading=false;
+    const currentSelection=()=>!disposed&&selectionEpoch.current===ticket;
+    const poll=async()=>{
+      if(reading||!currentSelection())return;
+      reading=true;
+      try{
+        for(const item of pendingActivities){
+          try{
+            const result=await api<Record<string,unknown>>(item.getPath);
+            if(!currentSelection())return;
+            const status=String(result.status??item.status);
+            if(item.boundPlan&&task){
+              // Re-read the linked lineage when the specialist settles. Only
+              // its current job needs polling while the model is still busy.
+              if(!pending(status))await loadTask(task);
+              continue;
+            }
+            setActivities(all=>({...all,[item.destinationId]:{...item,status,result}}));
+            if(!pending(status)&&task){
+              const next=await api<IntentGraph>(`/agent/intents/${task.id}/graph`);
+              if(selectionEpoch.current===ticket)setGraph(next);
+            }
+          }catch(cause){
+            if(!currentSelection())return;
+            setActivities(all=>({...all,[item.destinationId]:{
+              ...item,status:item.boundPlan?'UNCONFIRMED':'FAILED',error:(cause as Error).message,
+            }}));
           }
-        } catch (cause) {
-          if(selectionEpoch.current!==ticket)return;
-          setActivities((all) => ({
-            ...all,
-            [item.destinationId]: { ...item, status: "FAILED", error: (cause as Error).message },
-          }));
         }
-      }
-    }, 1200);
-    return () => clearInterval(timer);
-  }, [activities]);
+      }finally{reading=false;}
+    };
+    const timer=setInterval(()=>void poll(),1200);
+    return()=>{disposed=true;clearInterval(timer);};
+  }, [activities,task?.id]);
 
   const resetTask = () => {
     selectionEpoch.current++;readOrder.current++;originalSubmission.current=undefined;setNotFound(false);setTarget(undefined);setBatchRead(undefined);
@@ -502,7 +535,9 @@ export function AgentCenter({
       setGraph(invocation.graph);
       setApprovals(await api<StepApproval[]>(`/agent/intents/${task.id}/approvals`));
       setHandoffs(await api<Handoff[]>(`/agent/intents/${task.id}/handoffs`));
+      if(ticket===selectionEpoch.current&&step.destinationId==='reports'&&task.reportPlanningProfile==='MYSQL_HOLDINGS_CUSTOMER_ANALYSIS')await loadTask(task);
     } catch (cause) {
+      if(ticket!==selectionEpoch.current)return;
       setActivities((all) => ({
         ...all,
         [step.destinationId]: {
@@ -553,6 +588,12 @@ export function AgentCenter({
     setChildCancelBusy(step.destinationId);
     setError("");
     try {
+      const child=activities[step.destinationId]?.boundPlan;
+      if(child?.originPlanId){
+        await api(`/reports/agent/plans/${child.id}/cancel`,{});
+        await loadTask(task);
+        return;
+      }
       const result = await api<{ child: { id: string; status: string }; graph: IntentGraph }>(
         `/agent/intents/${task.id}/children/${step.destinationId}/cancel`,
         {},
@@ -580,6 +621,9 @@ export function AgentCenter({
         ? fillToolPath(applyTemplate, activity.id)
         : undefined;
     if (!activity || !applyPath || actionLock.current) return;
+    if(task?.reportPlanningProfile==='MYSQL_HOLDINGS_CUSTOMER_ANALYSIS' && step.destinationId==='reports' && (!verifiedBatch||!activity.boundPlan||
+      activity.boundPlan.requestBasisState!=='VERIFIED'||activity.boundPlan.proposal?.kind!=='PUBLISHED_REPORT'||
+      !sameReportSource(activity.boundPlan.sourceBinding,task.reportSource)))return;
     const ticket=selectionEpoch.current;actionLock.current=true;setActionBusy(true);
     try {
       const response=await api<unknown>(applyPath, activity.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?{proposalHash:activity.result.proposalHash}:{});
@@ -589,6 +633,10 @@ export function AgentCenter({
         const receipt=appliedChatReport(result,task?.reportSource);
         if(!receipt||typeof response!=='object'||!response||!('requestId' in response)||response.requestId!==receipt.requestId)
           throw Error('原报表生成回执尚待核对，请查询当前方案。');
+      }
+      if(activity.boundPlan&&task){
+        await loadTask(task);
+        return;
       }
       setActivities((all) => ({
         ...all,
@@ -602,6 +650,7 @@ export function AgentCenter({
       if (task?.id)
         setGraph(await api<IntentGraph>(`/agent/intents/${task.id}/graph`));
     } catch (cause) {
+      if(ticket!==selectionEpoch.current)return;
       setActivities((all) => ({
         ...all,
         [step.destinationId]: { ...activity, error: (cause as Error).message },
@@ -609,6 +658,10 @@ export function AgentCenter({
     }finally{actionLock.current=false;setActionBusy(false);}
   };
 
+  const reportActivity=activities.reports;
+  const chatPlan=wealthSource&&task?.reportSource&&sameReportSource(wealthSource,task.reportSource)&&
+    sameReportSource(reportActivity?.boundPlan?.sourceBinding,wealthSource)?reportActivity.boundPlan:undefined;
+  const chatQuestion=chatPlan?.status==='NEEDS_CLARIFICATION'&&chatPlan.proposal?.kind==='CLARIFICATION_REQUIRED'?chatPlan.proposal.question:undefined;
   const appliedReport=appliedChatReport(activities.reports?.result,task?.reportSource);
   const fullAnalysis=(activities.reports?.result?.proposal as {customerAnalysis?:{kind?:string}}|undefined)?.customerAnalysis?.kind==='MYSQL_HOLDINGS_CUSTOMER_ANALYSIS';
   const route = task?.route,
@@ -668,15 +721,18 @@ export function AgentCenter({
             <article className="agent-os-message-v2 assistant"><span className="agent-os-avatar-v2"><Bot size={16} /></span><div>
               {pending(task.status) ? <div className="agent-os-thinking-v2"><LoaderCircle className="spin" size={15} />正在理解目标、匹配上下文并规划跨域步骤…</div> : route ? <>
                 <p>{route.summary}</p><small>{route.rationale}</small>
-                <div className="agent-os-plan-v2"><header><div><FileCheck2 size={15} /><strong>执行计划</strong></div><span>{wealthSource?(appliedReport?'报表已生成':activities.reports?.status==='SUCCEEDED'?'方案待审阅':activities.reports?.status==='APPLYING'?'报表生成中':activities.reports?.status==='APPLIED'?'报表回执待核对':'规划报表'):`${completedCount}/${graph?.totalCount ?? steps.length} 已完成 · ${graph ? "持久任务图" : "加载中"}`}</span></header><ol>{steps.map((step, index) => {
+                <div className="agent-os-plan-v2"><header><div><FileCheck2 size={15} /><strong>执行计划</strong></div><span>{wealthSource?(appliedReport?'报表已生成':reportPhase(reportActivity)):`${completedCount}/${graph?.totalCount ?? steps.length} 已完成 · ${graph ? "持久任务图" : "加载中"}`}</span></header><ol>{steps.map((step, index) => {
                   const activity = activities[step.destinationId], reportReceipt=appliedChatReport(activity?.result,task.reportSource), proposal=activity?.result?.proposal as {name?:string;metricIds?:string[];customerAnalysis?:{kind?:string}}|undefined, approval = approvals.find((item) => item.destinationId === step.destinationId), prepared = handoffs.some((item) => item.destinationId === step.destinationId), graphStep = graph?.steps.find((item) => item.destinationId === step.destinationId), linked = graphStep?.executionEvidence === "SPECIALIST_TASK_LINKED", canApply = ["SUCCEEDED","APPLYING"].includes(activity?.status??"") && linked && Boolean(toolById.get(step.destinationId)?.applyPath), artifactRows = activityArtifactRows(activity), complete = succeeded(activity?.status) && (!graph || linked), recoveryText = graphStep?.invocationRecovery === "RETRY_BINDING" ? "专业任务已创建，等待恢复任务图绑定" : graphStep?.invocationRecovery === "RETRY_REQUIRED" ? "工具调用已中断或失败，可重新批准恢复" : graphStep?.invocationRecovery === "WAIT" ? "工具调用已持久化，正在创建专业任务" : "";
-                  return <li key={step.destinationId} className={complete ? "complete" : retryable(activity?.status) ? "failed" : ""}><span>{complete ? <Check size={13} /> : String(index + 1).padStart(2, "0")}</span><div><div className="agent-os-step-title-v2"><strong>{step.label}</strong><small>{riskLabel[step.risk]}</small></div><p>{step.objective}</p>
-                    {activity && <div className="agent-os-activity-v2"><CircleDot size={12} /><span>{complete ? activity.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1' ? reportReceipt?'报表已生成':activity.status==='SUCCEEDED'?'方案待审阅':'报表回执待核对' : activity.applied ? '专业草稿已写入' : '专业Agent已完成' : activity.status === "FAILED" ? activity.error : activity.status === "CANCELLED" ? "专业Agent已取消" : activity.status === "INTERRUPTED" ? "服务重启后专业任务已中断" : "专业Agent执行中"}</span>{activity.id !== "preparing" && activity.id !== "failed" && <code>{activity.id.slice(0, 8)}</code>}</div>}
+                  return <li key={step.destinationId} className={complete ? "complete" : retryable(activity?.status) ? "failed" : ""}><span>{complete ? <Check size={13} /> : String(index + 1).padStart(2, "0")}</span><div><div className="agent-os-step-title-v2"><strong>{step.label}</strong><small>{riskLabel[step.risk]}</small></div>
+                    {step.destinationId==='reports'&&chatPlan?.clarification
+                      ? <p className="agent-chat-confirmed-scope"><strong>已确认口径</strong> {chatPlan.message}</p>
+                      : <p>{step.objective}</p>}
+                    {activity && <div className="agent-os-activity-v2"><CircleDot size={12} /><span>{activity.boundPlan||activity.status==='UNCONFIRMED' ? reportReceipt?'报表已生成':reportPhase(activity) : complete ? activity.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1' ? reportReceipt?'报表已生成':activity.status==='SUCCEEDED'?'方案待审阅':'报表回执待核对' : activity.applied ? '专业草稿已写入' : '专业Agent已完成' : activity.status === "FAILED" ? activity.error : activity.status === "CANCELLED" ? "专业Agent已取消" : activity.status === "INTERRUPTED" ? "服务重启后专业任务已中断" : "专业Agent执行中"}</span>{activity.id !== "preparing" && activity.id !== "failed" && <code>{activity.id.slice(0, 8)}</code>}</div>}
                     {recoveryText && <div className="agent-os-activity-v2"><Clock3 size={12} /><span>{recoveryText}</span>{graphStep?.invocationAttempt && <code>尝试 {graphStep.invocationAttempt}</code>}</div>}
                     {approval && <div className="agent-os-activity-v2"><ShieldCheck size={12} /><span>{approval.status === "BOUND" ? "本次批准已绑定专业任务" : "步骤已批准，等待绑定任务"}</span><code>{approval.id.slice(0, 8)}</code></div>}
                     {proposal?.customerAnalysis?.kind==='MYSQL_HOLDINGS_CUSTOMER_ANALYSIS'&&<div className="agent-report-plan"><strong>{proposal.name}</strong><p>按客户与交易日核对总资产、持仓市值和证券数量。资产类别与行业分布按原冻结明细计算，占比分母为该客户的持仓市值。</p></div>}
                     {artifactRows.length > 0 && <details className="agent-os-artifact-v2"><summary>查看专业Agent产物</summary><div>{artifactRows.map((row) => <section key={row.label}><span>{row.label}</span>{Array.isArray(row.value) ? <div className="agent-os-artifact-tags-v2">{row.value.map((item) => <code key={item}>{item}</code>)}</div> : <p>{row.value}</p>}</section>)}</div></details>}
-                    <div className="agent-os-step-actions-v2">{task.status !== "CANCELLED" && task.approvalMode !== "PLAN_ONLY" && (!activity || retryable(activity.status)) && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured || actionBusy || Boolean(wealthSource&&!verifiedBatch)}><Wrench size={13} />{retryable(activity?.status) ? "重新批准并重试" : "批准并执行此步骤"}</button>}{activity && pending(activity.status) && <button className="secondary" onClick={() => cancelSpecialist(step)} disabled={!canWrite || childCancelBusy === step.destinationId}><Clock3 size={12} />{childCancelBusy === step.destinationId ? "正在取消…" : "取消专业子任务"}</button>}{canApply && !activity.applied && !(activity?.error&&activity.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1') && <button disabled={!canWrite||actionBusy||Boolean(wealthSource&&(!verifiedBatch||activity.result?.requestBasisState!=='VERIFIED'||!sameReportSource(activity.result?.sourceBinding,wealthSource)))} onClick={() => applyDraft(step)}><Check size={13} />{activity?.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?'按审阅方案生成报表':'应用为草稿'}</button>}{activity?.applied && (activity.result?.planMode!=='PUBLISHED_SOURCE_REPORT_V1'||reportReceipt) && <span className="agent-os-applied-v2"><Check size={12} />{activity?.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?'报表已实际生成':'草稿已写入'}</span>}<button className="secondary" onClick={() => openProfessionalWorkspace(step)}><ExternalLink size={12} />记录接管并打开工作台</button></div>
+                    <div className="agent-os-step-actions-v2">{task.status !== "CANCELLED" && task.approvalMode !== "PLAN_ONLY" && (!activity || retryable(activity.status)&&!activity.boundPlan) && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured || actionBusy || Boolean(wealthSource&&!verifiedBatch)}><Wrench size={13} />{retryable(activity?.status) ? "重新批准并重试" : "批准并执行此步骤"}</button>}{activity && pending(activity.status) && <button className="secondary" onClick={() => cancelSpecialist(step)} disabled={!canWrite || childCancelBusy === step.destinationId}><Clock3 size={12} />{childCancelBusy === step.destinationId ? "正在取消…" : "取消专业子任务"}</button>}{canApply && !activity.applied && !(activity?.error&&activity.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1') && <button disabled={!canWrite||actionBusy||Boolean(wealthSource&&(!verifiedBatch||activity.result?.requestBasisState!=='VERIFIED'||!sameReportSource(activity.result?.sourceBinding,wealthSource)))} onClick={() => applyDraft(step)}><Check size={13} />{activity?.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?'按审阅方案生成报表':'应用为草稿'}</button>}{activity?.applied && (activity.result?.planMode!=='PUBLISHED_SOURCE_REPORT_V1'||reportReceipt) && <span className="agent-os-applied-v2"><Check size={12} />{activity?.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?'报表已实际生成':'草稿已写入'}</span>}<button className="secondary" onClick={() => openProfessionalWorkspace(step)}><ExternalLink size={12} />记录接管并打开工作台</button></div>
                     {activity?.error&&activity.status!=='FAILED'&&<div role="alert">{activity.error}
                       <button className="button" disabled={busy||actionBusy} onClick={()=>void loadTask(task).catch(cause=>setError((cause as Error).message))}>查询原方案结果</button>
                     </div>}
@@ -687,6 +743,20 @@ export function AgentCenter({
                 {trace.length > 0 && <details className="agent-os-trace-v2"><summary>查看执行轨迹与证据</summary>{trace.map((item) => <div key={item.id}><span>{item.sequence}</span><strong>{item.kind === "MODEL_ROUTE" ? "需求理解与规划" : item.kind === "STEP_APPROVAL" ? "人工批准专业步骤" : item.kind === "INTENT_CANCELLED" ? "停止后续编排" : item.kind === "SPECIALIST_CANCELLED" ? "取消专业子任务" : "专业Agent任务绑定"}</strong><small>{item.output?.destinationId ?? "—"} · {item.execution} · {new Date(item.observedAt).toLocaleTimeString("zh-CN")}</small></div>)}</details>}
               </> : <p>{task.status === "INTERRUPTED" ? "服务重启时任务尚未完成；原始需求未持久化，请新建任务并重新描述目标。" : task.status === "CANCELLED" ? "后续编排已停止，历史证据仍保留。" : task.error ?? "Agent未能形成可执行计划。"}</p>}
             </div></article>
+            {chatPlan?.clarification&&<details className="agent-chat-clarification-history">
+              <summary>本次方案的口径确认 · {chatPlan.clarification.depth} 轮</summary>
+              <p>原需求：{chatPlan.clarification.originalRequest}</p>
+              <dl>{chatPlan.clarification.turns.map(turn=><div key={turn.planId}><dt>{turn.question}</dt><dd>{turn.answer}</dd></div>)}</dl>
+            </details>}
+            {task&&chatPlan&&chatQuestion&&<article className="agent-chat-question" aria-label="确认报表口径">
+              <small>{chatPlan.clarification?.depth===3?'口径确认已达三轮':`Data Agent · 第 ${(chatPlan.clarification?.depth??0)+1} 次口径确认`}</small>
+              <h3>{chatQuestion}</h3>
+              <ReportClarificationReply key={chatPlan.id} api={api} plan={chatPlan}
+                canWrite={canWrite&&local&&Boolean(verifiedBatch)&&!actionBusy&&task.status!=='CANCELLED'&&task.approvalMode==='REQUEST_APPROVAL'&&
+                  chatPlan.requestBasisState==='VERIFIED'&&!reportActivity.error}
+                available={modelConfigured} chatRequestId={reportChatReplyKey(chatPlan.id)}
+                onContinue={()=>{void loadTask(task).catch(e=>setError((e as Error).message));}}/>
+            </article>}
             {appliedReport&&fullAnalysis&&<details className="agent-chat-report-result"><summary>查看本次生成的客户资产报表</summary>
               <Suspense fallback={<p role="status">正在加载原报表…</p>}><CustomerAssetAnalysis key={appliedReport.requestId} api={api} title={appliedReport.name} selection={{
                 requestId:appliedReport.requestId,source:appliedReport.source,reportId:appliedReport.reportId!,reportRunId:appliedReport.reportRunId!,
