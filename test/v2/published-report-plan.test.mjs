@@ -2,6 +2,36 @@ import test from'node:test';import assert from'node:assert/strict';import{random
 import{MetadataStore}from'../../src/v2/store.mjs';import{ReportDataStore}from'../../src/v2/reports.mjs';import{createV2Server,PROJECT}from'../../src/v2/server.mjs';import{V2Client}from'../../src/v2/client.mjs';import{seedLocalServiceSource}from'./fixtures/local-service-sources.mjs';
 import{publicAgentToolCatalog}from'../../src/v2/agent-router.mjs';
 import{generateReportPlan}from'../../src/v2/model.mjs';
+import{publishedReportPlanningContext,validatePublishedReportPlan}from'../../src/v2/published-report-plan.mjs';
+import{publishedReportHash}from'../../src/v2/published-report-source.mjs';
+import{matchesCustomerAnalysisProposal}from'../../src/v2/customer-analysis-plan-contract.mjs';
+
+test('verified customer planning keeps published columns intact and preserves the exact legacy planning hash',()=>{
+ const source={kind:'AGENT',taskId:randomUUID(),releaseId:randomUUID(),revisionId:randomUUID(),runId:randomUUID(),
+   batchId:randomUUID(),packageDigest:'a'.repeat(64)};
+ const resolved={source,context:{id:'holdings-t1',definition:'虚构顾问持仓与现金'},rows:[{client_id:'synthetic-hidden-row'}],
+   asset:{evidenceHash:'b'.repeat(64),fields:['client_id','total_assets','holding_market_value','available_cash','security_count'].map(name=>({name,type:'DECIMAL'}))}};
+ const ids=['total_assets','holding_value','client_security_count','asset_class_distribution','industry_distribution'];
+ const capability={kind:'MYSQL_HOLDINGS_CUSTOMER_ANALYSIS',metricIds:ids};
+ const ordinary=publishedReportPlanningContext(resolved), legacyHash=publishedReportHash(ordinary);
+ const historical=publishedReportPlanningContext(resolved,{expectedHash:legacyHash,readCustomerAnalysis:()=>assert.fail('should not upgrade an old plan')});
+ assert.deepEqual(historical,ordinary);
+ const combined=publishedReportPlanningContext(resolved,{readCustomerAnalysis:()=>capability});
+ assert.deepEqual(combined.fields,ordinary.fields);
+ assert.deepEqual(combined.availableWidgets,ordinary.availableWidgets);
+ assert.ok(!JSON.stringify(combined).includes('synthetic-hidden-row'));
+ const request={kind:'PUBLISHED_REPORT',name:'虚构客户资产分析',metricIds:ids};
+ assert.throws(()=>validatePublishedReportPlan(request,historical),{code:'INVALID_PUBLISHED_REPORT_PLAN'});
+ const proposal=validatePublishedReportPlan(request,combined);
+ assert.equal(matchesCustomerAnalysisProposal(proposal),true);
+ assert.deepEqual(proposal.widgets.map(w=>w.id),['total_assets','holding_value','client_security_count']);
+ assert.deepEqual(proposal.customerAnalysis.metricIds,['asset_class_distribution','industry_distribution']);
+ assert.equal(validatePublishedReportPlan({...request,metricIds:['available_cash']},combined).customerAnalysis,undefined);
+ assert.throws(()=>validatePublishedReportPlan({...request,customerAnalysis:capability},ordinary),{code:'INVALID_PUBLISHED_REPORT_PLAN'});
+ const noLongerVerified=publishedReportPlanningContext(resolved,{expectedHash:publishedReportHash(combined),readCustomerAnalysis:()=>undefined});
+ assert.notEqual(publishedReportHash(noLongerVerified),publishedReportHash(combined));
+ assert.throws(()=>validatePublishedReportPlan(request,noLongerVerified),{code:'INVALID_PUBLISHED_REPORT_PLAN'});
+});
 async function fixture(t,planner){
  const store=new MetadataStore(':memory:'),data=new ReportDataStore(),f=seedLocalServiceSource({store,project:PROJECT});let calls=0,engine=0;
  const app=createV2Server({store,reportStore:data,env:{V2_LOCAL_DEVELOPMENT:'true',V2_RELEASE_SCHEDULER_MODE:'DISABLED'},reportPlanner:async input=>{calls++;return planner(input);},runner:()=>{engine++;throw Error('NO_COMPUTE');}});await new Promise(r=>app.server.listen(0,'127.0.0.1',r));

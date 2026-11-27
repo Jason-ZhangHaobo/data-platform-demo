@@ -62,6 +62,7 @@ import {publicationSourceLocation,serviceSourceFromLocation,serviceHandoffLocati
 import type {ServiceSourceBinding} from "./service-source-binding";
 import { loadModuleStartup, moduleStartupPaths, startupReadCurrent } from "./startup-loading";
 import type { StartupReadState } from "./startup-loading";
+const PlannedModuleCard = lazy(()=>import("./PlannedModuleCard"));
 const SqlEditor = lazy(() => import("./SqlEditor"));
 const RunLogContent = lazy(async () => ({ default: (await import("./run-log")).RunLogContent }));
 const DataServicesWorkbench = lazy(async () => ({ default: (await import("./DataServicesWorkbench")).DataServicesWorkbench }));
@@ -458,7 +459,8 @@ function App() {
   const [agentWorkspaceMode, setAgentWorkspaceMode] = useState(()=>{
     if(typeof window==='undefined')return 'development';
     const query=new URL(window.location.href).searchParams;
-    return (query.has('service_plan_request')||query.has('service_plan')||query.has('service_plan_batch'))&&serviceSourceFromLocation(window.location.href).status!=='ABSENT'?'services':'development';
+    if(!privatePreview && location.hash==='#agent-chat')return 'platform';
+    return ['service_plan_request','service_plan','service_plan_batch'].some(key=>query.has(key))&&serviceSourceFromLocation(location.href).status!=='ABSENT'?'services':'development';
   });
   const [serviceLocation,setServiceLocation]=useState(()=>serviceSourceFromLocation(window.location.href));
   const inputModule = nav === "agent-center" && agentWorkspaceMode === "services" ? "services" : nav;
@@ -1001,7 +1003,7 @@ function App() {
           <a className="button" href="?module=agent-center&report_request=">历史报表</a>}</div>}
           {agentWorkspaceMode === "services" ? workbench.agentServiceHandoffAvailable ? <DataServicesWorkbench key={serviceWorkspaceKey} api={api} canWrite={servicesCanWrite} privateCloud={workbench.cloudServices} runtimeMode={workbench.runtimeMode} cloudAccess={workbench.cloudAccess} consumptionScope={consumptionScope} sourceAgentTaskId={serviceTaskId} sourceBinding={sourceBinding} sourceBindingError={sourceBindingError} sourceBoundAgentPlansEnabled={status?.dataServices?.sourceBoundAgentPlansEnabled===true} sourceBoundAgentContextEnabled={status?.dataServices?.sourceBoundAgentContextEnabled===true} modelConfigured={status?.model?.configured===true} durableServiceAgentEnabled={status?.dataServices?.durableServiceAgentEnabled===true} durableServiceAgentReadEnabled={status?.dataServices?.durableServiceAgentReadEnabled===true} servicePlanningTransport={privateServiceAgentPreview} servicePlanningOnly={session.servicePlanningOnly===true} servicePlanning={session.servicePlanning} /> : <div className="workbench-loading" role="status">{workbench.unavailableReason}<button className="button" onClick={()=>setAgentWorkspaceMode("development")}>返回原任务</button></div> : agentWorkspaceMode === "development" ? <AgentDevelopmentWorkbench key={session.user?.id ?? "anonymous"} api={api} initialContextId={openingContextId} contexts={contexts.concat(status?.agentDevelopment?.fundContexts??[])} canWrite={canWrite} canPublish={canPublish} publicationTarget={publicationTarget} ready={coreReady && contextsReady && agentDevelopmentReadiness(status).ready} readinessReason={contextReadinessReason ?? agentDevelopmentReadiness(status).reason} backgroundAvailable={Boolean(status?.agentDevelopment?.eventBackgroundAvailable)} readOnly={session.readOnly || session.publicationOnly || session.consumptionOnly} fundPilotAvailable={status?.agentDevelopment?.fundPilotAvailable} taskOnly={session.developmentTaskOnly} targetTaskId={session.developmentTaskId} expectedSourceBinding={sourceBinding?.sourceKind==="AGENT"?sourceBinding:undefined} expectedManualSource={sourceBinding?.manualDeliveryTaskId?sourceBinding:undefined} expectedSourceError={sourceBindingError||(sourceBinding?.sourceKind==="MANUAL"&&!sourceBinding.manualDeliveryTaskId?"人工服务来源须从返回原人工版本入口查看，不回退到 Agent 当前版本。":undefined)} loading={coreReadState === "LOADING" || coreReady && !moduleInputsReady && !moduleInputError} privatePreview={privatePreview} runtimeMode={workbench.runtimeMode} onLogin={() => setAuthOpen(true)} onDirtyChange={setAgentDraftDirty} onOpenServices={workbench.agentServiceHandoffAvailable ? openServiceHandoff : undefined} /> :
           <AgentCenter
-            api={api}
+            key={viewEpoch} api={api} local={localWorkbench&&!privatePreview}
             canWrite={canWrite && !session.developmentOnly}
             modelConfigured={Boolean(status?.model.configured)}
             contextId={contextId}
@@ -2045,38 +2047,7 @@ function App() {
                 <CloudReadinessPanel api={api} />
               </>
             ) : (
-              <>
-                <div className="stage-card">
-                  <span className="stage-label">
-                    {active?.stage} · 已纳入新版计划
-                  </span>
-                  <h2>
-                    {nav === "services"
-                      ? "让业务数据成为可调用的服务"
-                      : "让 " + active?.name + " 与 Agent 协同工作"}
-                  </h2>
-                  <p>
-                    {nav === "services"
-                      ? "DAPI 通过参数化 SQL 提供查询；XAPI 编排多个查询和接口。发布、授权、版本和监控共同建设。"
-                      : "该模块将与代码工作台共用项目上下文、资源模型与运行记录。当前显示规划范围，未宣称已具备实际执行能力。"}
-                  </p>
-                  <div className="feature-list">
-                    {active?.features.map((f) => (
-                      <div key={f}>
-                        <Circle size={13} />
-                        {f}
-                      </div>
-                    ))}
-                  </div>
-                  <button
-                    className="button primary"
-                    onClick={() => setNav("development")}
-                  >
-                    体验已实现的代码工作台
-                    <ArrowRight size={15} />
-                  </button>
-                </div>
-              </>
+              <PlannedModuleCard active={active} services={nav==="services"} onDevelop={()=>setNav("development")} />
             )}
           </section>
         )}

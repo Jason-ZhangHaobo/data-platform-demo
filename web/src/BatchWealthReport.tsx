@@ -1,15 +1,13 @@
 import {useEffect,useState} from 'react';
 import {PublishedReportCreator} from './PublishedReportCreator';
 import {wealthReportTarget,type WealthReportTarget} from './native-report-location';
-import {serviceSourcesPath,sourceRunEligible,sourceRunMatches} from './service-source-binding';
+import {readWealthBatch} from './agent-report-chat';
 import {lookupPublishedReport,type PublishedReportReceipt} from '../../src/v2/published-report-client.mjs';
-import {readSyncSqlOutputSchema} from '../../src/v2/sync-sql-output-schema-client.mjs';
 import CustomerAssetAnalysis from './CustomerAssetAnalysis';
 
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
 type Props={api:Api;canCreate:boolean;local:boolean};
-type Candidate=Parameters<typeof sourceRunMatches>[0]&{sequence:number;sourceEvidence?:{
-  protocol?:string;snapshotHash?:string;metadataVersionId?:string;syncRunId?:string;businessDate?:string}};
+
 
 function OriginalReport({api,target,requestId}:{api:Api;target:WealthReportTarget;requestId:string}){
   const [state,setState]=useState<{receipt?:PublishedReportReceipt;error?:string}>(),[retry,setRetry]=useState(0);
@@ -31,29 +29,17 @@ function OriginalReport({api,target,requestId}:{api:Api;target:WealthReportTarge
 }
 
 function BatchReport({api,canCreate,target}:{api:Api;canCreate:boolean;target:WealthReportTarget}){
-  const [requestId,setRequestId]=useState(target.requestId),[source,setSource]=useState<{batch?:Candidate;error?:string}>(),[retry,setRetry]=useState(0);
-  const bindingKey=JSON.stringify(target.binding),batchId=target.source.batchId;
+  const [requestId,setRequestId]=useState(target.requestId),[source,setSource]=useState<{batch?:Awaited<ReturnType<typeof readWealthBatch>>;error?:string}>(),[retry,setRetry]=useState(0);
+  const sourceKey=JSON.stringify(target.source),batchId=target.source.batchId;
   useEffect(()=>{
     let active=true;setSource(undefined);
-    async function verify(){
-      const binding=JSON.parse(bindingKey) as WealthReportTarget['binding'];
-      const [runs,schema]=await Promise.all([api<Candidate[]>(serviceSourcesPath(binding)),
-        readSyncSqlOutputSchema({request:path=>api(path)},{runId:binding.runId!})]);
-      if(!Array.isArray(runs)||!runs.every(run=>sourceRunMatches(run,binding)))throw Error('发布来源未能核对，请返回原批次。');
-      const matching=runs.filter(run=>run.id===batchId && sourceRunEligible(run));
-      const batch=matching[0],e=batch?.sourceEvidence;
-      if(matching.length!==1||![1,2].includes(batch.sequence)||!e||e.protocol!=='shuduo-sync-sql-consumption-source/v1'||
-        schema.status!=='MATCHED'||schema.source.revisionId!==binding.revisionId||schema.source.snapshotHash!==e.snapshotHash||
-        schema.inputMetadata?.sourceType!=='SERVER_MYSQL'||schema.inputMetadata.syncRunId!==e.syncRunId||
-        schema.inputMetadata.frozen.metadataVersionId!==e.metadataVersionId)throw Error('指定批次或原 MySQL 快照尚未核对。');
-      if(active)setSource({batch});
-    }
-    verify().catch(cause=>{if(active)setSource({error:(cause as Error).message});});
+    readWealthBatch(api,JSON.parse(sourceKey)).then(batch=>{if(active)setSource({batch});},
+      cause=>{if(active)setSource({error:(cause as Error).message});});
     return()=>{active=false;};
-  },[api,bindingKey,batchId,retry]);
+  },[api,sourceKey,retry]);
   const ready=source?.batch;
   return <section className="wealth-batch-report" aria-label="按发布批次生成资产报表">{(!ready||!requestId)&&<header><h2>财富顾问资产分析报表</h2>
-    {ready&&<p>{ready.sourceEvidence?.businessDate} · 第 {ready.sequence} 批 · MySQL 持仓归档</p>}</header>}
+    {ready&&<p>{ready.businessDate} · 第 {ready.sequence} 批 · MySQL 持仓归档</p>}</header>}
     {source?.error?<section role="alert"><p>{source.error}</p><button type="button" className="button" onClick={()=>{setSource(undefined);setRetry(n=>n+1);}}>重新核对指定批次</button></section>:
      !ready?<p role="status">正在核对指定批次与原持仓快照…</p>:requestId?<OriginalReport key={requestId} api={api} target={target} requestId={requestId}/>:
      <PublishedReportCreator pinnedBatch api={api} canCreate={canCreate} defaultName="客户资产分析报表"

@@ -25,6 +25,7 @@ import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-compa
 import {readSyncSqlOutputSchema,readSyncedPositions,readSyncReviewEvidence} from "../src/v2/sync-sql-output-schema-client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import {readCustomerAssetAnalysis} from '../src/v2/customer-asset-analysis-client.mjs';
+import {readReportIntent} from '../src/v2/report-intent-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
 import { readWealthConsumption } from '../src/v2/wealth-report-consumption-client.mjs';
 import {readReportProvenance} from '../src/v2/report-provenance-client.mjs';
@@ -135,7 +136,8 @@ const tools = [
   { name: "agent_tool_validate", description: "按工具目录版本和摘要校验专业Agent输入；只做契约预检，不创建任务或批准。", inputSchema: { type: "object", properties: { toolId: { type: "string" }, catalogVersion: { type: "string" }, contractDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, input: { type: "object" } }, required: ["toolId", "catalogVersion", "contractDigest", "input"], additionalProperties: false } },
   { name: "agent_tool_invoke", description: "以当前父意图、目录摘要和步骤批准调用一个专业Agent原子能力，并原子绑定任务图；不应用草稿、不发布、不授权。调用前必须取得用户对该步骤的明确批准。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, toolId: { type: "string" }, approvalId: { type: "string" }, catalogVersion: { type: "string" }, contractDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, input: { type: "object" } }, required: ["intentId", "toolId", "approvalId", "catalogVersion", "contractDigest", "input"], additionalProperties: false } },
   { name: "agent_context_derive", description: "从本人已成功并核验的SQL版本创建新口径任务，可能执行真实模型与Spark。先确认新任务与预算范围；不继承原成功或发布批准。不自动重试，结果未知先用agent_request_lookup按原requestId查询。", inputSchema: {type:'object',additionalProperties:false,properties:{derivation:{type:'object',additionalProperties:false,properties:{kind:{const:'REGISTERED_CONTEXT_CHANGE'},taskId:{type:'string',format:'uuid'},revisionId:{type:'string',format:'uuid'},runId:{type:'string',format:'uuid'},revisionHash:{type:'string',pattern:'^[a-f0-9]{64}$'}},required:['kind','taskId','revisionId','runId','revisionHash']},contextId:{type:'string',minLength:2,maxLength:80},message:{type:'string',minLength:4,maxLength:2000},requestId:{type:'string',format:'uuid'},confirm:{const:true}},required:['derivation','contextId','message','requestId','confirm']} },
-  { name: "agent_intent_create", description: "理解需求并推荐下一步；可固定reportSource供报表专业工具使用，不直接执行业务。", inputSchema: { type: "object", properties: { message: { type: "string", minLength: 4, maxLength: 2000 },approvalMode:{type:'string',enum:['PLAN_ONLY','REQUEST_APPROVAL']},reportSource:publishedReportSourceSchema }, required: ["message"] } },
+  { name: "agent_intent_create", description: "理解需求并推荐下一步，可按原请求编号绑定报表发布来源供专业规划使用。", inputSchema: { type: "object", properties: { message: { type: "string", minLength: 4, maxLength: 2000 },approvalMode:{type:'string',enum:['PLAN_ONLY','REQUEST_APPROVAL']},reportSource:publishedReportSourceSchema,requestId:{type:'string',pattern:'^[A-Za-z0-9_-]{1,100}$'} }, required: ["message"] } },
+  { name:"agent_report_intent_request",description:"按原请求编号读取本人的报表会话，可核对原发布来源。",inputSchema:{type:'object',properties:{requestId:{type:'string',pattern:'^[A-Za-z0-9_-]{1,100}$'},source:publishedReportSourceSchema},required:['requestId'],additionalProperties:false},annotations:{readOnlyHint:true}},
   { name: "agent_intent_approval_list", description: "读取一个Data Agent意图中已批准和已绑定的专业步骤；不返回批准者内部标识。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
   { name: "agent_intent_approval_create", description: "批准REQUEST_APPROVAL任务中的一个精确专业步骤；只生成版本绑定批准，不执行专业任务。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" }, destinationId: { type: "string" } }, required: ["intentId", "destinationId"] } },
   { name: "agent_intent_graph", description: "读取意图、逐步批准、专业任务绑定与状态组成的统一任务图；不返回原始任务描述、业务数据或批准者标识。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
@@ -459,8 +461,10 @@ async function callTool(name, args = {}, client=defaultClient) {
   if (name === "agent_intent_create")
     return client.request("/agent/intents", {
       method: "POST",
+      ...(args.requestId===undefined?{}:{idempotencyKey:args.requestId}),
       body: { message: args.message,...(args.approvalMode===undefined?{}:{approvalMode:args.approvalMode}),...(args.reportSource===undefined?{}:{reportSource:args.reportSource}) },
     });
+  if(name==='agent_report_intent_request')return readReportIntent(client,args);
   if (name === "agent_intent_approval_list")
     return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/approvals`);
   if (name === "agent_intent_approval_create")

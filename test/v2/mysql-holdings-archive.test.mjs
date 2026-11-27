@@ -16,7 +16,7 @@ import {freezeSyncSqlInput, readSyncSqlInput, syncSqlContractId, syncSqlOutputCo
 import {checkRegisteredPackageInput} from '../../src/v2/package-input-check.mjs';
 import {checkedPackageInputCheck,readPackageInputCheck} from '../../src/v2/package-input-check-client.mjs';
 import {publishedReportHash} from '../../src/v2/published-report-source.mjs';
-import {customerAssetAnalysis} from '../../src/v2/customer-asset-analysis.mjs';
+import {customerAssetAnalysis,customerAnalysisPlanCapability} from '../../src/v2/customer-asset-analysis.mjs';
 import {createPublishedReportWorkflow,publishedReportRequestKey} from '../../src/v2/published-report-workflow.mjs';
 import {syntheticPackage} from './fixtures/input-evidence.mjs';
 
@@ -233,7 +233,7 @@ test('a fixed customer analysis stops if its retained MySQL landing receipt is m
     snapshotHash:binding.snapshotHash,syncRunId:f.run.id,metadataVersionId:f.metadata.id,businessDate:archive.context.businessDate};
   const record={requestId:randomUUID(),actorId:actor,input:{source:src}};
   const asset={id:'dataset:sync-holdings:'+batch.id,evidenceHash:hash};
-  const resolved={sourceEvidence:evidence,rows,expected:rows,asset};
+  const resolved={source:src,sourceEvidence:evidence,rows,expected:rows,asset};
   const artifacts={report:{id:randomUUID()},version:{id:randomUUID()},run:{id:randomUUID(),sourceEvidence:evidence,
     resultHash:publishedReportHash([]),widgets:[]},snapshot:{id:randomUUID(),sourceEvidence:evidence,assetId:asset.id,
     assetVersionId:batch.id,contentHash:hash},dataset:{sourceEvidence:evidence},data:{rows}};
@@ -255,6 +255,17 @@ test('a fixed customer analysis stops if its retained MySQL landing receipt is m
   assert.equal(link(changed,actor),undefined);
   assert.equal(store.db.prepare('SELECT total_changes() AS n').get().n,before);
   const read=()=>customerAssetAnalysis({...f.resources,record,artifacts,resolved});
+  const capability=(source=resolved,actorId=actor)=>customerAnalysisPlanCapability({...f.resources,resolved:source,actorId});
+  assert.deepEqual(capability(), {
+    kind:'MYSQL_HOLDINGS_CUSTOMER_ANALYSIS',
+    metricIds:['total_assets','holding_value','client_security_count','asset_class_distribution','industry_distribution'],
+    dimensions:['asset_class','industry'],sourceType:'SERVER_MYSQL',syncRunId:f.run.id,
+    metadataVersionId:f.metadata.id,landingReceiptHash:f.run.landingReceiptHash,
+    landingSnapshotHash:f.run.landingSnapshotHash,snapshotHash:binding.snapshotHash,businessDate:archive.context.businessDate,
+    grain:'按顾问范围内的客户和交易日',denominator:'客户当日持仓市值，不含现金',
+  });
+  assert.equal(capability({...resolved,source:{...src,batchId:randomUUID()}}),undefined);
+  assert.equal(capability(resolved,'other-owner'),undefined);
   const result=read(), {digest,...body}=result;
   assert.equal(result.source.syncRunId,f.run.id);
   assert.equal(result.source.sequence,2);
@@ -268,6 +279,7 @@ test('a fixed customer analysis stops if its retained MySQL landing receipt is m
   artifacts.snapshot.sourceEvidence=evidence;
   landingStore.db.prepare('DELETE FROM landing_run_receipts WHERE run_id=?').run(f.run.id);
   assert.throws(read,{code:'SYNC_LANDING_RECEIPT_MISSING'});
+  assert.equal(capability(),undefined);
   assert.equal(f.reads(),reads);
   store.create('published_report_creation',PROJECT,{...saved,requestId:randomUUID()});
   assert.equal(link(visible,actor),undefined,'duplicate creators cannot select a different request for the run');

@@ -3,6 +3,7 @@ import {readNativeSyncPublication,submitNativeSyncPublication,nativePublicationL
 import type{NativeSyncPublicationRequest,NativeSyncPublication as Receipt}from'../../src/v2/native-sync-publication-client.mjs';
 import type{NativeSyncReview,NativeSyncReviewBinding}from'../../src/v2/native-sync-review-client.mjs';
 import {nativeBatchServiceHref} from './native-sync-service-handoff';
+import {chatBatchFromServiceHref} from './agent-report-chat';
 import {wealthReportLocation} from './native-report-location';
 type Api=<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;
 const labels={version:'明确批准上方包摘要、代码和演练所对应的这个版本',batches:'同意启动同一冻结业务日的两批本机虚构数据测试（5秒、35秒）',scope:'知悉这会实际运行两批Spark；不属于公网或生产部署'};
@@ -31,6 +32,7 @@ export function NativeSyncPublication({api,binding,review,current,enabled,mysqlH
       <strong>第{run.sequence}批：{states[run.status]}</strong><small>{run.id}</small>
       <p>{run.schedulerTriggered?'已由本机计时器触发':'尚未证明触发'}{run.resultUnknown?' · 原执行结果仍未知':''}{run.status==='SUCCEEDED'?` · ${run.rowCount}行结果 · ${run.regressionCount}场景通过`:''}</p>
       {serviceHref&&<a className="button" href={serviceHref} target="_blank" rel="noopener" aria-label={`用第 ${run.sequence} 批开发接口（新标签页）`}>用第 {run.sequence} 批开发接口</a>}
+      {serviceHref&&mysqlHoldings&&<a className="button" href={chatBatchFromServiceHref(serviceHref)} target="_blank" rel="noopener">在 Agent 对话中使用第 {run.sequence} 批</a>}
       {serviceHref&&mysqlHoldings&&<a className="button" href={wealthReportLocation(serviceHref)} target="_blank" rel="noopener" aria-label={`查看第 ${run.sequence} 批资产分析报表（新标签页）`}>查看第 {run.sequence} 批资产分析报表</a>}
     </li>;
   })}</ol>{record.monitor.status==='ACTIVE_LOCAL'&&<button className="button" disabled={!mayWrite||unknown} onClick={()=>void stop()}>停止此版本后续本机批次</button>}<p>仅本机测试证据，不计正式云端或真实模型完整E2E。查询不会重跑失败或未知批次。</p></div>}

@@ -6,6 +6,7 @@ import { readSyncSqlInput } from './sync-sql-input.mjs';
 import { archivedSyncInputKind } from './sync-sql-selection.mjs';
 import { assertSyncReportWidgets, isSyncReportEvidence } from './sync-sql-report.mjs';
 import { equalValidationNumber } from './validation-number.mjs';
+import { customerAnalysisKind, customerAnalysisMetrics } from './customer-analysis-plan-contract.mjs';
 
 const unproven = () => Object.assign(Error('原报表、发布批次与冻结持仓明细未能核对，请重新读取同一报表。'),
   { status:409, code:'CUSTOMER_ANALYSIS_UNPROVEN' });
@@ -94,26 +95,54 @@ export function customerAssetMetrics(context, publishedRows) {
   });
 }
 
-export function customerAssetAnalysis({store,project,ingestion,record,artifacts,resolved}) {
-  const {report,version,run,snapshot,dataset,data}=artifacts, evidence=resolved.sourceEvidence, src=record.input.source;
-  if (src.kind!=='AGENT' || !isSyncReportEvidence(evidence)) throw unsupported();
+function checkedCustomerArchive({store,project,ingestion,resolved,actorId}) {
+  const evidence=resolved.sourceEvidence,src=resolved.source;
+  if (src?.kind!=='AGENT' || !isSyncReportEvidence(evidence)) throw unsupported();
+  if (evidence.sourceTaskId!==src.taskId || evidence.releaseId!==src.releaseId ||
+      evidence.sourceReleaseRunId!==src.batchId || evidence.packageDigest!==src.packageDigest ||
+      evidence.sourceRevisionId!==src.revisionId || evidence.sourceRunId!==src.runId) throw unproven();
   const revision = store.get('revision',src.revisionId,project), binding=revision?.syncInput;
   if (binding?.kind!==archivedSyncInputKind) throw unsupported();
   const task=store.get('offline_sync_task',binding.taskId,project);
   if (!task) throw unproven();
   if (task.sourceType!=='SERVER_MYSQL') throw unsupported();
-  if (revision.author!==record.actorId || !same(dataset.sourceEvidence,evidence) || !same(snapshot.sourceEvidence,evidence) ||
-      !same(run.sourceEvidence,evidence) || !same(resolved.rows,data.rows) || snapshot.assetId!==resolved.asset.id ||
-      snapshot.contentHash!==resolved.asset.evidenceHash || snapshot.assetVersionId!==src.batchId) throw unproven();
-  assertSyncReportWidgets(run.widgets, resolved.expected);
-
+  if (revision.author!==actorId) throw unproven();
   const archive=archivedSyncSqlInput({store,project,ingestion},binding.taskId,binding.runId);
-  const frozen=readSyncSqlInput({store,project,actorId:record.actorId,binding});
+  const frozen=readSyncSqlInput({store,project,actorId,binding});
   if (archive.sourceType!=='SERVER_MYSQL' || !same(archive.context,frozen) ||
       !same(binding,{...archive.selection,...archive.source,snapshotId:binding.snapshotId,snapshotHash:binding.snapshotHash}) ||
       evidence.snapshotHash!==binding.snapshotHash || evidence.syncRunId!==binding.runId ||
       evidence.metadataVersionId!==binding.metadataVersionId || evidence.businessDate!==frozen.businessDate) throw unproven();
   const sync=store.get('offline_sync_run',binding.runId,project);
+  return {frozen,binding,sync};
+}
+
+// Only this projection leaves the server for a planning call. Values and
+// customer-level rows are verified locally against the selected batch.
+export function customerAnalysisPlanCapability(resources) {
+  try {
+    const {frozen,binding,sync}=checkedCustomerArchive(resources);
+    customerAssetMetrics(frozen,resources.resolved.rows);
+    return {kind:customerAnalysisKind,metricIds:[...customerAnalysisMetrics],
+      dimensions:['asset_class','industry'],sourceType:'SERVER_MYSQL',
+      syncRunId:binding.runId,metadataVersionId:binding.metadataVersionId,landingReceiptHash:sync.landingReceiptHash,
+      landingSnapshotHash:binding.landingSnapshotHash,snapshotHash:binding.snapshotHash,businessDate:frozen.businessDate,
+      grain:'按顾问范围内的客户和交易日',denominator:'客户当日持仓市值，不含现金'};
+  } catch(error) {
+    if ([404,409,422].includes(error.status)) return undefined;
+    throw error;
+  }
+}
+
+export function customerAssetAnalysis({store,project,ingestion,record,artifacts,resolved}) {
+  const {report,version,run,snapshot,dataset,data}=artifacts, evidence=resolved.sourceEvidence, src=record.input.source;
+  if (src.kind!=='AGENT' || !isSyncReportEvidence(evidence)) throw unsupported();
+  if (!same(src,resolved.source)) throw unproven();
+  if (!same(dataset.sourceEvidence,evidence) || !same(snapshot.sourceEvidence,evidence) ||
+      !same(run.sourceEvidence,evidence) || !same(resolved.rows,data.rows) || snapshot.assetId!==resolved.asset.id ||
+      snapshot.contentHash!==resolved.asset.evidenceHash || snapshot.assetVersionId!==src.batchId) throw unproven();
+  assertSyncReportWidgets(run.widgets, resolved.expected);
+  const {frozen,binding,sync}=checkedCustomerArchive({store,project,ingestion,resolved,actorId:record.actorId});
   const batch=store.get('release_run',src.batchId,project);
   const body={protocol:'shuduo-customer-asset-analysis/v1',scope:'LOCAL_TEST_ONLY',readOnly:true,
     report:{requestId:record.requestId,reportId:report.id,versionId:version.id,runId:run.id,
