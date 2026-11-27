@@ -1,10 +1,12 @@
-import {useEffect,useState} from 'react';
+import {lazy,Suspense,useEffect,useState} from 'react';
 import {ArrowRight,FileCode2,RefreshCw} from 'lucide-react';
 import {readInvitedSqlContext,type InvitedSqlContextReceipt} from '../../src/v2/invited-sql-context-client.mjs';
 import {invitedEditorLocation,invitedEditorSource,invitedTaskSelection,type InvitedTaskSelection} from './invited-task-location';
+import type {InvitedStartWindow} from './invited-chat-start';
 import './invited-task-chat.css';
 
-type Props={api:<T>(path:string)=>Promise<T>;authenticated:boolean;observeDevelopment?:boolean;onLogin:()=>void;onEditor:(href:string)=>void};
+const InvitedTaskDelivery=lazy(()=>import('./InvitedTaskDelivery'));
+type Props={api:<T>(path:string,body?:unknown,options?:{idempotencyKey?:string})=>Promise<T>;authenticated:boolean;start?:InvitedStartWindow;observeDevelopment?:boolean;onLogin:()=>void;onEditor:(href:string)=>void};
 const labels:Record<string,string>={SUCCEEDED:'成功',FAILED:'失败',CANCELLED:'已取消',INTERRUPTED:'已中断',VALIDATION_FAILED:'断言未通过',
   RUNNING:'运行中',QUEUED:'已排队',PENDING:'等待记录',PASSED:'通过',UNCONFIRMED:'待核对'};
 const stages: Record<string,string> = {
@@ -52,7 +54,7 @@ export function InvitedTaskEvidence({value}:{value:InvitedSqlContextReceipt}){
   </>;
 }
 
-export default function InvitedTaskChat({api,authenticated,observeDevelopment=false,onLogin,onEditor}:Props){
+export default function InvitedTaskChat({api,authenticated,start,observeDevelopment=false,onLogin,onEditor}:Props){
   const selection=invitedTaskSelection(location.href),pin=invitedEditorSource(location.href);
   const taskId=selection?.taskId,requestId=selection?.requestId;
   const [attempt,setAttempt]=useState(0);
@@ -110,6 +112,12 @@ export default function InvitedTaskChat({api,authenticated,observeDevelopment=fa
         {!current?<p role="status">正在读取原任务…</p>:('error' in current?<p role="alert">原任务暂不可用。{current.error}</p>:<InvitedTaskEvidence value={current.value}/>)}
         {current&&'value' in current&&current.background&&<p role="status">{backgroundLabels[current.background]}</p>}
         {value&&value.evidenceState!=='UNCONFIRMED'&&<button className="button primary" onClick={()=>returnToEditor(selection,value)}>{changed?'打开当前版本编辑器':'返回原任务编辑器'}<ArrowRight size={14}/></button>}
+        {!changed&&value?.taskStatus==='SUCCEEDED'&&value.revision&&value.run&&start?.deliverySupported&&
+          <Suspense fallback={<p role="status">正在打开交付文件…</p>}><InvitedTaskDelivery
+            key={[value.taskId,value.requestId,value.revision.id,value.revision.hash,value.run.id].join(':')} api={api}
+            source={{...selection,contextId:value.contextId,revisionId:value.revision.id,revisionHash:value.revision.hash,runId:value.run.id}}
+            verified={value.evidenceSource==='STORED_METADATA'&&value.run.validation.state==='PASSED'}
+            testSource={value.evidenceSource==='TEST_HARNESS'} access={start}/></Suspense>}
       </>}
   </section>;
 }

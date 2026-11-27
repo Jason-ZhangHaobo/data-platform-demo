@@ -1,5 +1,21 @@
 # Agent开发、核验与交付
 
+## 从受邀任务交付调度和部署文件
+
+在「Agent 对话」打开本人已完成的 SQL 任务，核对任务、SQL 版本与开发运行。若已有同版交付，直接查看调度依赖、部署清单、加工 SQL 和测试 SQL，并可下载单个文件或完整交付包。界面逐一核对文件内容与包摘要。版本或来源不一致时保留原记录并提示核对。
+
+新交付需在有效受邀开发窗口内由创建者发起，并以已核验的原执行作为来源。生成八份文件后，工程师可以先读文件，再点击「委托一次 Spark 文件演练」。演练单独占用执行额度，按原包执行加工和测试 SQL。原请求的应答丢失时，重开同一链接查询交付或演练。关窗后可以回看原文件和已保存结果。用测试模型生成的开发记录可供查看，其来源限制仍然生效。
+
+CLI 可直接按开发任务及运行取回交付。导出时使用已核对的包摘要和新的文件路径。以下命令在项目根目录运行，最后一步使用调度文件约定的实际执行时间。
+
+```sh
+node bin/shuduo.mjs agent invited-task-delivery --id TASK_ID --revision-id REVISION_ID --revision-hash SQL_SHA256 --run-id RUN_ID --delivery-id DELIVERY_ID --download-digest PACKAGE_SHA256 --out-file delivery.json
+node bin/shuduo-package.mjs unpack delivery.json --output delivery-files --digest PACKAGE_SHA256
+node bin/shuduo-package.mjs plan delivery-files --digest PACKAGE_SHA256 --scheduled-for SCHEDULED_TIME
+```
+
+只读查看时省略下载参数。MCP 对应工具为 `agent_invited_task_delivery`。文件演练状态、成功证据和测试发布分别核验。
+
 ## 在受邀对话提交开发需求
 
 从「Agent 对话」进入「新任务」，选择业务口径，读清范围后输入希望加工的结果。点击「提交后台开发」，原生 SQL Agent 会在已开放的开发窗口内接收这条需求。随后在同一个对话查看任务阶段、SQL 版本和 Spark 断言，需要接管代码时可返回该版本的编辑器。

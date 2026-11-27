@@ -25,6 +25,7 @@ export type Workflow = {
  calendarPreparation?:{scope:"LOCAL_NATIVE_SQL";source:CalendarSource;businessDate:string};
  preparationSource?:PreparationSource;
  eventDrivenRehearsal?:true;
+ invitedRehearsalEvidence?:'VERIFIED'|'FAILED'|'PENDING'|'UNCONFIRMED';
  backgroundRehearsalAvailable?:true;
  fileReview?:FileReview;
  report:{developmentReference?:AssistedDevelopmentReference;taskId:string;sourceKind?:string;agentIndependentE2E?:boolean;contextId?:string;validationContractId?:string;validationDetails?:ValidationDetailsReport;status:string;summary:string;definition?:string;checks:{id:string;label:string;passed:boolean}[];revisionId?:string;revisionHash?:string;runId?:string;rowCount:number;engine?:string;engineVersion?:string;notice:string};
@@ -210,6 +211,12 @@ export async function checkedAgentWorkflow(value:unknown,selection:WorkflowSelec
   }
  }
  if(record(d)&&(d.packageId!==undefined&&b===undefined||d.verificationId!==undefined&&v===undefined||d.status==='SUCCEEDED'&&(b===undefined||v===undefined)))throw bad();
+ const rehearsalEvidence=value.invitedRehearsalEvidence;
+ if(rehearsalEvidence!==undefined && (p.scope!=='PRIVATE_CLOUD_TEST'||!record(v)||!record(d)||
+   !['VERIFIED','FAILED','PENDING','UNCONFIRMED'].includes(String(rehearsalEvidence))||
+   rehearsalEvidence==='VERIFIED'&&(v.status!=='SUCCEEDED'||d.status!=='SUCCEEDED'||v.mainSqlExecuted!==true||
+     !record(v.testSqlValidation)||v.testSqlValidation.passed!==true||!record(v.validation)||v.validation.passed!==true)||
+   rehearsalEvidence==='FAILED'&&v.status!=='FAILED'))throw bad();
  if(v!==undefined){
   if(!record(v)||!record(d)||!record(b)||!id(v.id)||v.id!==d.verificationId||!['QUEUED','RUNNING','SUCCEEDED','FAILED','CANCELLED','INTERRUPTED'].includes(String(v.status))||
    !['engine','engineVersion','error'].every(k=>optional(v[k],text))||!optional(v.mainSqlExecuted,x=>typeof x==='boolean')||!optional(v.durationMs,x=>typeof x==='number'&&Number.isFinite(x)&&x>=0)||

@@ -1,6 +1,6 @@
 import {validationFamilyForContext} from './context.mjs';
 import {validStoredAgentDerivation} from './agent-context-derivation.mjs';
-import {verifiedStoredCloudDevelopment} from './agent-development-workflow.mjs';
+import {durableDeliveryMode,verifiedStoredCloudDevelopment} from './agent-development-workflow.mjs';
 import {storedExecutionStages,checkedLiveExecutionProjection} from './live-lifecycle-execution.mjs';
 
 const taskStatuses=new Set(['QUEUED','RUNNING','SUCCEEDED','FAILED','INTERRUPTED','CANCELLED','VALIDATION_FAILED']);
@@ -14,6 +14,45 @@ const missing=()=>Object.assign(Error('没有找到本人在当前项目的原�
 export function supportsInvitedSqlContext(task) {
   return task?.executionMode==='DURABLE_SQL_AGENT_V1' && task.language==='SPARK_SQL' && task.mode==='LIVE_MODEL' &&
     [undefined,'AGENT'].includes(task.sourceKind) && !task.manualProvenance && !task.sourceAttribution && !task.syncInput;
+}
+
+export function savedInvitedTaskDelivery({store,project,actorId,selection}) {
+  const {taskId,revisionId,revisionHash,runId,deliveryId}=selection;
+  const context=invitedTaskContext({store,project,actorId,taskId});
+  const changed=()=>Object.assign(Error('原任务的版本、批次或所选交付已变化，请重新核对原任务'),{status:409,code:'INVITED_DELIVERY_SOURCE_CHANGED'});
+  if (context.revision?.id!==revisionId || context.revision.hash!==revisionHash || context.run?.id!==runId)
+    throw changed();
+  const matching=store.list('agent_delivery_task',project).filter(d=>d.sourceAgentTaskId===taskId &&
+    d.sourceRevisionId===revisionId && d.sourceRunId===runId && (!deliveryId || d.id===deliveryId));
+  if(matching.length>1 || (deliveryId && matching.length!==1))throw changed();
+  const [delivery]=matching;
+  if(delivery && (delivery.projectId!==project || delivery.submittedBy!==actorId ||
+    delivery.mode!==durableDeliveryMode || ![undefined,'AGENT'].includes(delivery.sourceKind) ||
+    delivery.sourceSqlHash!==revisionHash))throw changed();
+  return {context,delivery};
+}
+
+export function invitedDeliveryRecord(delivery) {
+  const fields=['id','version','mode','status','stage','sourceAgentTaskId','sourceRevisionId','sourceSqlHash','sourceRunId',
+    'sourcePinned','rehearsalPinned','packageId','packageDigest','verificationId'];
+  return Object.fromEntries(fields.filter(k=>delivery[k]!==undefined).map(k=>[k,delivery[k]]));
+}
+
+export function invitedRehearsalChecks(verification,contextId) {
+  const {testSqlValidation,validation}=verification;
+  const regressions=validation?.regressions;
+  if(regressions!==undefined){
+    const family=validationFamilyForContext(contextId);
+    if(!Array.isArray(regressions) || !family || regressions.some(row=>!family.contextIds.includes(row?.contextId) || typeof row.passed!=='boolean') ||
+      new Set(regressions.map(row=>row.contextId)).size!==regressions.length)
+      throw Object.assign(Error('原演练的回归记录不属于当前业务口径'),{status:409});
+  }
+  return {
+    ...(typeof testSqlValidation?.passed==='boolean' ? {testSqlValidation:{passed:testSqlValidation.passed,
+      ...(/^[a-f0-9]{64}$/.test(testSqlValidation.sqlHash??'')?{sqlHash:testSqlValidation.sqlHash}:{})}} : {}),
+    ...(typeof validation?.passed==='boolean' ? {validation:{passed:validation.passed,
+      ...(regressions?{regressions:regressions.map(({contextId,passed})=>({contextId,passed}))}:{})}} : {}),
+  };
 }
 
 // This read deliberately does not call the development run endpoint: that path

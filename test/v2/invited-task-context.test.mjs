@@ -7,6 +7,8 @@ import {randomUUID} from 'node:crypto';
 import {MetadataStore} from '../../src/v2/store.mjs';
 import {createV2Server,PROJECT} from '../../src/v2/server.mjs';
 import {createFcIngress} from '../../src/v2/fc-ingress.mjs';
+import {createDeliveryPackage} from '../../src/v2/delivery.mjs';
+import {invitedTaskDeliveryPath,invitedTaskDeliveryRequestId} from '../../src/v2/invited-task-delivery.mjs';
 import {seedContextDerivation} from './fixtures/agent-context-derivation.mjs';
 
 // Persisted fictional rows exercise both FC modes. No Worker or provider is
@@ -54,7 +56,7 @@ async function fixture(t,readOnly) {
     const key=randomUUID();store.deduplicate(PROJECT+':durable-agent:'+owner.id+':'+key,'fixture',()=>task);
     return {...f,task,run,key,path:'/agent/tasks/'+task.id+'/chat-context'};
   }
-  return {store,owner,call,seed,cookie:logged.cookie,other:other.cookie,effects};
+  return {store,owner,call,seed,cookie:logged.cookie,csrf:logged.body.csrfToken,other:other.cookie,effects};
 }
 
 for(const [label,readOnly] of [['FC read-only',true],['development-only FC',false]]){
@@ -110,6 +112,86 @@ test('the invited creator can reopen the single task that already occupies the a
   f.seed('stock-cash-t1');
   assert.equal((await session(f.cookie)).developmentWindowTaskId,undefined);
   assert.deepEqual(f.effects,[]);
+});
+
+for(const readOnly of [false,true])test('original invited delivery is version-bound and passive, readOnly='+readOnly,async t=>{
+  const f=await fixture(t,readOnly),a=f.seed('cash-change'),b=f.seed('holdings-t1');
+  const selection={taskId:a.task.id,revisionId:a.revision.id,revisionHash:a.revision.hash,runId:a.run.id};
+  const path=invitedTaskDeliveryPath(selection),requestId=await invitedTaskDeliveryRequestId(selection);
+  const read=async()=>f.call(path,f.cookie);
+  const initial=await read();
+  assert.equal(initial.status,200);
+  assert.equal(initial.body.report.status,'PASSED');
+  assert.equal(initial.body.report.revisionHash,a.revision.hash);
+  assert.equal(initial.body.delivery,undefined);
+  assert.equal(initial.body.publication.available,false);
+  assert.equal(Boolean(initial.body.preparationSource),!readOnly);
+  assert.equal((await f.call(path)).status,401);
+  assert.equal((await f.call(path,f.other)).status,404);
+  assert.equal((await f.call(path+'&revisionHash='+a.revision.hash,f.cookie)).status,422);
+  assert.equal((await f.call(path+'&taskId='+a.task.id,f.cookie)).status,422);
+  assert.equal((await f.call(invitedTaskDeliveryPath({...selection,runId:b.run.id}),f.cookie)).status,409);
+  assert.equal((await f.call(path+'&deliveryId='+randomUUID(),f.cookie)).status,409);
+  assert.deepEqual(f.effects,[]);
+  assert.equal(await invitedTaskDeliveryRequestId({...selection,deliveryId:randomUUID()}),requestId);
+  assert.notEqual(await invitedTaskDeliveryRequestId({...selection,runId:b.run.id}),requestId);
+  const prep='/agent/tasks/'+a.task.id+'/prepare-delivery';
+  const headers={'x-csrf-token':f.csrf,'idempotency-key':requestId};
+  f.store.update('run',a.run.id,PROJECT,{testDouble:true});
+  const unconfirmed=await read();
+  assert.equal(unconfirmed.body.report.status,'NEEDS_ATTENTION');
+  assert.equal(unconfirmed.body.preparationSource,undefined);
+  const body={expectedSource:{revisionId:a.revision.id,revisionHash:a.revision.hash,runId:a.run.id}};
+  assert.notEqual((await f.call(prep,f.cookie,body,headers)).status,202);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,0);
+  f.store.update('run',a.run.id,PROJECT,{testDouble:false});
+  if(readOnly){
+    const bundle=createDeliveryPackage({agent:a.task,run:a.run,revision:a.revision});
+    const old=f.store.create('agent_delivery_task',PROJECT,{mode:'DURABLE_AGENT_DELIVERY_V1',sourceAgentTaskId:a.task.id,
+      sourceRunId:a.run.id,sourceRevisionId:a.revision.id,sourceSqlHash:a.revision.hash,submittedBy:f.owner.id,
+      status:'QUEUED',stage:'PACKAGE_READY',sourcePinned:true,packageDigest:bundle.digest});
+    const pkg=f.store.create('delivery_package',PROJECT,{...bundle,agentDeliveryTaskId:old.id,sourceRunId:a.run.id});
+    f.store.update('agent_delivery_task',old.id,PROJECT,{packageId:pkg.id});
+    const archived=await read();
+    assert.equal(archived.status,200);
+    assert.equal(archived.body.delivery.id,old.id);
+    assert.equal(archived.body.package.digest,bundle.digest);
+    assert.deepEqual(archived.body.package.files,bundle.files);
+    assert.equal(archived.body.preparationSource,undefined);
+    assert.equal(archived.body.backgroundRehearsalAvailable,undefined);
+    assert.equal(archived.body.invitedRehearsalEvidence,undefined);
+    assert.deepEqual(f.effects,[]);
+    return;
+  }
+  const first=await f.call(prep,f.cookie,body,headers);
+  assert.equal(first.status,202);
+  assert.equal(first.body.stage,'PACKAGE_READY');
+  assert.equal((await f.call(prep,f.cookie,body,headers)).body.id,first.body.id);
+  const exact=await f.call(invitedTaskDeliveryPath({...selection,deliveryId:first.body.id}),f.cookie);
+  assert.equal(exact.status,200);
+  assert.equal(exact.body.delivery.id,first.body.id);
+  assert.equal(Object.keys(exact.body.package.files).length,8);
+  assert.equal(exact.body.verification,undefined);
+  assert.equal(f.store.list('agent_delivery_task',PROJECT).length,1);
+  assert.deepEqual(f.effects,[]);
+  // Even an older unpinned package with a pending job must be a passive
+  // receipt in chat. Its stored outcome cannot attest a signed Worker result.
+  const verification=f.store.create('delivery_verification',PROJECT,{agentDeliveryTaskId:first.body.id,
+    packageId:exact.body.package.id,packageDigest:exact.body.package.digest,mode:'CLOUD_ISOLATED_FILE_REHEARSAL',
+    status:'RUNNING',engine:'Apache Spark',engineVersion:'3.5.9',reservedDurationMs:30000});
+  f.store.update('agent_delivery_task',first.body.id,PROJECT,{sourcePinned:false,verificationId:verification.id,
+    status:'RUNNING',stage:'WAITING_FOR_REHEARSAL',remoteSubmission:{prepared:{job:{jobId:verification.id}},submitted:true}});
+  const before=f.store.get('agent_delivery_task',first.body.id,PROJECT);
+  assert.equal((await read()).body.invitedRehearsalEvidence,'PENDING');
+  assert.deepEqual(f.store.get('agent_delivery_task',first.body.id,PROJECT),before);
+  f.store.update('delivery_verification',verification.id,PROJECT,{status:'SUCCEEDED',mainSqlExecuted:true,error:'SYNTHETIC_PRIVATE_ERROR',
+    testSqlValidation:{passed:true,privateData:'SYNTHETIC_PRIVATE_TEST'},validation:{passed:true,privateData:'SYNTHETIC_PRIVATE_VALIDATION'}});
+  const historical=(await read()).body;
+  assert.equal(historical.invitedRehearsalEvidence,'UNCONFIRMED');
+  assert.doesNotMatch(JSON.stringify(historical),/SYNTHETIC_PRIVATE_/);
+  assert.deepEqual(f.effects,[]);
+  f.store.update('delivery_package',first.body.packageId,PROJECT,{files:{...exact.body.package.files,'main.sql':'SELECT 99'}});
+  assert.notEqual((await read()).status,200);
 });
 
 test('unlinked, ambiguous and failed runs remain distinct; a mismatched revision cannot supply any SQL',async t=>{
