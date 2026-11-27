@@ -2,8 +2,8 @@
 set -euo pipefail
 umask 077
 
-if [[ $# != 1 || ! -d "$1" || -z "${JAVA_HOME:-}" ]]; then
-  echo "Usage: JAVA_HOME=/path/to/jdk17 bash scripts/realtime-lab/run.sh EXISTING_PRIVATE_DIRECTORY" >&2
+if [[ $# -lt 1 || $# -gt 2 || ! -d "$1" || -z "${JAVA_HOME:-}" || (${2:-} != "" && ${2:-} != "--checkpoint-crash") ]]; then
+  echo "Usage: JAVA_HOME=/path/to/jdk17 bash scripts/realtime-lab/run.sh EXISTING_PRIVATE_DIRECTORY [--checkpoint-crash]" >&2
   exit 2
 fi
 
@@ -28,6 +28,6 @@ classpath=$(cat "$work/classpath.txt")
   "$repo/scripts/realtime-lab/src/main/java/cn/shuduo/lab/QuoteReplay.java"
 
 "$JAVA_HOME/bin/java" -Xmx1024m -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
-  -cp "$work/classes:$classpath" cn.shuduo.lab.QuoteReplay "$repo" "$work/run" > "$work/engine.log" 2>&1
+  -cp "$work/classes:$classpath" cn.shuduo.lab.QuoteReplay "$repo" "$work/run" "${@:2}" > "$work/engine.log" 2>&1
 
 cat "$work/run/evidence.json"

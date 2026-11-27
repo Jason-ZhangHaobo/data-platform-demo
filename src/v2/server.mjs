@@ -2910,6 +2910,7 @@ export function createV2Server(options = {}) {
                 jobId: job.id,
                 sourceRevisionId: job.sourceRevisionId,
                 action: "start",
+                ...(job.checkpointCrashEnabled ? {checkpointCrash:true} : {}),
               }),
             );
           return json(

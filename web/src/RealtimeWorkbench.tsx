@@ -71,6 +71,7 @@ type Checkpoint = {
   watermark: string;
   stateHash: string;
   flinkJobId?: string;
+  checkpointId?: number;
 };
 type StreamAlert = {
   id: string;
@@ -103,6 +104,7 @@ type StreamJob = {
   alerts: StreamAlert[];
   sourceTopic?: string;
   lastRunId?: string;
+  checkpointCrashEnabled?: boolean;
   engineEvidence?: {
     runId: string;
     kafkaVersion: string;
@@ -110,6 +112,12 @@ type StreamJob = {
     inputEvents: number;
     committedUpdatesBefore: number;
     committedUpdatesAfter: number;
+    checkpointRecovery?: {
+      checkpointId: number;
+      restoredCheckpointId: number;
+      inputOffsetBeforeExit: number;
+      exitCode: number;
+    };
   };
 };
 type RealtimePlan = {
@@ -170,6 +178,7 @@ const jobLabel = (job: StreamJob) => isKafkaFlink(job) && job.status === "CAUGHT
 
 function KafkaFlinkJobEvidence({job}:{job:StreamJob}) {
   const evidence = job.engineEvidence;
+  const checkpointRecovery = evidence?.checkpointRecovery;
   return <>
     {evidence ? <>
       {evidence.runId !== job.lastRunId && <p>下方为上一次通过核验的结果。</p>}
@@ -184,14 +193,17 @@ function KafkaFlinkJobEvidence({job}:{job:StreamJob}) {
       <div className="stream-evidence-grid">
         <StreamQuoteTable state={job.state}/>
         <section>
-          <header><h4>Flink 保存点</h4><span>{job.checkpoints.length} 个</span></header>
+          <header><h4>{checkpointRecovery ? "Flink 恢复记录" : "Flink 保存点"}</h4><span>{job.checkpoints.length} 个</span></header>
           <div className="stream-checkpoints">{job.checkpoints.map((item,index) =>
             <article key={item.id}><Clock3 size={14}/><div>
-              <strong>{index === 0 ? "原作业" : "恢复后作业"}</strong>
+              <strong>{item.checkpointId ? `恢复自检查点 #${item.checkpointId}` :
+                index === 0 ? "原作业" : "恢复后作业保存点"}</strong>
               <code title={item.flinkJobId}>{item.flinkJobId?.slice(0,12)} · SHA-256 {item.stateHash.slice(0,12)}</code>
             </div></article>)}</div>
         </section>
       </div>
+      {checkpointRecovery && <p>原 Flink 进程退出码 {checkpointRecovery.exitCode}。退出前 Kafka 已接收偏移
+        {checkpointRecovery.inputOffsetBeforeExit}，恢复后只提交了一次对应更新。</p>}
     </> : <div className="ingestion-empty"><Activity size={25}/><p>
       {isRunning(job.status) ? "正在写入 Kafka、运行 Flink 并核对保存点恢复。" :
         "启动后将显示 Kafka 的实际提交记录、两份 Flink 保存点和最新行情。"}
@@ -460,7 +472,7 @@ export function RealtimeWorkbench({
         </aside>
         <section className={isKafkaFlink(selectedJob) ? "stream-job-detail kafka-flink-detail" : "stream-job-detail"}>
           {selectedJob ? <>
-            <header><div><h3>{selectedJob.name}</h3><p>{selectedJob.sourceTopic ?? selectedSource?.topic} → {selectedJob.targetTable}</p></div><div className="stream-actions"><button className="button primary" onClick={start} disabled={!canWrite || !!busy || isRunning(selectedJob.status) || (!isKafkaFlink(selectedJob) && ["FAILED", "INTERRUPTED"].includes(selectedJob.status))}>{busy === "start" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{isKafkaFlink(selectedJob) ? "启动本机验收" : "启动"}</button><button className="button" onClick={stop} disabled={!canWrite || !!busy || !isRunning(selectedJob.status)}><Square size={14} />停止</button></div></header>
+            <header><div><h3>{selectedJob.name}</h3><p>{selectedJob.sourceTopic ?? selectedSource?.topic} → {selectedJob.targetTable}</p></div><div className="stream-actions"><button className="button primary" onClick={start} disabled={!canWrite || !!busy || isRunning(selectedJob.status) || (!isKafkaFlink(selectedJob) && ["FAILED", "INTERRUPTED"].includes(selectedJob.status))}>{busy === "start" ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{selectedJob.checkpointCrashEnabled ? "启动异常恢复验收" : isKafkaFlink(selectedJob) ? "启动本机验收" : "启动"}</button><button className="button" onClick={stop} disabled={!canWrite || !!busy || !isRunning(selectedJob.status)}><Square size={14} />停止</button></div></header>
             {isKafkaFlink(selectedJob) ? <KafkaFlinkJobEvidence job={selectedJob}/> : <>
             <div className="stream-proof-grid"><div><span>状态</span><strong>{labels[selectedJob.status] ?? selectedJob.status}</strong></div><div><span>唯一事件</span><strong>{compact(selectedJob.processedEventCount)}</strong></div><div><span>重复事件</span><strong>{compact(selectedJob.duplicateCount)}</strong></div><div><span>Checkpoint</span><strong>{selectedJob.checkpoints.length}</strong></div><div><span>延迟</span><strong>{compact(selectedJob.lagMs)} ms</strong></div><div><span>吞吐</span><strong>{compact(selectedJob.throughputPerSecond)}/s</strong></div></div>
             {["FAILED", "INTERRUPTED"].includes(selectedJob.status) && <div className="stream-recovery"><AlertTriangle size={18} /><div><strong>恢复必须保留Checkpoint前缀</strong><p>先登记修正事件日志，再由后端比较已处理前缀；不一致时拒绝跳过。</p></div><button className="button" onClick={createRecoveryRevision} disabled={!canWrite || !!busy || latestRevision?.fileName === "quotes_recovered.jsonl"}><RefreshCw size={14} />登记修正版本</button><button className="button primary" onClick={recover} disabled={!canWrite || !!busy || latestRevision?.fileName !== "quotes_recovered.jsonl"}><RotateCcw size={14} />从Checkpoint恢复</button></div>}
