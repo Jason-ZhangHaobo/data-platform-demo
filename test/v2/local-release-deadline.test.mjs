@@ -48,6 +48,23 @@ test("an early timer keeps the batch scheduled and executes exactly once at its 
   assert.deepEqual(f.calls, [1010]); assert.equal(f.store.list("monitor_event", f.project).length, 1);
 });
 
+test("a restarted local timer recovers two overdue saved batches in their original scheduled order",async t=>{
+  const f=fixture(t);
+  const first=f.store.update("release_run",f.run.id,f.project,{sequence:1});
+  const second=f.store.create("release_run",f.project,{releaseId:f.release.id,packageId:first.packageId,packageDigest:first.packageDigest,
+    sequence:2,status:"SCHEDULED",scheduledTriggerAt:new Date(1040).toISOString(),schedulerTriggered:false});
+  f.time(5000);
+  f.scheduler.start();
+  assert.deepEqual(f.timers.map(timer=>timer.delay),[0,0]);
+  f.timers[0].callback();await f.scheduler.waitForIdle();
+  assert.equal(f.current().status,"SUCCEEDED");
+  assert.equal(f.store.get("release_run",second.id,f.project).status,"SCHEDULED");
+  f.timers[1].callback();await f.scheduler.waitForIdle();
+  f.scheduler.start();
+  assert.equal(f.store.get("release_run",second.id,f.project).status,"SUCCEEDED");
+  assert.equal(f.calls.length,2);assert.equal(f.timers.length,2);
+});
+
 test("cancelling a rearmed or already queued batch cannot start it or recreate a timer", async t => {
   for (const queued of [false, true]) {
     const f = fixture(t); f.scheduler.schedule(f.run);

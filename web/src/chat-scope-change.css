@@ -56,3 +56,31 @@
   .chat-change-delivery .delivery-file-content {padding:8px}
   .chat-change-delivery .agent-delivery-file {font-size:10px;max-height:240px;white-space:pre;overflow:auto}
 }
+
+.chat-change-publication {display:grid;gap:10px;min-width:0;border-top:1px solid #d8e1d7;padding-top:14px}
+.chat-change-publication>header,.chat-release-monitor>header,.chat-release-batches li>div {display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px 12px}
+.chat-change-publication>header span,.chat-release-monitor>header small {font-size:12px;color:#536659}
+.chat-release-review {min-width:0;display:grid;gap:10px;margin:0;padding:12px;border:1px solid #b7cbbd;border-radius:7px}
+.chat-release-review legend {padding:0 5px;font-weight:650;font-size:14px}
+.chat-release-review label {display:flex;align-items:baseline;gap:7px;font-weight:500}
+.chat-release-review input {flex:none;accent-color:#235d45}
+.chat-release-identifiers,.chat-release-batches dl {min-width:0;display:grid;gap:4px 12px}
+.chat-release-identifiers>div,.chat-release-batches dl>div {display:grid;grid-template-columns:6rem minmax(0,1fr);gap:8px}
+.chat-release-identifiers dt,.chat-release-batches dt {color:#586b5c}
+.chat-release-identifiers code {white-space:normal;overflow-wrap:anywhere;font-size:12px}
+.chat-release-monitor {display:grid;gap:10px}
+.chat-release-batches {list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:8px;padding:0;margin:0;min-width:0}
+.chat-release-batches li {min-width:0;display:grid;align-content:start;gap:8px;border:1px solid #d5dfd5;border-radius:7px;padding:10px;background:#fbfcfa}
+.chat-release-batches li>div span {font-size:12px;color:#526857}
+.chat-release-batches li[data-status="SUCCEEDED"]>div span,.chat-release-batches li[data-status="SUCCEEDED"] dd {color:#225a3e}
+.chat-release-batches li[data-status="FAILED"]>div span,.chat-release-batches li[data-status="UNKNOWN"]>div span {color:#924127}
+.chat-release-monitor summary {cursor:pointer;font-size:13px;color:#335344}
+.chat-release-monitor details[open] {display:grid;gap:8px}
+.chat-release-events {list-style:none;margin:0;padding:0;display:grid;gap:3px}
+.chat-release-events li {display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px 10px;font-size:12px}
+.chat-release-events time {color:#586b5c}
+@media(max-width:600px){
+  .chat-release-review {padding:8px}
+  .chat-release-identifiers>div {grid-template-columns:1fr;gap:1px}
+  .chat-release-batches dl>div {grid-template-columns:5.8rem minmax(0,1fr);gap:4px}
+}

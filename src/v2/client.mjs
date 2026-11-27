@@ -57,6 +57,8 @@ export const V2_OPERATIONS = Object.freeze([
   "agent_chat_sql_development",
   "agent_chat_scope_changes",
   "agent_chat_change_delivery",
+  "agent_chat_change_publication",
+  "agent_publish_chat_change",
   "agent_prepare_chat_change_delivery",
   "agent_change_chat_scope",
   "agent_intent_cancel",

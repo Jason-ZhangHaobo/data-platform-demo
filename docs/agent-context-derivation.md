@@ -55,6 +55,33 @@ node bin/shuduo-package.mjs unpack shuduo-delivery-package.json --output selecte
 node bin/shuduo-package.mjs plan selected-delivery --digest PACKAGE_DIGEST --scheduled-for 2026-09-11T09:00:00+08:00
 ```
 
+### 审阅派生版本并查看两批测试
+
+文件演练通过后，在同一变更的发布区打开版本审阅。核对所选子任务的代码版本、开发批次、包摘要、文件演练和业务日期，分别确认代码、独立断言、调度部署文件和本机测试范围。四项默认留空。明确提交后，平台在一次事务中记录审阅、批准、发布及两条计划批次。重复提交只查回原发布。
+
+测试使用同一冻结业务日的虚构持仓结果。默认本机调度器在发布后 5 秒触发第一批，在其计划触发时间的 30 秒后触发第二批。界面分别显示计划和实际时间。浏览器可以关闭，本机调度服务需要保持运行。重新打开时，可按原包和运行编号查看每批的测试 SQL、断言、行数、资产合计、完成事件和开放告警。只有两次实际执行及相应监控证据都通过时，界面才显示“两批运行与监控已核验”。
+
+CLI 先读取原会话的发布预检，保存到文件供工程师审阅。
+
+```sh
+shuduo agent chat-publication --id INTENT_ID --change-request-id CHANGE_ID > reviewed-publication.json
+```
+
+工程师核对文件并同意其中的测试范围后，可以提交该预检。CLI 会再次核对服务端的原版本与审阅摘要。提交应答丢失时，读取同一原请求可找回两批，刷新不会重发批准。
+
+```sh
+shuduo agent publish-chat-change --review-file reviewed-publication.json \
+  --attest-code --attest-assertions --attest-delivery-files --attest-local-scope --confirm
+```
+
+MCP 对应 `agent_chat_change_publication` 和 `agent_publish_chat_change`。本机验收由虚构工程师在隔离浏览器明确勾选并提交一次，关闭浏览器后两批分别执行真实 Spark 3.5.9，各有两行、合计 2,250 元及五项通过的断言。此结果属于本机测试发布，公网业务验收单独记录。
+
+### 从同一发布的两批结果查询客户资产
+
+在隔离本机验收中，每批的持仓 DAPI 返回客户、持仓市值及证券数，现金 DAPI 返回现金与口径内资产，组合 XAPI 固定这两个 DAPI 的版本。通过两套独立的短期调用应用，用回环 HTTP 分页核对两批已发布的结果。每个应用仅获持仓 DAPI 和本批组合 XAPI 的服务授权，能通过组合接口取回现金，直接请求未授权的现金 DAPI 则得到 403。
+
+服务端为两个应用各设置 300 秒有效期。每批实际发出 15 个请求，覆盖金额、两页数据、无效参数、缺少或无效凭证、授权、限流和撤销后拒绝。六个接口版本均在调用记录中按批次核对。两个应用均已撤销，活动应用数为零。此用例证明测试期间实际调用的版本和结果，未验证普通应用在服务换版后的版本授权行为。
+
 ### 从已知开发版本创建派生任务
 
 沿用 `POST /api/v2/agent/tasks`，新增可选来源对象：

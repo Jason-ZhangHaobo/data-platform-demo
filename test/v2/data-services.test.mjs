@@ -436,3 +436,36 @@ test("data-service model adapter sends only governed resource summaries", async 
   assert.equal(generated.explanation, "绑定真实发布批次");
   assert.equal("explanation" in generated.plan, false);
 });
+
+test("relative application lifetimes respect issuer bounds and stop at the expiry instant", async () => {
+  const start = Date.now();
+  let now = start;
+  const app = setup({ now: () => now });
+  try {
+    const service = await publishedDapi(app.manager, app.releaseRun, {
+      name: "短期持仓查询", slug: "expiring-assets", fields: ["client_id", "total_assets"],
+    });
+    const grant = {name: "短期读取应用", serviceIds: [service.id]};
+    for (const ttlSeconds of [null, "300", 0, -3, 0.5, 3601, Infinity]) {
+      assert.throws(() => app.manager.createApplication({...grant, ttlSeconds}), {code: "APPLICATION_TTL_INVALID"});
+    }
+    assert.equal(app.manager.listApplications().length, 0);
+    const expiry = offset => new Date(start + offset).toISOString();
+    assert.throws(() => app.manager.createApplication({...grant, ttlSeconds: 60}, {expiresAt: expiry(-1)}), {code:"APPLICATION_EXPIRY_INVALID"});
+    assert.equal(app.manager.createApplication(grant).application.expiresAt, undefined);
+    assert.equal(app.manager.createApplication({...grant, ttlSeconds: 3600}).application.expiresAt, expiry(3600000));
+    assert.equal(app.manager.createApplication({...grant, ttlSeconds: 300}, {expiresAt: expiry(60000)}).application.expiresAt, expiry(60000));
+    const issued = app.manager.createApplication({...grant, ttlSeconds: 1}, {expiresAt: expiry(10000)});
+    assert.equal(issued.application.expiresAt, expiry(1000));
+    const invoke = () => app.manager.invoke("DAPI", service.slug, "Bearer " + issued.token, {});
+    now = start + 999;
+    assert.ok((await invoke()).data.length > 0);
+    now = start + 1000;
+    await assert.rejects(invoke(), {code: "TOKEN_EXPIRED", status: 401});
+    assert.equal(app.manager.application(issued.application.id).status, "EXPIRED");
+    assert.equal(app.manager.revokeApplication(issued.application.id).status, "REVOKED");
+    await assert.rejects(invoke(), {code: "TOKEN_INVALID", status: 401});
+  } finally {
+    app.close();
+  }
+});

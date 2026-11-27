@@ -35,6 +35,7 @@ import{submitServiceGateWrite,lookupServiceGateWrite}from'../src/v2/service-cont
 import{publishedReportSourceSchema,publishedReportMetricIds}from'../src/v2/published-report-request.mjs';
 import {createContextDerivedTask,readChatScopeChanges,submitChatScopeChange} from "../src/v2/agent-derivation-client.mjs";
 import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-change-delivery-client.mjs";
+import {readChatChangePublication,publishChatChange} from "../src/v2/chat-change-publication-client.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -145,6 +146,13 @@ const tools = [
   { name:"agent_chat_sql_development", description:"读取本人对话所绑定的 SQL、代码版本、已保存的调试批次及断言。", inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"}},required:["intentId"],additionalProperties:false},annotations:{readOnlyHint:true} },
   { name:"agent_chat_scope_changes", description:"查询原开发对话的来源、可选口径和已经提交的变更。", inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"}},required:["intentId"],additionalProperties:false},annotations:{readOnlyHint:true} },
   {name:"agent_chat_change_delivery",description:"从原会话读取指定口径变更的交付文件和已保存的演练记录。",inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"}},required:["intentId","changeRequestId"],additionalProperties:false},annotations:{readOnlyHint:true}},
+  {name:"agent_chat_change_publication",description:"读取已演练子版本的本机发布预检、测试批次及调度监控证据。",inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"}},required:["intentId","changeRequestId"],additionalProperties:false},annotations:{readOnlyHint:true}},
+  {name:"agent_publish_chat_change",description:"仅在工程师逐项审阅并批准后注册确切子版本的两个本机虚构测试批次，可能执行两次 Spark。",inputSchema:{type:"object",properties:{
+    intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"},sourceRunId:{type:"string",format:"uuid"},
+    packageId:{type:"string",format:"uuid"},packageDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},verificationId:{type:"string",format:"uuid"},
+    requestId:{type:"string",format:"uuid"},reviewDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},confirm:{const:true},
+    attestations:{type:"object",properties:{code:{const:true},assertions:{const:true},deliveryFiles:{const:true},localScope:{const:true}},required:["code","assertions","deliveryFiles","localScope"],additionalProperties:false},
+  },required:["intentId","changeRequestId","sourceRunId","packageId","packageDigest","verificationId","requestId","reviewDigest","attestations","confirm"],additionalProperties:false},annotations:{readOnlyHint:false}},
   {name:"agent_prepare_chat_change_delivery",description:"明确确认后为选定的派生版本准备交付文件并进行文件演练，可能运行 Spark。",inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},changeRequestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"},sourceRunId:{type:"string",format:"uuid"},requestId:{type:"string",format:"uuid"},confirm:{const:true}},required:["intentId","changeRequestId","sourceRunId","requestId","confirm"],additionalProperties:false},annotations:{readOnlyHint:false}},
   { name:"agent_change_chat_scope", description:"按审阅过的会话来源和目标口径创建独立开发任务。可能运行模型与 Spark。请求结果未知时，从原会话查询变更记录。", inputSchema:{type:"object",properties:{intentId:{type:"string",format:"uuid"},sourceRunId:{type:"string",format:"uuid"},contextId:{type:"string"},message:{type:"string",minLength:4,maxLength:2000},requestId:{type:"string",pattern:"^chat-derive-v1-[a-f0-9]{64}$"},confirm:{const:true}},required:["intentId","sourceRunId","contextId","message","requestId","confirm"],additionalProperties:false},annotations:{readOnlyHint:false} },
   { name: "agent_intent_cancel", description: "停止父意图的后续编排并撤销未绑定批准；已有专业子任务时拒绝，须分别处理。调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: { intentId: { type: "string" } }, required: ["intentId"] } },
@@ -231,8 +239,9 @@ const tools = [
   { name: "data_service_recovery", description: "使用当前平台身份读取私有服务启动标识、快照完整性和恢复对照；不执行计算、不发凭证，单份报告不代表冷启动验收。", inputSchema: { type: "object", additionalProperties: false, properties: { type: { type: "string", enum: ["dapi", "xapi"] }, serviceId: { type: "string", format: "uuid" } }, required: ["type", "serviceId"] } },
   { name: "data_service_calls", description: "读取数据服务调用日志，可按服务过滤。", inputSchema: { type: "object", properties: { serviceId: { type: "string" } } } },
   { name: "service_application_list", description: "列出调用应用与授权，不返回令牌或令牌哈希。", inputSchema: { type: "object", properties: {} } },
-  { name: "service_application_create", description: "创建调用应用并仅显示一次令牌。可为客户资产服务限定单一客户并脱敏指定字段。该操作创建持久访问能力，调用前必须取得用户明确确认。", inputSchema: { type: "object", properties: {
+  { name: "service_application_create", description: "创建调用应用并仅显示一次令牌。可为客户资产服务限定单一客户并脱敏指定字段。请先取得用户对服务范围和有效期的明确确认。", inputSchema: { type: "object", properties: {
     name: { type: "string" }, serviceIds: { type: "array", items: { type: "string" } },
+    ttlSeconds: {type:"integer",minimum:1,maximum:3600,description:"本机调用应用的有效秒数；既有更早的强制到期时间优先。"},
     customerAccess: { type: "object", additionalProperties: false, properties: {
       clientId: { type: "string" }, maskedFields: { type: "array", items: { type: "string", enum: ["client_id","holding_market_value","available_cash","total_assets","security_count"] } },
     }, required: ["clientId","maskedFields"] },
@@ -484,6 +493,8 @@ async function callTool(name, args = {}, client=defaultClient) {
     return client.request(`/agent/intents/${encodeURIComponent(args.intentId)}/development`);
   if (name === "agent_chat_scope_changes") return readChatScopeChanges(client,args);
   if (name === "agent_chat_change_delivery") return readChatChangeDelivery(client,args);
+  if (name === "agent_chat_change_publication") return readChatChangePublication(client,args);
+  if (name === "agent_publish_chat_change") return publishChatChange(client,args);
   if (name === "agent_prepare_chat_change_delivery") return prepareChatChangeDelivery(client,args);
   if (name === "agent_change_chat_scope") return submitChatScopeChange(client,args);
   if (name === "agent_intent_cancel")

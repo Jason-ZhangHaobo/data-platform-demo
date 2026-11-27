@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import {lazy,Suspense,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {Download,PackageCheck,RefreshCw} from 'lucide-react';
 import {readChatChangeDelivery,prepareChatChangeDelivery} from '../../src/v2/chat-change-delivery-client.mjs';
 import type {DerivedRunReference} from '../../src/v2/derived-comparison-client.mjs';
@@ -6,6 +6,8 @@ import {DeliveryFilePreview} from './DeliveryFilePreview';
 import {requestTextDownload} from './EvidenceDownload';
 import type {ChangeApi} from './chat-context-change';
 import './agent-development.css';
+
+const ChatChangePublication=lazy(()=>import('./ChatChangePublication'));
 
 type Receipt=Awaited<ReturnType<typeof readChatChangeDelivery>>;
 type Refs=Pick<DerivedRunReference,'taskId'|'contextId'|'revisionId'|'runId'|'revisionHash'>;
@@ -104,5 +106,11 @@ export default function ChatChangeDelivery({api,intentId,changeRequestId,parent,
     {bundle&&<><DeliveryFilePreview key={bundle.id+':'+bundle.digest} bundle={bundle} current onDownload={(name,body)=>requestTextDownload(name,body,'text/plain;charset=utf-8')}/>
       <button type="button" className="button" onClick={downloadPackage}><Download size={14}/>下载版本化交付包</button>
       {downloadNotice&&<small role="status">{downloadNotice}</small>}</>}
+    {receipt?.status==='SUCCEEDED'&&verification&&bundle&&<Suspense fallback={<p role="status">正在加载测试发布…</p>}>
+      <ChatChangePublication key={[child.taskId,bundle.digest,verification.id].join(':')} api={api}
+        intentId={intentId} changeRequestId={changeRequestId} parent={parent} child={child}
+        packageId={bundle.id} packageDigest={bundle.digest} verificationId={verification.id}
+        canInteract={canPrepare} isCurrent={isCurrent} onPin={onPin}/>
+    </Suspense>}
   </section>;
 }
