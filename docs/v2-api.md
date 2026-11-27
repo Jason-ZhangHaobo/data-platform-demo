@@ -370,7 +370,7 @@ FC 公网入口启用时，`GET /contexts` 通过入口、来源和项目检查�
 | GET/POST /streams/sources | 列表或name/topic/fileName | 登记仅限合成目录的local-event-log-v1源 |
 | POST /streams/sources/:id/revisions | fileName + 幂等键 | 创建事件日志版本，保存行数和内容摘要 |
 | GET/POST /streams/jobs | 列表或源/目标/Checkpoint/乱序配置 | 创建版本绑定的实时任务 |
-| GET /streams/jobs/:id | 任务详情 | 运行、最新状态和告警。真实引擎验收返回 `engineEvidence` 及匹配的 Flink 保存点 |
+| GET /streams/jobs/:id | 任务详情 | 运行、最新状态和告警。真实引擎验收返回 `engineEvidence`。异常恢复时随附 `checkpointRecovery`，包含原检查点、恢复编号、退出码和退出前 Kafka 偏移 |
 | POST /streams/jobs/:id/start | 空对象 + 幂等键 | 立即返回运行号。按已登记的 JSONL 或本机 Kafka / Flink 适配器后台执行 |
 | POST /streams/jobs/:id/recover | sourceRevisionId + 幂等键 | 校验Checkpoint前缀后从下一offset恢复 |
 | POST /streams/jobs/:id/stop | 空对象 | 中止本机处理并保留STOPPED运行 |

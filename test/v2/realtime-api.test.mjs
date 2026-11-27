@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MetadataStore } from "../../src/v2/store.mjs";
 import { StreamStateStore } from "../../src/v2/realtime.mjs";
+import { kafkaFlinkEvidence } from "../../src/v2/realtime-kafka-flink.mjs";
 import { createV2Server } from "../../src/v2/server.mjs";
 
 const fault =
@@ -142,9 +143,39 @@ test("the registered engine runs once per request and keeps verified Kafka resul
   assert.equal(persisted.runs.length,3);
   assert.equal(calls,3);
   await stop(server);
+
+  runner.checkpointCrash=true;
+  server=await start({store,stateStore,kafkaFlinkRunner:runner});
+  const crashMode=(await request(server.base,path)).body;
+  assert.equal(crashMode.checkpointCrashEnabled,true);
+  assert.equal(crashMode.engineEvidence.checkpointRecovery,undefined);
+  assert.equal((await request(server.base,path+"/start",{},"engine-1")).status,409);
+  reply=Promise.withResolvers();
+  const withoutRecovery=await request(server.base,path+"/start",{},"engine-no-crash-proof");
+  reply.resolve(value);
+  const rejected=await waitForJob(server.base,job.id,"FAILED");
+  assert.equal(rejected.runs[0].id,withoutRecovery.body.id);
+  assert.equal(rejected.runs[0].errorCode,"KAFKA_FLINK_EVIDENCE_MISMATCH");
+
+  reply=Promise.withResolvers();
+  const recovery=await request(server.base,path+"/start",{},"engine-crash-proof");
+  const {originalSavepointDigest:checkpointDigest,...shared}=value;
+  const checkpointRecovery={checkpointId:2,restoredCheckpointId:2,checkpointDigest,exitCode:137,
+    inputOffsetBeforeExit:4,committedUpdatesAtExit:4};
+  assert.throws(()=>kafkaFlinkEvidence({...shared,checkpointRecovery:{...checkpointRecovery,restoredCheckpointId:3}},
+    {checkpointCrash:true,fixtureDigest:value.fixtureDigest,quotes:Object.values(finalQuotes)}),
+    /KAFKA_FLINK_EVIDENCE_MISMATCH/);
+  reply.resolve({...shared,checkpointRecovery});
+  const recoveredJob=await waitForJob(server.base,job.id,"CAUGHT_UP");
+  assert.equal(recoveredJob.engineEvidence.runId,recovery.body.id);
+  assert.deepEqual(recoveredJob.engineEvidence.checkpointRecovery,checkpointRecovery);
+  assert.equal(recoveredJob.checkpoints[0].checkpointId,2);
+  assert.equal(recoveredJob.checkpoints[0].stateHash,checkpointDigest);
+  assert.equal(calls,5);
+  await stop(server);
   server=await start({store,stateStore,local:false,kafkaFlinkRunner:runner});
   assert.equal(server.app.realtime.listJobs().some(candidate=>candidate.id===job.id),false);
-  assert.equal(calls,3);
+  assert.equal(calls,5);
 });
 
 test("V2 API records a failed stream checkpoint and resumes from a corrected revision", async () => {

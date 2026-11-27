@@ -445,10 +445,14 @@ export class RealtimeManager {
     if (job.adapter === kafkaFlinkAdapter) {
       const verified = runs.find(run => run.engineResult);
       const evidence = verified?.engineResult;
+      const recovery = evidence?.checkpointRecovery;
+      const originalDigest = recovery?.checkpointDigest ?? evidence?.originalSavepointDigest;
       return {...job,runs,alerts:this.store.list("stream_alert",this.project).filter(alert => alert.jobId === id),
+        ...(this.kafkaFlinkRunner.checkpointCrash ? {checkpointCrashEnabled:true} : {}),
         ...(evidence ? {engineEvidence: {...evidence,runId:verified.id}} : {}),
         checkpoints: evidence ? [
-          {id:evidence.originalSavepointDigest,runId:verified.id,stateHash:evidence.originalSavepointDigest,flinkJobId:evidence.originalJobId},
+          {id:originalDigest,runId:verified.id,stateHash:originalDigest,flinkJobId:evidence.originalJobId,
+            ...(recovery ? {checkpointId:recovery.checkpointId} : {})},
           {id:evidence.restoredSavepointDigest,runId:verified.id,stateHash:evidence.restoredSavepointDigest,flinkJobId:evidence.restoredJobId},
         ] : [],
         state: evidence?.quotes.map(quote => ({...quote,stateKey:quote.security_code,lastSequence:quote.sequence})) ?? [],
@@ -618,6 +622,7 @@ export class RealtimeManager {
       if (signal.aborted) throw new Error("KAFKA_FLINK_CANCELLED");
       engineResult = kafkaFlinkEvidence(output,{
         fixtureDigest:fixture.contentHash,
+        checkpointCrash:this.kafkaFlinkRunner.checkpointCrash,
         quotes:[...latest.values()].sort((a,b) => a.security_code.localeCompare(b.security_code)),
       });
       status = "SUCCEEDED";

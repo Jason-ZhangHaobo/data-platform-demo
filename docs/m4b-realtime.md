@@ -21,7 +21,17 @@ JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/real
 
 打开「数据同步 → 实时同步」，选择「证券行情 · Kafka / Flink」，点击「启动本机验收」。返回运行编号后可关闭页面。同一详情读回 Kafka 实际输入条数、事务输出条数、两个 Flink 作业及各自保存点摘要、最终行情和运行记录。当前运行失败时保留上次已核验结果。相同幂等编号只返回原运行。CLI 和 MCP 复用已有实时任务启动、状态与保存点工具。[接口约定](v2-api.md)
 
-该任务使用本机单 Broker、单分区和受控虚构输入。可用时监控返回 `kafkaFlinkLocalReady`，表示可以发起本机验收。每次运行拥有独立引擎进程和保存点。持续运行、生产连接、多分区、事件时间 Watermark、异常退出自动恢复以及公网权限仍待单独验收。
+该任务使用本机单 Broker、单分区和受控虚构输入。可用时监控返回 `kafkaFlinkLocalReady`，表示可以发起本机验收。每次运行拥有独立引擎进程和保存点。持续运行、生产连接、多分区、事件时间 Watermark 及公网权限另行验收。
+
+### 从进程异常退出前的检查点恢复
+
+在本机工作台加设 `V2_LOCAL_KAFKA_FLINK_CHECKPOINT_CRASH=true`，再选择「启动异常恢复验收」。也可给复跑脚本追加 `--checkpoint-crash`。两种入口都使用同一受控虚构输入。
+
+验收进程以 Flink REST 的 `COMPLETED` 状态核对原作业的周期检查点，保存编号及元数据摘要。Kafka 确认接收偏移 4 后，验收程序只终止本次启动的 Flink 子进程。确认退出码 137、原检查点摘要和原事务输出后，保持同一 Broker，从原检查点启动另一个 Flink 作业。恢复统计须给出相同编号和路径，之后只允许追加一次有效更新。[Flink 检查点](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/ops/state/checkpoints/) · [Flink REST](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/ops/rest_api/#jobs-jobid-checkpoints)
+
+此处按原作业的完成记录确认检查点类型。Flink 的 `NO_CLAIM` 恢复会把外部状态按类保存点属性载入，原路径、编号及元数据摘要可用来比对读回的确切状态。[Flink 1.20.5 恢复实现](https://github.com/apache/flink/blob/release-1.20.5/flink-runtime/src/main/java/org/apache/flink/runtime/checkpoint/CheckpointCoordinator.java#L1749) · [状态属性](https://github.com/apache/flink/blob/release-1.20.5/flink-runtime/src/main/java/org/apache/flink/runtime/checkpoint/CheckpointProperties.java#L286)
+
+详情、CLI 和 MCP 显示原检查点及恢复后保存点。任务详情的 `engineEvidence.checkpointRecovery` 保存原编号、实际恢复编号、退出码、退出前 Kafka 偏移和已提交条数。从异常模式重放旧保存点模式的启动请求时，服务返回幂等冲突。该方案针对本机故障验收，实际集群的自动重启和高可用仍需核验。
 
 ## 实现语义
 
@@ -57,4 +67,4 @@ JAVA_HOME=/absolute/path/to/jdk17 bash scripts/realtime-lab/run.sh .runtime/real
 - `shuduo` CLI与`shuduo-mcp`覆盖实时源、版本、任务、启动/停止、恢复、状态、Checkpoint、监控和Agent方案，调用同一`/api/v2/streams`资源；旧V1命令不计入证据。
 - 工作台显示事件日志已连接，Kafka/Flink/公网未连接；有效1280与768宽度均无页面级横向溢出，窄屏仍可选择任务和启动。
 
-M4b本机范围已验收。仍未连接Kafka/Flink、外部Schema Registry、真实CDC或生产Checkpoint存储，也没有完成公网身份、隔离执行与多实例恢复；这些不能由本机事件日志证据替代。
+以上 JSONL 记录属于 M4b 本机首版。生产 Kafka / Flink、外部 Schema Registry、真实 CDC、生产检查点存储及多实例恢复另行验收。

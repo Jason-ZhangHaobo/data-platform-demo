@@ -10,14 +10,23 @@ const hex = (value, length) =>
 
 export function kafkaFlinkEvidence(value, expected) {
   const {scope, result, kafkaVersion, flinkVersion, inputEvents, committedUpdatesBefore, committedUpdatesAfter,
-    originalJobId, restoredJobId, originalSavepointDigest, restoredSavepointDigest, finalQuotes, fixtureDigest} = value ?? {};
+    originalJobId, restoredJobId, originalSavepointDigest, restoredSavepointDigest, finalQuotes, fixtureDigest,
+    checkpointRecovery} = value ?? {};
+  const checkpointCrash = expected.checkpointCrash === true;
+  const originalDigest = checkpointCrash ? checkpointRecovery?.checkpointDigest : originalSavepointDigest;
+  const recoveryMatches = checkpointCrash
+    ? originalSavepointDigest === undefined && Number.isSafeInteger(checkpointRecovery?.checkpointId) &&
+      checkpointRecovery.checkpointId > 0 && checkpointRecovery.restoredCheckpointId === checkpointRecovery.checkpointId &&
+      checkpointRecovery.exitCode === 137 && checkpointRecovery.inputOffsetBeforeExit === 4 &&
+      checkpointRecovery.committedUpdatesAtExit === committedUpdatesBefore
+    : checkpointRecovery === undefined;
   if (scope !== "LOCAL_KAFKA_FLINK_SYNTHETIC_QUOTES" || result !== "VERIFIED" ||
       kafkaVersion !== "4.1.2" || flinkVersion !== "1.20.5" || inputEvents !== 9 ||
       committedUpdatesBefore !== 4 || committedUpdatesAfter !== 5 ||
       fixtureDigest !== expected.fixtureDigest ||
       !hex(originalJobId,32) || !hex(restoredJobId,32) || originalJobId === restoredJobId ||
-      !hex(originalSavepointDigest,64) || !hex(restoredSavepointDigest,64) ||
-      originalSavepointDigest === restoredSavepointDigest ||
+      !hex(originalDigest,64) || !hex(restoredSavepointDigest,64) ||
+      originalDigest === restoredSavepointDigest || !recoveryMatches ||
       !finalQuotes || Object.keys(finalQuotes).length !== expected.quotes.length ||
       !expected.quotes.every(quote => {
         const observed = finalQuotes[quote.security_code];
@@ -25,7 +34,12 @@ export function kafkaFlinkEvidence(value, expected) {
           Object.entries(quote).every(([key, expected]) => observed[key] === expected);
       })) throw new Error("KAFKA_FLINK_EVIDENCE_MISMATCH");
   return {scope,result,kafkaVersion,flinkVersion,inputEvents,committedUpdatesBefore,committedUpdatesAfter,fixtureDigest,
-    originalJobId,restoredJobId,originalSavepointDigest,restoredSavepointDigest,
+    originalJobId,restoredJobId,restoredSavepointDigest,
+    ...(checkpointCrash ? {checkpointRecovery:{
+      checkpointId:checkpointRecovery.checkpointId,restoredCheckpointId:checkpointRecovery.restoredCheckpointId,
+      checkpointDigest:originalDigest,exitCode:checkpointRecovery.exitCode,
+      inputOffsetBeforeExit:checkpointRecovery.inputOffsetBeforeExit,committedUpdatesAtExit:checkpointRecovery.committedUpdatesAtExit,
+    }} : {originalSavepointDigest}),
     quotes:expected.quotes.map(quote => finalQuotes[quote.security_code])};
 }
 
@@ -34,6 +48,7 @@ export function createKafkaFlinkRunner(env, root) {
       ![env.JAVA_HOME, env.SHUDUO_REALTIME_MAVEN_REPO].every(path =>
         typeof path === "string" && isAbsolute(path))) return undefined;
   const workRoot = join(root, ".runtime", "realtime-kafka-flink");
+  const checkpointCrash = env.V2_LOCAL_KAFKA_FLINK_CHECKPOINT_CRASH === "true";
   const childEnvironment = {
     PATH: env.PATH || "/usr/bin:/bin",
     JAVA_HOME: env.JAVA_HOME,
@@ -41,12 +56,13 @@ export function createKafkaFlinkRunner(env, root) {
     SHUDUO_REALTIME_MAVEN_REPO: env.SHUDUO_REALTIME_MAVEN_REPO,
     SHUDUO_REALTIME_OFFLINE: "1",
   };
-  return async ({signal}) => {
+  const run = async ({signal}) => {
     if (signal.aborted) throw new Error("KAFKA_FLINK_CANCELLED");
     mkdirSync(workRoot, {recursive:true,mode:0o700});
     const work = mkdtempSync(join(workRoot,"run-"));
     return new Promise((resolve, reject) => {
-      const child = spawn("/bin/bash", [join(repo, "scripts/realtime-lab/run.sh"), work], {
+      const child = spawn("/bin/bash", [join(repo, "scripts/realtime-lab/run.sh"), work,
+        ...(checkpointCrash ? ["--checkpoint-crash"] : [])], {
         cwd:repo, env:childEnvironment, detached:true, stdio:["ignore","pipe","ignore"],
       });
       let output = "", failure, killTimer;
@@ -88,4 +104,5 @@ export function createKafkaFlinkRunner(env, root) {
       });
     });
   };
+  return Object.assign(run,{checkpointCrash});
 }
