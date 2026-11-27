@@ -1,6 +1,15 @@
 # 同源报表Agent：规划、审阅与实际生成
 
-更新：2026-11-09。独立开发工作台可基于当前发布批次提出报告需求，查看Agent方案，显式审阅后生成实际报表。沿用原`reports`专业工具与创建API，没有另建执行器。
+独立 Agent 会话可基于指定发布批次接收报表需求，调用现有 `reports` 专业工具，供工程师审阅方案并生成报表。
+
+## 在对话中生成财富顾问五指标报表
+
+1. 在两个已核验的 MySQL 持仓批次的监控页点击“在 Agent 对话中使用第 2 批”，或在独立对话中用“选择报表批次”明确选定来源。核对原发布、批次和业务日后输入：“用第二批持仓生成财富顾问五指标报表，列出客户总资产、持仓市值、证券数量、资产类别分布和行业分布。”
+2. 一级规划器把需求路由到报表步骤。核对步骤目标后，点击“批准并执行此步骤”，让报表工具对同一批次规划。三个客户资产指标来自发布结果；两项分布另从经核对的原 MySQL 持仓归档计算。两张分布的分母均为该客户当日持仓市值，现金单列。
+3. 核对方案名、指标、口径和来源，点击“按审阅方案生成报表”。报表运行仍使用原有创建流程；可以在本次对话中打开结果、切换脱敏客户或导出单客户 CSV。原业务日的虚构案例应得到总资产 1,300 元和 700 元。
+4. 创建应答丢失时，使用原请求编号查回会话。若系统明确查无记录且当前页面仍保留原输入，可选择“按原编号和需求重试”。方案应用应答丢失时，从任务图找回原专业任务及其已保存的报表请求。刷新只读原记录，不启动新的模型规划或报表聚合。
+
+五项完整方案的 `metricIds` 保存需求中的五个指标；`widgets` 描述实际物化的三个发布结果组件，`customerAnalysis` 描述原归档支持的两项分布。模型取得字段、口径、来源标识和摘要，客户行、持仓行和独立金额预期留在服务端。归档缺失、来源冲突或审阅依据变化时，需重新核对；旧计划可按原上下文摘要读取。隔离验收使用合成意图与报表规划响应，真实模型的正确率另行评测。
 
 规划器只接收字段、口径、批次标识、行数和内容摘要。方案只能选择此来源允许的指标；模型不能指定其他来源、数据集、SQL或权限。行业等字段缺失时返回一个澄清问题，不能拿其他指标冒充。来源及指标定义改变后，原方案不能继续应用。
 
@@ -11,7 +20,8 @@
 ## 内部工具与多端契约
 
 - 既有`reports`专业工具支持可选`source`，工具目录摘要随输入契约变化。主控意图可保存`reportSource`；调用报表工具时必须与它相同，原批准不能用于另一发布上下文。
-- `POST /agent/intents`可提供`reportSource`；CLI为`agent understand --report-source-file`，MCP为`agent_intent_create.reportSource`。
+- `POST /agent/intents` 可提供 `reportSource`。需要恢复时使用固定的 UUID 作为幂等键。CLI 为 `agent understand --report-source-file source.json --request-id UUID --approval-mode REQUEST_APPROVAL --message "…"`，MCP 为 `agent_intent_create` 的 `reportSource` 和 `requestId`。
+- `GET /agent/intent-requests/:requestId` 按本机项目账号读取其原报表会话，返回保存的来源、请求编号和消息摘要。CLI 为 `agent intent-request --request-id UUID`，MCP 为只读工具 `agent_report_intent_request`。
 - `POST /reports/agent/plans`可提供`source`；无来源的传统方案保持草稿语义。来源方案只在本机边界开放，并按实际身份隔离。
 - `GET /reports/agent/plans?source_batch_id=UUID`列出本账号同批次方案；默认列表只返回传统方案，避免旧界面误把实际生成当作写草稿。
 - `GET /reports/agent/requests/:requestId`只读恢复原规划请求。CLI为`reports plan-request --request-id`，MCP为`report_plan_request`。

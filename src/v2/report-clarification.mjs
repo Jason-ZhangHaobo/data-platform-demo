@@ -24,7 +24,7 @@ function read(id,actor,env,seen){
  assertPlan(p,env,seen);
  if(p.planMode!=='PUBLISHED_SOURCE_REPORT_V1'||p.status!=='NEEDS_CLARIFICATION'||p.proposal?.kind!=='CLARIFICATION_REQUIRED'||typeof p.proposal.question!=='string'||p.proposal.question.trim().length<4||p.proposal.question.length>300||p.executionMode==='SOURCE_BOUND_REPORT_AGENT_V1'&&p.providerPhase!=='RECORDED'||reportProposalHash(p,p.proposal)!==p.proposalHash)throw fail();
  if(p.executionMode==='SOURCE_BOUND_REPORT_AGENT_V1'&&!p.usageEstimated&&!p.usageUnknown&&!usageTokens(p))throw fail('原报表用量回执未确认');
- const context=env.contextFor(p.sourceBinding,actor);if(publishedReportHash(context)!==p.contextHash||context.sourceEvidenceHash!==p.sourceEvidenceHash)throw fail();
+ const context=env.contextFor(p.sourceBinding,actor,p.contextHash);if(publishedReportHash(context)!==p.contextHash||context.sourceEvidenceHash!==p.sourceEvidenceHash)throw fail();
  return{record:p,evidenceDigest:evidence(p),context};
 }
 function assertPlan(p,env,seen=new Set()){

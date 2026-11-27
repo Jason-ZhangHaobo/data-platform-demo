@@ -6,6 +6,7 @@ import { lookupPublishedReport, readPublishedReportResult, submitPublishedReport
 import { readCustomerAssetAnalysis } from "../src/v2/customer-asset-analysis-client.mjs";
 import { runV2Cli } from "../bin/shuduo.mjs";
 import { handleV2Mcp } from "../bin/shuduo-mcp.mjs";
+import { createWealthReportFromConversation } from "./accept-agent-wealth-report.mjs";
 import { customerAnalysisCsv } from "../web/src/customer-analysis-csv.ts";
 
 // These values come from the two original positions and the registered cash
@@ -50,8 +51,11 @@ export async function verifyMysqlCustomerReports({client, source, batchIds, orig
   const saved = [];
   const before = (await client.request("/reports/overview")).counts;
   for (const [index,batchId] of batchIds.entries()) {
-    const args = {requestId:randomUUID(), name:"虚构客户资产分析 · 第"+(index+1)+"批", source:{...source,batchId}};
-    const receipt = await submitPublishedReport(client,args);
+    const selected = {...source,batchId};
+    const receipt = index===0
+      ? await submitPublishedReport(client,{requestId:randomUUID(),name:"虚构客户资产分析 · 第1批",source:selected})
+      : await createWealthReportFromConversation(client,selected,batchIds[0]);
+    const args = {requestId:receipt.requestId,name:receipt.name,source:selected};
     assert.equal(receipt.status,"SUCCEEDED");
     assert.deepEqual(receipt.source,args.source);
     assert.equal(receipt.rowCount,clients.length);
@@ -64,7 +68,7 @@ export async function verifyMysqlCustomerReports({client, source, batchIds, orig
     const widget = name => reportRun.widgets.find(item=>item.id===name);
     assert.equal(widget("total_assets").value,"2000.00");
     assert.equal(widget("holding_value").value,"1500.00");
-    assert.equal(widget("available_cash").value,"500.00");
+    if(index===0) assert.equal(widget("available_cash").value,"500.00");
 
     const selection = {requestId:args.requestId,source:args.source,reportId:receipt.reportId,versionId:receipt.reportVersionId,
       reportRunId:receipt.reportRunId,reportSnapshotId:receipt.snapshotId,resultHash:receipt.resultHash};
@@ -92,7 +96,7 @@ export async function verifyMysqlCustomerReports({client, source, batchIds, orig
     }
     assert.doesNotMatch(JSON.stringify(report),/CLIENT-00[12]|SEC-DEMO-00[12]/);
     assert.deepEqual(await lookupPublishedReport(client,args),receipt);
-    assert.deepEqual(await submitPublishedReport(client,args),receipt);
+    if(index===0) assert.deepEqual(await submitPublishedReport(client,args),receipt);
     saved.push({selection,report,receipt});
   }
 

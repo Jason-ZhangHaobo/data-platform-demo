@@ -178,6 +178,7 @@ import {createReportProvenance,reviewedReportBasis} from './report-provenance.mj
 import {publishedReportSource,reportRequestId as publishedReportSourceBatchId} from './published-report-request.mjs';
 import {publishedReportHash} from './published-report-source.mjs';
 import {publishedReportPlanningContext,validatePublishedReportPlan,publishedReportPlanHash,samePublishedReportSource} from './published-report-plan.mjs';
+import {customerAnalysisPlanCapability} from './customer-asset-analysis.mjs';
 import { OperationsManager } from "./operations.mjs";
 import { AuthManager } from "./auth.mjs";
 import { DataContractManager } from "./contracts.mjs";
@@ -702,8 +703,9 @@ export function createV2Server(options = {}) {
   const publicAgentIntent = ({ submittedBy, message, ...item }) => item;
   const publicAgentHandoff = ({ submittedBy, ...item }) => item;
   const publicAgentApproval = ({ submittedBy, ...item }) => item;
-  const mayReadAgentIntent = (item, session) =>
-    local || session?.role === "ADMIN" || item.submittedBy === session?.user.id;
+  const mayReadAgentIntent = (item, session, req) => item.reportSource
+    ? Boolean(local && !options.ingress && isLoopbackRequest(req) && item.submittedBy && item.submittedBy === workspaceReadActor(req))
+    : local || session?.role === "ADMIN" || item.submittedBy === session?.user.id;
   const agentIntentGraph = (intent) => {
     const steps = intent.route?.steps ?? (intent.route
         ? [
@@ -1466,7 +1468,7 @@ export function createV2Server(options = {}) {
   const privateBatchArchives = privateDataServicesEnabled
     ? createPrivateBatchArchive({store, businessStore, project:PROJECT, now:options.now}) : undefined;
   const readSyncCalls = evidence => readSyncSqlCallEvidence({store,project:PROJECT,manager:dataServices,evidence});
-  const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,reportStore,provenance:reportProvenance,
+  const publishedReports=createPublishedReportWorkflow({store,project:PROJECT,reports,reportStore,ingestion,provenance:reportProvenance,
     resolveSource:resolveLocalReportSource,fundSignedExecutionFor,readSyncCalls,afterStep:options.publishedReportAfterStep});
   const workspaceReadActor = req => {
     if (req.headers.authorization !== undefined) return undefined;
@@ -1475,9 +1477,11 @@ export function createV2Server(options = {}) {
     const attemptedSession = /(?:^|;)\s*shuduo_session\s*(?:=|;|$)/.test(req.headers.cookie ?? "");
     if (local && !options.ingress && isLoopbackRequest(req) && !attemptedSession) return "local-engineer";
   };
-  const publishedPlanContext=(source,actor)=>{
+  const publishedPlanContext=(source,actor,expectedHash)=>{
     if(!local)throw fail(403,'同源报表规划尚只在本机开发边界开放');
-    return publishedReportPlanningContext(resolveLocalReportSource(source,actor));
+    const resolved=resolveLocalReportSource(source,actor);
+    return publishedReportPlanningContext(resolved,{expectedHash,
+      readCustomerAnalysis:()=>customerAnalysisPlanCapability({store,project:PROJECT,ingestion,resolved,actorId:actor})});
   };
   const canReadReportPlan = (plan, req) => local
     ? !plan.sourceBinding || plan.submittedBy === workspaceReadActor(req)
@@ -3795,7 +3799,7 @@ export function createV2Server(options = {}) {
           if(!local||!current.sourceBinding||Object.keys(body).length||!publicReportPlan(current).recovery?.canResume)throw fail(409,'仅能显式续接模型尚未调用的原报表规划；未知结果不重试');
           if(!options.reportPlanner&&!modelSettings(env).configured)throw new ModelUnavailable();
           assertReportClarificationPlan(current,{store,project:PROJECT,contextFor:publishedPlanContext});
-          if(publishedReportHash(publishedPlanContext(current.sourceBinding,workspaceReadActor(req)))!==current.contextHash)throw fail(409,'原来源变化，未重新调用模型');
+          if(publishedReportHash(publishedPlanContext(current.sourceBinding,workspaceReadActor(req),current.contextHash))!==current.contextHash)throw fail(409,'原来源变化，未重新调用模型');
           const resumed=store.update('report_agent_plan',current.id,PROJECT,{...sourceReportInitial(privateRuntimeBootId),status:'QUEUED',resumeCount:(current.resumeCount??0)+1},{expectedVersion:current.version});scheduleSourceReport(resumed);return json(res,202,publicReportPlan(resumed));
         }
         if (method === "POST" && action === "cancel") {
@@ -3821,7 +3825,7 @@ export function createV2Server(options = {}) {
             if(Object.keys(body).some(k=>k!=='proposalHash')||body.proposalHash!==plan.proposalHash||!['SUCCEEDED','APPLYING','APPLIED'].includes(plan.status)||plan.proposal?.kind!=='PUBLISHED_REPORT'||
               reportProposalHash(plan,plan.proposal)!==plan.proposalHash)throw fail(409,'请先审阅并提交此确切同源报表方案摘要');
             assertReportClarificationPlan(plan,{store,project:PROJECT,contextFor:publishedPlanContext});
-            const context=publishedPlanContext(plan.sourceBinding,workspaceReadActor(req));if(publishedReportHash(context)!==plan.contextHash)throw fail(409,'来源或指标定义已变化，请重新审阅方案');
+            const context=publishedPlanContext(plan.sourceBinding,workspaceReadActor(req),plan.contextHash);if(publishedReportHash(context)!==plan.contextHash)throw fail(409,'来源或指标定义已变化，请重新审阅方案');
             const created=publishedReports.submit({name:plan.proposal.name,source:plan.sourceBinding,metricIds:plan.proposal.metricIds},workspaceReadActor(req),plan.id,reviewedReportBasis(plan,workspaceReadActor(req),body.proposalHash));
             store.update('report_agent_plan',plan.id,PROJECT,{status:created.status==='SUCCEEDED'?'APPLIED':'APPLYING',reportCreation:created,...(created.reportId?{reportId:created.reportId}:{}),appliedAt:plan.appliedAt??new Date().toISOString()});return json(res,created.status==='SUCCEEDED'?200:202,created);
           }
@@ -4353,7 +4357,7 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(401, "请先登录受邀账号调用专业Agent"), {
             code: "AUTHENTICATION_REQUIRED",
           });
-        if (!mayReadAgentIntent(intent, session))
+        if (!mayReadAgentIntent(intent, session, req))
           throw Object.assign(fail(403, "当前成员不能调用该专业Agent任务"), {
             code: "PROJECT_PERMISSION_DENIED",
           });
@@ -4701,6 +4705,18 @@ export function createV2Server(options = {}) {
           },
         );
       }
+      const originalReportIntent = path.match(/^\/api\/v2\/agent\/intent-requests\/([A-Za-z0-9_-]{1,100})$/);
+      if (method === "GET" && originalReportIntent) {
+        if (!local || options.ingress || !isLoopbackRequest(req)) throw fail(403,"请在原本机项目中读取报表会话");
+        if (url.searchParams.size) throw fail(422,"请按原请求编号读取报表会话");
+        const actor=workspaceReadActor(req);
+        if (!actor) throw fail(403,"请使用原会话的项目账号");
+        const key=originalReportIntent[1], id=store.deduplicatedId(`${PROJECT}:agent-intent:${key}`);
+        const intent=id && store.get("agent_intent",id,PROJECT);
+        if (!intent?.reportSource || intent.submittedBy!==actor || intent.requestId!==undefined && intent.requestId!==key)
+          throw Object.assign(fail(404,"未找到本账号的原报表会话请求"),{code:"AGENT_REPORT_INTENT_NOT_FOUND"});
+        return json(res,200,{...publicAgentIntent(intent),requestId:key});
+      }
       if (path === "/api/v2/agent/intents" && method === "GET") {
         const session = auth.sessionFromHeaders(req.headers);
         if (!local && !session)
@@ -4712,7 +4728,7 @@ export function createV2Server(options = {}) {
         return json(
           res,
           200,
-          items.filter((item) => mayReadAgentIntent(item, session)).map(publicAgentIntent),
+          items.filter((item) => mayReadAgentIntent(item, session, req)).map(publicAgentIntent),
         );
       }
       const agentIntentTrace = path.match(
@@ -4725,7 +4741,7 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(401, "请先登录受邀账号查看Agent轨迹"), {
             code: "AUTHENTICATION_REQUIRED",
           });
-        if (!mayReadAgentIntent(intent, session))
+        if (!mayReadAgentIntent(intent, session, req))
           throw Object.assign(fail(403, "当前成员不能查看该Agent轨迹"), {
             code: "PROJECT_PERMISSION_DENIED",
           });
@@ -4748,7 +4764,7 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(401, "请先登录受邀账号查看Agent任务图"), {
             code: "AUTHENTICATION_REQUIRED",
           });
-        if (!mayReadAgentIntent(intent, session))
+        if (!mayReadAgentIntent(intent, session, req))
           throw Object.assign(fail(403, "当前成员不能查看该Agent任务图"), {
             code: "PROJECT_PERMISSION_DENIED",
           });
@@ -4764,7 +4780,7 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(401, "请先登录受邀账号停止Agent任务"), {
             code: "AUTHENTICATION_REQUIRED",
           });
-        if (!mayReadAgentIntent(intent, session))
+        if (!mayReadAgentIntent(intent, session, req))
           throw Object.assign(fail(403, "当前成员不能停止该Agent任务"), {
             code: "PROJECT_PERMISSION_DENIED",
           });
@@ -4829,7 +4845,7 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(401, "请先登录受邀账号取消专业Agent任务"), {
             code: "AUTHENTICATION_REQUIRED",
           });
-        if (!mayReadAgentIntent(intent, session))
+        if (!mayReadAgentIntent(intent, session, req))
           throw Object.assign(fail(403, "当前成员不能取消该专业Agent任务"), {
             code: "PROJECT_PERMISSION_DENIED",
           });
@@ -4943,7 +4959,7 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(401, "请先登录受邀账号查看Agent批准"), {
             code: "AUTHENTICATION_REQUIRED",
           });
-        if (!mayReadAgentIntent(intent, session))
+        if (!mayReadAgentIntent(intent, session, req))
           throw Object.assign(fail(403, "当前成员不能查看或批准该Agent任务"), {
             code: "PROJECT_PERMISSION_DENIED",
           });
@@ -5037,7 +5053,7 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(401, "请先登录受邀账号查看Agent交接"), {
             code: "AUTHENTICATION_REQUIRED",
           });
-        if (!mayReadAgentIntent(intent, session))
+        if (!mayReadAgentIntent(intent, session, req))
           throw Object.assign(fail(403, "当前成员不能查看或交接该Agent任务"), {
             code: "PROJECT_PERMISSION_DENIED",
           });
@@ -7273,13 +7289,15 @@ export function createV2Server(options = {}) {
           session = auth.sessionFromHeaders(req.headers),
           submittedBy = session?.user.id ?? "local-engineer";
         const reportSource=body.reportSource===undefined?undefined:publishedReportSource(body.reportSource);
-        if(reportSource)publishedPlanContext(reportSource,submittedBy);
+        if (reportSource && (!local || options.ingress || !isLoopbackRequest(req) || submittedBy!==workspaceReadActor(req)))
+          throw fail(403,"请选择本人在本机项目中的原发布批次");
         const key = text(req.headers["idempotency-key"], 1, 100),
           signature = hash(JSON.stringify({ message, approvalMode,...(reportSource?{reportSource}:{}) })),
           dedup = store.deduplicate(
             `${PROJECT}:agent-intent:${key}`,
             signature,
             () => {
+              const selectedReportContext=reportSource && publishedPlanContext(reportSource,submittedBy);
               if (!options.intentPlanner && !modelSettings(env).configured)
                 throw new ModelUnavailable();
               budget.assertCanStartModel();
@@ -7295,7 +7313,8 @@ export function createV2Server(options = {}) {
                 execution: "NO_EXECUTION",
                 fullLifecycleE2E: false,
                 publicDeployed: false,
-                ...(reportSource?{reportSource}:{}),
+                ...(reportSource?{reportSource,requestId:key}:{}),
+                ...(selectedReportContext?.customerAnalysis ? {reportPlanningProfile:selectedReportContext.customerAnalysis.kind} : {}),
               });
             },
           ),
@@ -7307,6 +7326,7 @@ export function createV2Server(options = {}) {
             const generated = await budgetedPlan("agent_intent", task.id, signal, () => intentPlanner({
               message,
               destinations: publicAgentIntentDestinations(),
+              ...(reportSource?{pinnedReportBatch:true}:{}),
               signal,
             }));
             if (get("agent_intent", task.id).status === "CANCELLED") return;

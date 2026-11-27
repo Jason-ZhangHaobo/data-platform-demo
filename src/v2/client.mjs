@@ -50,6 +50,7 @@ export const V2_OPERATIONS = Object.freeze([
   "agent_intent_list",
   "agent_tool_list",
   "agent_intent_create",
+  "agent_report_intent_request",
   "agent_intent_approval_list",
   "agent_intent_approval_create",
   "agent_intent_graph",

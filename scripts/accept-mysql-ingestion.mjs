@@ -14,6 +14,7 @@ import { readPackageInputCheck } from "../src/v2/package-input-check-client.mjs"
 import { readNativeSyncPublication, submitNativeSyncPublication } from "../src/v2/native-sync-publication-client.mjs";
 import { V2Client } from "../src/v2/client.mjs";
 import { verifyMysqlReleaseServices } from "./accept-mysql-release-services.mjs";
+import { fixtureWealthReportPlanners } from "./accept-agent-wealth-report.mjs";
 import { verifyMysqlCustomerReports } from "./accept-mysql-customer-report.mjs";
 
 // An explicitly invoked test against a disposable loopback MySQL 8 instance.
@@ -66,7 +67,8 @@ test("Agent develops from a historical MySQL batch and its reviewed package serv
   // keep only source code linked while databases and execution files stay temporary.
   await symlink(join(process.cwd(), "src"), join(root, "src"), "dir");
   let generations = 0;
-  const app = createV2Server({ root, generator: async ({context}) => {
+  const {intentPlanner, reportPlanner, counts:planningCalls} = fixtureWealthReportPlanners();
+  const app = createV2Server({ root, intentPlanner, reportPlanner, generator: async ({context}) => {
     assert.equal(++generations, 1, "Unexpected repeated generation");
     assert.equal(context.expected, undefined);
     assert.ok(context.tables.every(t => t.rows === undefined));
@@ -407,6 +409,7 @@ test("Agent develops from a historical MySQL batch and its reviewed package serv
   assert.deepEqual(releases.map(item=>item.id),[releaseId]);
   assert.deepEqual((await api("/release/runs",200)).map(item=>item.id).sort(),[...batchIds].sort());
   assert.equal(generations,1);
+  assert.deepEqual(planningCalls,{intent:1,report:1});
   t.diagnostic(JSON.stringify({engine:"MySQL", version:probe.serverVersion, sourceTable:table, metadataFields:fields.length,
     fullRows:baseline.finalCount, inserted:change.inserted, updated:change.updated, unchanged:change.unchanged,
     finalRows:landed.length, totalMarketValue:"1900.00", watermark:change.watermark, originalRequestRecovered:true,
@@ -421,5 +424,6 @@ test("Agent develops from a historical MySQL batch and its reviewed package serv
     publicationCount:releases.length, scheduledSparkRuns:batches.length, triggerClock:batches[0].clockMode,
     scheduledCustomerAssets:batches.map(batch=>batch.rows.map(row=>row.total_assets)),
     monitoringEvents:monitor.monitorEventCount, openAlerts:monitor.openAlertCount, originalReleaseRecovered:true,
-    ...consumption, ...reports}));
+    agentReportIntentCalls:planningCalls.intent,agentReportPlannerCalls:planningCalls.report,agentReportStepApprovals:1,
+    agentReportIntentRecovered:true,agentReportAppliedInChat:true,agentReportFiveMetrics:true,...consumption,...reports}));
 });

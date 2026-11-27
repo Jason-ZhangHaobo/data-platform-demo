@@ -1,0 +1,20 @@
+.agent-chat-batch-context {display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 16px;color:#285645;background:#eff6f1;min-width:0}
+.agent-chat-batch-context:empty {display:none}
+.agent-chat-batch-context span,.agent-chat-batch-context p,.chat-report-picker {font-size:13px}
+.chat-report-picker {max-width:100%;min-width:0}
+.chat-report-picker summary,.agent-chat-report-result summary {cursor:pointer}
+.chat-report-picker select {max-width:100%;margin:4px;min-height:34px}
+.agent-chat-report-result,.agent-report-plan {margin-top:12px;min-width:0}
+.agent-chat-report-result summary {font-weight:650;color:#156447}
+.chat-report-footer {padding:8px 16px;text-align:right}
+.agent-chat-report-result {max-width:840px;margin:12px auto}
+.agent-chat-report-result summary {padding:10px 0}
+@media(max-width:600px){
+  body:has(.agent-os-v2[data-wealth-chat]) .development-language-v2[aria-label="Agent 工作台范围"] {overflow-x:auto;min-height:44px;align-self:stretch}
+  body:has(.agent-os-v2[data-wealth-chat]) .development-language-v2[aria-label="Agent 工作台范围"]>* {flex:0 0 auto;white-space:nowrap}
+  .agent-os-v2[data-wealth-chat] .agent-os-context-v2 {display:none}
+  .agent-os-v2[data-wealth-chat] .agent-os-composer-v2>div {justify-content:flex-end}
+  .agent-os-chat-v2:has(.agent-chat-report-result[open]) {flex:1 0 auto}
+  .agent-os-chat-v2:has(.agent-chat-report-result[open]) .agent-os-thread-v2 {overflow:visible}
+  .agent-os-thread-v2:has(.agent-chat-report-result) {padding:12px 8px}
+}

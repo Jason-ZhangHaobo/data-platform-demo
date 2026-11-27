@@ -26,6 +26,7 @@ import{readSqlRunComparison,readRunComparisonCandidates}from'../src/v2/run-compa
 import {readSyncSqlOutputSchema,readSyncedPositions,readSyncReviewEvidence} from "../src/v2/sync-sql-output-schema-client.mjs";
 import {submitPublishedReport,lookupPublishedReport,resumePublishedReport,readPublishedReportResult,readPublishedReportEvidence,readPublishedReportDevelopment,readPublishedReportConsumption} from '../src/v2/published-report-client.mjs';
 import {readCustomerAssetAnalysis} from '../src/v2/customer-asset-analysis-client.mjs';
+import {readReportIntent} from '../src/v2/report-intent-client.mjs';
 import {readReportProvenance,checkedReportProvenance,downloadReportProvenance} from '../src/v2/report-provenance-client.mjs';
 import { readFundReportQuality, runFundReportQuality } from '../src/v2/fund-report-quality-client.mjs';
 import { readWealthConsumption } from '../src/v2/wealth-report-consumption-client.mjs';
@@ -85,7 +86,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent tools
   shuduo agent validate-tool --tool MODULE_ID --catalog-version VERSION --contract-digest SHA256 --input-json '{"message":"任务目标"}'
   shuduo agent invoke-tool --id INTENT_ID --tool MODULE_ID --approval-id APPROVAL_ID --catalog-version VERSION --contract-digest SHA256 --input-json '{"message":"已批准目标"}'
-  shuduo agent understand --message "理解需求并推荐中台模块"
+  shuduo agent understand --message "理解需求并推荐中台模块" [--report-source-file source.json --request-id UUID --approval-mode REQUEST_APPROVAL]
+  shuduo agent intent-request --request-id UUID [--report-source-file source.json]
   shuduo agent approvals --id INTENT_ID
   shuduo agent approve --id INTENT_ID --destination MODULE_ID
   shuduo agent graph --id INTENT_ID
@@ -600,8 +602,13 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
     else if (resource === "agent" && action === "understand")
       result = await client.request("/agent/intents", {
         method: "POST",
-        body: { message: required(parsed.options, "message"),...(parsed.options.report_source_file?{reportSource:jsonObject(readFileSync(parsed.options.report_source_file,'utf8'),'报表发布上下文')}:{}) },
+        ...(parsed.options.request_id?{idempotencyKey:parsed.options.request_id}:{}),
+        body: { message: required(parsed.options, "message"),...(parsed.options.approval_mode?{approvalMode:parsed.options.approval_mode}:{}),
+          ...(parsed.options.report_source_file?{reportSource:jsonObject(readFileSync(parsed.options.report_source_file,'utf8'),'报表发布上下文')}:{}) },
       });
+    else if(resource==='agent'&&action==='intent-request')
+      result=await readReportIntent(client,{requestId:required(parsed.options,'request_id'),
+        ...(parsed.options.report_source_file?{source:jsonObject(readFileSync(parsed.options.report_source_file,'utf8'),'报表发布上下文')}:{})});
     else if (resource === "agent" && action === "approvals")
       result = await client.request(
         `/agent/intents/${encodeURIComponent(required(parsed.options, "id"))}/approvals`,
