@@ -78,6 +78,8 @@ test("reviewed cloud scoring keeps the frozen denominator and waits for all orig
   assert.equal(incomplete.testHarnessCases,1);
   assert.equal(incomplete.pendingCloudCases,1);
   assert.equal(incomplete.cloudCoverage,0.9);
+  assert.equal(incomplete.highestPossibleCloudSuccesses,18);
+  assert.equal(incomplete.reviewedCloudCountTargetReachable,true);
   assert.equal(incomplete.reviewedCloudCompletionRate,null);
   assert.equal(incomplete.reviewedCloudTargetStatus,"INCOMPLETE_BLOCKED_SOURCE");
   const met = score([...successes,...Array(3).fill("CLOUD_FAILURE_SETTLED")]);
@@ -118,10 +120,29 @@ test('direct autonomy counts only verified cloud outcomes over the frozen twenty
   const notMet=score([...Array(16).fill(verified),failed,failed,owner,owner]);
   assert.equal(notMet.directAutonomousCompletionRate,0.8);
   assert.equal(notMet.directAutonomousTargetStatus,'NOT_MET');
+  assert.equal(notMet.highestPossibleDirectAutonomousSuccesses,16);
+  assert.equal(notMet.directAutonomousCountTargetReachable,false);
   const allReviewedButUnconfirmed=score([...Array(18).fill(verified),missing,rescued]);
   assert.equal(allReviewedButUnconfirmed.directAutonomousCompletionRate,null);
   assert.equal(allReviewedButUnconfirmed.directAutonomousTargetStatus,'INCOMPLETE');
   assert.equal(allReviewedButUnconfirmed.engineerRescueObserved,1);
+  assert.equal(allReviewedButUnconfirmed.highestPossibleDirectAutonomousSuccesses,20);
+  assert.equal(allReviewedButUnconfirmed.directAutonomousCountTargetReachable,true);
+
+  const outOfReach=score([...Array(15).fill(verified),failed,failed,{status:'SOURCE_FAILED'},owner,missing]);
+  assert.equal(outOfReach.highestPossibleCloudSuccesses,17);
+  assert.equal(outOfReach.reviewedCloudCountTargetReachable,true);
+  assert.equal(outOfReach.highestPossibleDirectAutonomousSuccesses,16);
+  assert.equal(outOfReach.directAutonomousCountTargetReachable,false);
+  assert.equal(outOfReach.directAutonomousCompletionRate,null);
+  assert.equal(outOfReach.directAutonomousTargetStatus,'INCOMPLETE_BLOCKED_SOURCE');
+
+  const bothOutOfReach=score([...Array(15).fill(verified),failed,failed,
+    {status:'SOURCE_FAILED'},{status:'SOURCE_FAILED'},missing]);
+  assert.equal(bothOutOfReach.highestPossibleCloudSuccesses,16);
+  assert.equal(bothOutOfReach.reviewedCloudCountTargetReachable,false);
+  assert.equal(bothOutOfReach.highestPossibleDirectAutonomousSuccesses,16);
+  assert.equal(bothOutOfReach.directAutonomousCountTargetReachable,false);
 });
 
 test("cloud completion cannot be created from consumer matches alone, unsettled model usage or missing human review timing", () => {

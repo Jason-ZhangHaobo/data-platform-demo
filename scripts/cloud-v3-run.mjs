@@ -501,10 +501,12 @@ export function summarizeCloudV3Progress(contract,cases) {
   const settled=reviewedCloudSuccesses+settledCloudFailures;
   const measured=settled===denominator;
   const pendingCloudCases=denominator-settled-cloudSourceBlocked;
+  const highestPossibleCloudSuccesses=reviewedCloudSuccesses+pendingCloudCases;
   const phaseEvidence=cases.flatMap(item=>item.phaseAttribution??[]);
   const directOutcomes=cases.map(directAutonomousOutcomeFor);
   const directAutonomousSuccesses=directOutcomes.filter(value=>value==='VERIFIED').length;
   const ownerAdvancedCloudCases=directOutcomes.filter(value=>value==='OWNER_ADVANCE').length;
+  const highestPossibleDirectAutonomousSuccesses=highestPossibleCloudSuccesses-ownerAdvancedCloudCases;
   const unconfirmedAutonomousCloudCases=directOutcomes.filter(value=>value==='UNCONFIRMED').length;
   const directSettled=directAutonomousSuccesses+ownerAdvancedCloudCases+directOutcomes.filter(value=>value==='SETTLED_FAILURE').length;
   const directMeasured=directSettled===denominator;
@@ -514,7 +516,8 @@ export function summarizeCloudV3Progress(contract,cases) {
     testHarnessCases:count("TEST_HARNESS"),humanAssistedOrNonNativeCases:count("HUMAN_ASSISTED_OR_NON_NATIVE"),
     unconfirmedProvenanceCases:count("PROVENANCE_UNCONFIRMED"),
     pendingCloudCases,
-    highestPossibleCloudSuccesses:reviewedCloudSuccesses+pendingCloudCases,
+    highestPossibleCloudSuccesses,
+    reviewedCloudCountTargetReachable:highestPossibleCloudSuccesses>=requiredSuccesses,
     additionalCloudSuccessesRequired:Math.max(0,requiredSuccesses-reviewedCloudSuccesses),
     notStartedCases:count("NOT_STARTED","SOURCE_VERIFIED","LOCAL_SOURCE_MATCHED","WAITING_FOR_SOURCE","LOCAL_SOURCE_FAILED")+
       cases.filter(item=>item.checkpointStage==="PREPARED").length,
@@ -528,6 +531,8 @@ export function summarizeCloudV3Progress(contract,cases) {
     businessClarificationObserved:phaseEvidence.filter(item=>item.businessClarificationRecorded).length,
     ownerAdvanceObserved:phaseEvidence.filter(item=>item.ownerAdvanceRecorded).length,
     directAutonomousSuccesses,ownerAdvancedCloudCases,unconfirmedAutonomousCloudCases,
+    highestPossibleDirectAutonomousSuccesses,
+    directAutonomousCountTargetReachable:highestPossibleDirectAutonomousSuccesses>=requiredSuccesses,
     directAutonomousSettledCases:directSettled,directAutonomousCoverage:directSettled/denominator,
     additionalDirectAutonomousSuccessesRequired:Math.max(0,requiredSuccesses-directAutonomousSuccesses),
     directAutonomousCompletionRate:directMeasured?directAutonomousSuccesses/denominator:null,
