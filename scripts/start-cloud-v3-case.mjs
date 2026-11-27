@@ -34,7 +34,7 @@ import { validateConsumerPlan } from "./verify-service-consumer.mjs";
 import { cloudWindowApplicationBinding, cloudWindowCheckpointBinding, firstCloudWindowReceiptProtocol, nextCloudWindowReceiptProtocol, preparedFirstCloudBinding, validFirstCloudBinding } from "./first-cloud-v3-window.mjs";
 import { developmentRequestDigest } from "../src/v2/public-development-access.mjs";
 import { withCloudCheckpoint } from "./cloud-v3-checkpoint-lock.mjs";
-import { cloudV3CompletionReceipt, cloudV3DerivationSource, cloudV3FailureReceipt, nextCloudV3Definition, readCloudV3Cases, validCloudV3ApprovalTiming, validDownstreamFailure } from "./cloud-v3-run.mjs";
+import { cloudV3CompletionReceipt, cloudV3ConsumptionReadiness, cloudV3DerivationSource, cloudV3FailureReceipt, nextCloudV3Definition, readCloudV3Cases, validCloudV3ApprovalTiming, validCloudV3Monitoring, validDownstreamFailure } from "./cloud-v3-run.mjs";
 import { inspectedControlEntryScript, readInspectedWebIndex, readInspectedWebScript } from "./control-web-entry.mjs";
 
 const revisionPattern = /^[a-f0-9]{40}$/;
@@ -974,7 +974,10 @@ export async function bindCloudV3Consumption(path,client,{batchId,outFile,planPa
     if (prior && !isDeepStrictEqual(prior,proof)) stop("此批次已有原消费回执，须核对原报告");
     if (!prior) {
       const consumption={...item.consumption,[proof.batchId]:proof};
-      if(!storedAgentConsumptionProofs({...item,consumption}))stop('原签名委托或调用不能跨批次复用');
+      const withProof={...item,consumption};
+      if (!storedAgentConsumptionProofs(withProof) ||
+          cloudV3ConsumptionReadiness(state,withProof).unconfirmedBatchIds.includes(proof.batchId))
+        stop('原签名委托或调用不能跨批次复用');
       item.consumption=consumption;
       writeCheckpoint(path,state);
     }
@@ -991,10 +994,9 @@ export async function verifyCloudV3Completion(path,client,{firstPlanPath,secondP
     const provenance=liveEvidenceProvenance(item);
     if (provenance.synthetic || provenance.nonNative || provenance.unconfirmed)
       stop("原案例的执行来源未获确认");
-    if (!Array.isArray(action?.batchIds) || action.batchIds.length!==2 ||
-        new Set(action.batchIds).size!==2 || !action.batchIds.every(id) ||
-        !action.batchIds.every(batchId=>item.consumption?.[batchId]?.batchId===batchId))
-      stop("须先分别保存两个原批次的消费回执");
+    if (!validCloudV3Monitoring(action)) stop("须先核对原发布的两条监控回执");
+    if (cloudV3ConsumptionReadiness(state,item).pendingBatchIds.length)
+      stop("须先分别保存两个原批次的有效消费回执");
     const reportPaths=[firstPlanPath,secondPlanPath];
     const reports=action.batchIds.map((batchId,index)=>{
       const proof=item.consumption[batchId];
@@ -1190,15 +1192,15 @@ export async function reconcileCloudV3ReadOnly(path, client) {
   if (action.status !== "CONFIRMED")
     return respond("CREATION",await continueCloudV3Start(path,reader,{reconcile:true}));
   if (publication || item.rehearsal?.status === "SUCCEEDED") {
-    const {batchIds,monitoring,status} = publication ?? {};
-    if (status !== "CONFIRMED" || !Array.isArray(batchIds) || batchIds.length !== 2 || new Set(batchIds).size !== 2 ||
-        !Array.isArray(monitoring) || monitoring.length !== 2 ||
-        !batchIds.every((batchId,index)=>id(batchId) && monitoring[index]?.batchId===batchId))
+    if (!validCloudV3Monitoring(publication))
       return respond("PUBLICATION",await submitCloudV3Publication(path,reader,{reconcile:true,workbench:true}));
-    const pendingBatchIds = batchIds.filter(batchId=>item.consumption?.[batchId]?.batchId!==batchId);
-    return pendingBatchIds.length
-      ? respond("CONSUMPTION",{...stored("HANDOFF_REQUIRED","ORIGINAL_CONSUMPTION_EVIDENCE_REQUIRED"),pendingBatchIds})
-      : respond("COMPLETION",stored("HANDOFF_REQUIRED","ORIGINAL_CONSUMPTION_REPORTS_REQUIRED"));
+    const {pendingBatchIds,unconfirmedBatchIds}=cloudV3ConsumptionReadiness(state,item);
+    if (unconfirmedBatchIds.length)
+      return respond("CONSUMPTION",{...stored("HANDOFF_REQUIRED","ORIGINAL_CONSUMPTION_EVIDENCE_UNCONFIRMED"),
+        pendingBatchIds,unconfirmedBatchIds});
+    if (pendingBatchIds.length)
+      return respond("CONSUMPTION",{...stored("HANDOFF_REQUIRED","ORIGINAL_CONSUMPTION_EVIDENCE_REQUIRED"),pendingBatchIds});
+    return respond("COMPLETION",stored("HANDOFF_REQUIRED","ORIGINAL_CONSUMPTION_REPORTS_REQUIRED"));
   }
   return respond("DEVELOPMENT_AND_DELIVERY",await inspectCloudV3Execution(path,reader,{workbench:true}));
 }

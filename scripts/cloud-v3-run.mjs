@@ -16,7 +16,7 @@ import { validPublicationInitiation } from "../src/v2/publication-initiation-evi
 import {validBatchConsumptionAttribution} from '../src/v2/service-consumption-attribution.mjs';
 import {cloudV3PhaseAttribution} from '../src/v2/cloud-v3-phase-attribution.mjs';
 import {validBackgroundRehearsalEvidence, validRehearsalSettlementEvidence} from '../src/v2/rehearsal-wake.mjs';
-import {storedAgentConsumptionProofs} from '../src/v2/cloud-v3-agent-consumption.mjs';
+import {storedAgentConsumptionProofs,validStoredAgentConsumption} from '../src/v2/cloud-v3-agent-consumption.mjs';
 
 const digest = value => typeof value==="string" && /^[a-f0-9]{64}$/.test(value);
 const id = value => typeof value==="string" && uuid.test(value);
@@ -99,9 +99,61 @@ export function validCloudV3ApprovalTiming(timing) {
     Date.parse(timing.readyAt)<=Date.parse(timing.reviewedAt) && Date.parse(timing.reviewedAt)<=Date.parse(timing.approvedAt));
 }
 
+export function validCloudV3Monitoring(publication) {
+  const {status,batchIds,monitoring,approvalTiming}=publication??{};
+  return status==="CONFIRMED" && Array.isArray(batchIds) && batchIds.length===2 &&
+    new Set(batchIds).size===2 && batchIds.every(id) &&
+    Array.isArray(monitoring) && monitoring.length===2 && monitoring[0]?.eventId!==monitoring[1]?.eventId &&
+    monitoring.every((row,index)=>row?.batchId===batchIds[index] && id(row.eventId) && date(row.observedAt)) &&
+    (approvalTiming===undefined || validCloudV3ApprovalTiming(approvalTiming) &&
+      monitoring.every(row=>Date.parse(approvalTiming.approvedAt)<=Date.parse(row.observedAt))) &&
+    (publication.scheduledBatches===undefined || validStoredPublicationSchedule(publication.scheduledBatches,publication));
+}
+
+function hasCloudV3ConsumptionDigests(proof,batchId) {
+  return proof?.batchId===batchId &&
+    [proof.sourceDigest,proof.planDigest,proof.reportDigest,proof.dapiCallIdDigest,proof.xapiCallIdDigest,
+      proof.dapiRowsDigest,proof.xapiRowsDigest].every(digest);
+}
+
+export function cloudV3ConsumptionReadiness(state,item) {
+  const batchIds=item.actions.publication.batchIds;
+  const records=item.consumption??{};
+  const expectedStatus=new URL(state.origin).protocol==="https:" ? "MATCHED" : "MATCHED_ONLY";
+  const missingBatchIds=[];
+  const unconfirmed=new Set();
+  const owners=new Map();
+  const register=(key,batchId)=>{
+    const prior=owners.get(key);
+    if (prior!==undefined) {
+      unconfirmed.add(prior);
+      unconfirmed.add(batchId);
+    } else owners.set(key,batchId);
+  };
+  for (const batchId of batchIds) {
+    if (!Object.hasOwn(records,batchId)) {
+      missingBatchIds.push(batchId);
+      continue;
+    }
+    const proof=records[batchId];
+    if (!hasCloudV3ConsumptionDigests(proof,batchId) || proof.status!==expectedStatus ||
+        (proof.attribution!==undefined && !validBatchConsumptionAttribution(proof.attribution,proof)) ||
+        (proof.agent!==undefined && !validStoredAgentConsumption(proof.agent,proof))) {
+      unconfirmed.add(batchId);
+      continue;
+    }
+    for (const callDigest of [proof.dapiCallIdDigest,proof.xapiCallIdDigest,proof.agent?.dapi.callIdDigest,proof.agent?.xapi.callIdDigest])
+      if (callDigest!==undefined) register("call:"+callDigest,batchId);
+    if (proof.agent) for (const jobId of [proof.agent.requestId,proof.agent.wakeId]) register("job:"+jobId,batchId);
+  }
+  const unconfirmedBatchIds=batchIds.filter(batchId=>unconfirmed.has(batchId));
+  return {missingBatchIds,unconfirmedBatchIds,
+    pendingBatchIds:batchIds.filter(batchId=>missingBatchIds.includes(batchId) || unconfirmed.has(batchId))};
+}
+
 function hasReviewedCloudEvidence(state,item,checkedAt) {
   const {code,rehearsal,actions:{agent,delivery,publication}}=item, requirement=code.requirementBinding;
-  const {monitoring,batchIds,approvalTiming}=publication;
+  const {monitoring,approvalTiming}=publication;
   return agent.id===item.taskId && code.taskId===item.taskId &&
     code.sourceKind==="AGENT" && typeof code.model==="string" && Boolean(code.model.trim()) && !nonLiveModelLabel(code.model) &&
     requirement?.protocol===sqlRequirementProtocol && requirement.taskId===item.taskId &&
@@ -116,9 +168,8 @@ function hasReviewedCloudEvidence(state,item,checkedAt) {
     !delivery.cancelled && !publication.cancelled && validCloudV3ApprovalTiming(approvalTiming) &&
     date(code.createdAt) && Date.parse(state.submission.submittedAt??item.evaluationStartedAt)<=Date.parse(code.createdAt) &&
     Date.parse(code.createdAt)<=Date.parse(approvalTiming.readyAt) &&
-    Array.isArray(monitoring) && monitoring.length===2 && monitoring[0]?.eventId!==monitoring[1]?.eventId &&
-    monitoring.every((row,index)=>row?.batchId===batchIds[index] && id(row.eventId) && date(row.observedAt) &&
-      Date.parse(approvalTiming.approvedAt)<=Date.parse(row.observedAt) && Date.parse(row.observedAt)<=Date.parse(checkedAt));
+    validCloudV3Monitoring(publication) &&
+    monitoring.every(row=>Date.parse(row.observedAt)<=Date.parse(checkedAt));
 }
 
 function storedConsumptionAttribution(item) {
@@ -153,9 +204,7 @@ export function cloudV3CompletionReceipt(original,first,checkedAt) {
       !date(checkedAt))
     stop("完成回执缺少原双批证据");
   const proofs=batches.map(batchId=>first.consumption?.[batchId]);
-  if (!proofs.every((proof,index)=>proof?.batchId===batches[index] &&
-      [proof.sourceDigest,proof.planDigest,proof.reportDigest,proof.dapiCallIdDigest,proof.xapiCallIdDigest,
-        proof.dapiRowsDigest,proof.xapiRowsDigest].every(digest)) ||
+  if (!proofs.every((proof,index)=>hasCloudV3ConsumptionDigests(proof,batches[index])) ||
       new Set(proofs.flatMap(proof=>[proof.dapiCallIdDigest,proof.xapiCallIdDigest])).size!==4)
     stop("完成回执缺少原双批证据");
   const scope=cloudV3CompletionScope(state,proofs);
@@ -352,7 +401,7 @@ export function readCloudV3Run(path,options) {
     cases,willExecute:false,executionAuthorized:false,agentIndependentE2E:false,publicDeployed:false};
 }
 
-function checkpointStage(item) {
+function checkpointStage(state,item) {
   const {agent,delivery,rehearsal,publication}=item.actions;
   if (item.status==="CANCELLED" || item.developmentObservation?.stage==="CANCELLED" ||
       delivery?.cancelled || item.rehearsal?.status==="CANCELLED" || publication?.cancelled)
@@ -368,8 +417,10 @@ function checkpointStage(item) {
   if (!publication) return "REVIEW_PENDING";
   if (publication.status!=="CONFIRMED") return "PUBLICATION_UNCONFIRMED";
   if (!publication.monitoring) return "MONITORING_PENDING";
-  return publication.batchIds?.length===2 && publication.batchIds.every(id=>item.consumption?.[id]?.batchId===id)
-    ? "COMPLETION_RECEIPT_PENDING" : "CONSUMPTION_PENDING";
+  if (!validCloudV3Monitoring(publication)) return "MONITORING_UNCONFIRMED";
+  const {missingBatchIds,unconfirmedBatchIds}=cloudV3ConsumptionReadiness(state,item);
+  if (unconfirmedBatchIds.length) return "CONSUMPTION_UNCONFIRMED";
+  return missingBatchIds.length ? "CONSUMPTION_PENDING" : "COMPLETION_RECEIPT_PENDING";
 }
 
 function cloudV3CaseProgress(fullPlan,entries) {
@@ -384,7 +435,7 @@ function cloudV3CaseProgress(fullPlan,entries) {
       ...(definition.kind==="DERIVED"?{sourceCaseId:definition.sourceCaseId}:{})};
     const existing=recorded.get(definition.id);
     if (existing) {
-      const proof=liveEvidenceProvenance(existing.item), stage=checkpointStage(existing.item);
+      const proof=liveEvidenceProvenance(existing.item), stage=checkpointStage(existing.checkpoint.state,existing.item);
       const observation=existing.item.developmentObservation;
       const status=verified(existing) ? "CLOUD_CHAIN_VERIFIED" : cloudFailure(existing) ? "CLOUD_FAILURE_SETTLED"
         : localFailure(existing) ? "LOCAL_FAILURE_SETTLED_ONLY" : existing.completion ? "LOCAL_MATCHED_ONLY"

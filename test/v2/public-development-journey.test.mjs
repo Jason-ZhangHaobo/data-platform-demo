@@ -2085,6 +2085,24 @@ async function requestBoundPublicationJourney(t,{separateApproval=false,backgrou
   assert.equal(completionHandoff.reason,'ORIGINAL_CONSUMPTION_REPORTS_REQUIRED');
   assert.deepEqual(requests,[]);
   assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+  if (cashChange) {
+    const partialPath=join(f.directory,'incomplete-consumption.json');
+    const partial=saved();
+    partial.outcomes[0].consumption[batchIds[1]]={batchId:batchIds[1]};
+    const partialBytes=JSON.stringify(partial);
+    writeFileSync(partialPath,partialBytes,{mode:0o600});
+    const handoff=await cli('v3-reconcile',[],0,partialPath);
+    assert.equal(handoff.step,'CONSUMPTION');
+    assert.equal(handoff.reason,'ORIGINAL_CONSUMPTION_EVIDENCE_UNCONFIRMED');
+    assert.deepEqual(handoff.unconfirmedBatchIds,[batchIds[1]]);
+    assert.deepEqual(handoff.pendingBatchIds,[batchIds[1]]);
+    assert.deepEqual(requests,[]);
+    await cli('v3-complete',completionFlags,1,partialPath);
+    assert.deepEqual(requests,[]);
+    assert.equal(existsSync(completionFile),false);
+    assert.equal(readFileSync(partialPath,'utf8'),partialBytes);
+    assert.equal(readFileSync(checkpoint,'utf8'),beforeCompletion);
+  }
   const completion=await cli('v3-complete',completionFlags);
   assert.equal(completion.scope,'LOCAL_MATCHED_ONLY');
   assert.equal(completion.independentlyVerifiedCloudCase,false);
