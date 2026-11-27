@@ -31,7 +31,9 @@ import {appliedChatReport, chatBatchLocation, chatBatchTarget, readWealthBatch, 
 const CustomerAssetAnalysis=lazy(()=>import('./CustomerAssetAnalysis'));
 const ChatSqlDevelopment=lazy(()=>import('./ChatSqlDevelopment'));
 const ChatScopeChange=lazy(()=>import('./ChatScopeChange'));
+import {invitedChatScreen,invitedChatStartLocation,type InvitedStartWindow} from './invited-chat-start';
 const InvitedTaskChat=lazy(()=>import('./InvitedTaskChat'));
+const InvitedSqlComposer=lazy(()=>import('./InvitedSqlComposer'));
 type Api = <T>(path: string, body?: unknown, options?:{idempotencyKey?:string}) => Promise<T>;
 type Risk = "LOW" | "MEDIUM" | "HIGH";
 type Destination = { id: string; label: string; action: string; risk: Risk };
@@ -173,7 +175,7 @@ export function AgentCenter({
   api: Api;
   canWrite: boolean;
   local?: boolean;
-  invited?: {authenticated:boolean;onLogin:()=>void;onEditor:(href:string)=>void};
+  invited?: {authenticated:boolean;start?:InvitedStartWindow;observeDevelopment?:boolean;onDirtyChange?:(dirty:boolean)=>void;onLogin:()=>void;onEditor:(href:string)=>void};
   modelConfigured: boolean;
   contextId: string;
   currentSql: string;
@@ -198,10 +200,11 @@ export function AgentCenter({
     [childCancelBusy, setChildCancelBusy] = useState(""),
     [error, setError] = useState("");
 
-  const [invitedContext,setInvitedContext]=useState(()=>{
-    if(!invited||typeof window==='undefined')return false;
-    return [...new URLSearchParams(location.search).keys()].some(k=>k==='task'||k.startsWith('invited_'));
-  });
+  const [invitedHref,setInvitedHref]=useState(()=>typeof window==='undefined'?'':location.href);
+  const [composerLocked,setComposerLocked]=useState(false);
+  const [createdWindowTask,setCreatedWindowTask]=useState<string>();
+  const invitedScreen=invited && invitedHref ? invitedChatScreen(invitedHref,invited.start?.developmentOnly===true) : undefined;
+  const invitedContext=Boolean(invitedScreen);
   const startNewPlanning=useRef(false);
   const initialTarget=useMemo(()=>typeof window==='undefined'?undefined:chatBatchTarget(window.location.href),[]);
   const [target,setTarget]=useState<ChatTarget|null|undefined>(initialTarget);
@@ -433,10 +436,8 @@ export function AgentCenter({
     return()=>{disposed=true;clearInterval(timer);};
   }, [activities,task?.id]);
 
-  const resetTask = () => {
-    if(invitedContext){startNewPlanning.current=true;setInvitedContext(false);}
+  const clearPlanningTask = () => {
     selectionEpoch.current++;readOrder.current++;originalSubmission.current=undefined;setNotFound(false);setTarget(undefined);setBatchRead(undefined);
-    history.replaceState(null,'',location.pathname+'?module=agent-center#agent-chat');
     setTask(undefined);
     setMessage("");
     setTrace([]);
@@ -446,6 +447,15 @@ export function AgentCenter({
     setActivities({});
     setError("");
   };
+  const openBlankChat=(planning:boolean)=>{
+    if(invitedContext && planning)startNewPlanning.current=true;
+    clearPlanningTask();
+    const href=invitedChatStartLocation(location.href,planning&&Boolean(invited?.start?.developmentOnly));
+    history.replaceState(null,'',href);
+    setInvitedHref(href.href);
+  };
+  const resetTask=()=>openBlankChat(true);
+  const newTask=()=>openBlankChat(!invited?.start?.developmentOnly);
   const chooseBatch=(source:PublishedReportBinding)=>{
     const draft=message;
     resetTask();setTarget({source});setMessage(draft);
@@ -726,12 +736,12 @@ export function AgentCenter({
   return (
     <div className="agent-os-v2" data-invited-context={invitedContext||undefined} data-wealth-chat={Boolean(wealthSource)||undefined} data-sql-chat={Boolean(readableSqlId)||undefined}>
       <aside className="agent-os-history-v2">
-        <header><div><Sparkles size={17} /><strong>数舵 Data Agent</strong></div><button aria-label="新建Agent任务" disabled={busy||actionBusy} onClick={resetTask}><Plus size={16} /></button></header>
-        <button className="agent-os-new-v2" disabled={busy||actionBusy} onClick={resetTask}><MessageSquare size={15} />新任务</button>
+        <header><div><Sparkles size={17} /><strong>数舵 Data Agent</strong></div><button aria-label="新建Agent任务" disabled={busy||actionBusy||composerLocked} onClick={newTask}><Plus size={16} /></button></header>
+        <button className="agent-os-new-v2" disabled={busy||actionBusy||composerLocked} onClick={newTask}><MessageSquare size={15} />新任务</button>
         <span className="agent-os-section-label-v2">任务历史</span>
         <div className="agent-os-task-list-v2">
-          {invitedContext?<><div className="invited-chat-selection"><FileCheck2 size={14}/><strong>当前 SQL 开发任务</strong></div>
-            <a className="button" href="?module=agent-center#agent-chat">打开任务规划<ArrowRight size={13}/></a></>:tasks.length ? tasks.map((item) => (
+          {invitedContext?<><div className="invited-chat-selection"><FileCheck2 size={14}/><strong>{invitedScreen==='start'?'SQL 开发任务':'当前 SQL 开发任务'}</strong></div>
+            {!composerLocked&&<a className="button" href={invitedChatStartLocation(location.href,Boolean(invited?.start?.developmentOnly)).href}>打开任务规划<ArrowRight size={13}/></a>}</>:tasks.length ? tasks.map((item) => (
             <button key={item.id} className={item.id === task?.id ? "selected" : ""} disabled={busy||actionBusy} onClick={() => selectHistory(item).catch((cause) => setError((cause as Error).message))}>
               <span>{pending(item.status) ? <LoaderCircle className="spin" size={13} /> : <MessageSquare size={13} />}</span>
               <div><strong>{taskTitle(item)}</strong><small>{new Date(item.createdAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</small></div>
@@ -742,7 +752,9 @@ export function AgentCenter({
       </aside>
 
       <section className="agent-os-chat-v2">
-        {invitedContext&&invited?<Suspense fallback={<p role="status">正在打开已有任务…</p>}><InvitedTaskChat api={api} {...invited}/></Suspense>:<>
+        {invitedContext&&invited?<Suspense fallback={<p role="status">正在打开已有任务…</p>}>{invitedScreen==='start'?<InvitedSqlComposer api={api} access={invited.start?{...invited.start,windowTaskId:invited.start.windowTaskId??createdWindowTask}:undefined} authenticated={invited.authenticated} onLogin={invited.onLogin}
+          initialContextId={contextId} onLock={setComposerLocked} onDirtyChange={invited.onDirtyChange}
+          onTask={(href,createdHere)=>{if(createdHere)setCreatedWindowTask(new URL(href).searchParams.get('task')??undefined);history.replaceState(null,'',href);setInvitedHref(href);}}/>:<InvitedTaskChat api={api} {...invited}/>}</Suspense>:<>
         <header className="agent-os-chat-head-v2"><div><span className="eyebrow">INDEPENDENT AGENT WORKSPACE</span><h2>{task ? taskTitle(task) : "你想完成什么数据工作？"}</h2></div><div className="agent-os-head-meta-v2"><span>证券数据实验室</span><span>{modelConfigured ? "模型已连接" : "模型待连接"}</span></div></header>
         {local&&<div className="agent-chat-batch-context">
           {target===null?<p role="alert">批次链接不完整。请新建会话并重新选择报表批次。</p>:

@@ -40,6 +40,10 @@ export type AuthSession = {
   readOnly?: boolean;
   developmentOnly?: boolean;
   developmentTaskOnly?: boolean;
+  developmentWindowTaskId?: string;
+  developmentWindowUsed?: boolean;
+  developmentRequestOnly?: boolean;
+  developmentRequestDigest?: string;
   developmentTaskId?: string;
   developmentStartsAt?: string;
   developmentExpiresAt?: string;

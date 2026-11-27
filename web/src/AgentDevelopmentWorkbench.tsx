@@ -15,7 +15,7 @@ import {AgentClarificationReply} from './AgentClarificationReply';
 import {readSqlClarification,sqlClarificationBody,verifiedClarificationReceipt} from '../../src/v2/sql-clarification-client.mjs';
 import {clarificationReplyReason} from '../../src/v2/sql-clarification-contract.mjs';
 import { manualRunLocation, manualRunRecovery, manualSaveLocation, manualSaveRequest, acknowledgedManualDraft, mayReuseManualRevision,verifiedManualOrigin,manualSourceDisclosure,developmentContextLocked } from "./manual-run-recovery";
-import {agentSubmissionRequest,agentSubmissionLocation,createAgentSubmission,agentTaskReceiptValid} from "./agent-submission";
+import {agentSubmissionRequest,agentSubmissionLocation,createAgentSubmission,agentTaskReceiptValid,emptyAgentDraftSql} from "./agent-submission";
 import { fundExecutionBody, fundExecutionReceiptMatches } from "../../src/v2/fund-preparation-client.mjs";
 import type { FundExecutionBinding, FundPreparationReceipt } from "../../src/v2/fund-preparation-client.mjs";
 import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
@@ -669,7 +669,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     }
     const token=++epoch.current,submittedSql=draft,submittedContext=contextId,submittedParent=continuationParent?.id,submittedManual=manualParent?.id;
     setBusy(true); setError("");
-    const body = { message: requestMessage, sql: repairComparison||continuationParent||manualParent?draft:draft.trim() || "SELECT 1 AS pending", contextId, ...(selectedSync ? {syncInput:selectedSync} : backgroundAvailable?{background:backgroundConsent}:{}), ...(repairSource ? { sourceRunId: repairSource } : {}),...(repairComparison?{repairComparison:repairComparison.binding}:{}) };
+    const body = { message: requestMessage, sql: repairComparison||continuationParent||manualParent?draft:draft.trim() || emptyAgentDraftSql, contextId, ...(selectedSync ? {syncInput:selectedSync} : backgroundAvailable?{background:backgroundConsent}:{}), ...(repairSource ? { sourceRunId: repairSource } : {}),...(repairComparison?{repairComparison:repairComparison.binding}:{}) };
     try {
       let continuation,manual;
       if(manualParent){

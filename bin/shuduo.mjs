@@ -47,6 +47,7 @@ import {readChatChangeDelivery,prepareChatChangeDelivery} from "../src/v2/chat-c
 import {readChatChangePublication,reviewedChatChangeInput,publishChatChange} from "../src/v2/chat-change-publication-client.mjs";
 import {readChatChangeConsumption} from "../src/v2/chat-change-consumption-client.mjs";
 import {readInvitedSqlContext} from "../src/v2/invited-sql-context-client.mjs";
+import {recoverInvitedSqlStart,submitInvitedSqlStart} from "../src/v2/invited-sql-start.mjs";
 import {readDerivedComparison} from "../src/v2/derived-comparison-client.mjs";
 import {readRepairComparisonBasis,createComparisonRepairTask} from '../src/v2/repair-comparison-client.mjs';
 import {readManualDeliveryWorkflow,prepareManualDelivery} from '../src/v2/manual-delivery-client.mjs';
@@ -97,6 +98,8 @@ const HELP = `数舵 V2 CLI · 与GUI/MCP共用 /api/v2
   shuduo agent graph --id INTENT_ID
   shuduo agent chat-development --id INTENT_ID
   shuduo agent invited-task-context --id TASK_ID [--request-id ORIGINAL_REQUEST_ID]
+  shuduo agent invited-start --context CONTEXT_ID --message "开发需求" --request-id ORIGINAL_UUID --confirm
+  shuduo agent invited-start-request --request-id ORIGINAL_UUID
   shuduo agent chat-changes --id INTENT_ID
   shuduo agent change-chat-scope --id INTENT_ID --source-run-id ORIGINAL_RUN_ID --context CONTEXT_ID --message REQUEST --request-id NEXT_REQUEST_ID --confirm
   shuduo agent chat-delivery --id INTENT_ID --change-request-id CHANGE_ID
@@ -634,6 +637,16 @@ export async function runV2Cli(argv, env = process.env, options = {}) {
           body: { destinationId: required(parsed.options, "destination") },
         },
       );
+    else if(resource==="agent" && ["invited-start","invited-start-request"].includes(action)){
+      const submit=action==="invited-start";
+      const allowed=new Set(["request_id","base_url",...(submit?["context","message","confirm"]:[])]);
+      if (parsed.positionals.length!==2) throw Error("受邀开发只接受原请求编号和指定参数");
+      for(const token of argv.filter(value=>value.startsWith("--")))
+        if(!allowed.delete(token.slice(2).replaceAll("-","_")))throw Error("受邀开发命令含有未知或重复的参数");
+      const requestId=required(parsed.options,"request_id");
+      result=submit?await submitInvitedSqlStart(client,{requestId,confirm:parsed.options.confirm,
+        contextId:required(parsed.options,"context"),message:required(parsed.options,"message")}):await recoverInvitedSqlStart(client,{requestId});
+    }
     else if(resource==="agent" && action==="invited-task-context")
       result=await readInvitedSqlContext(client,{taskId:required(parsed.options,"id"),
         ...(parsed.options.request_id===undefined?{}:{requestId:required(parsed.options,"request_id")})});

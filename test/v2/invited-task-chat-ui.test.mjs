@@ -38,6 +38,15 @@ test('a mixed or partial native editor link cannot be mistaken for a normal task
 });
 
 const Evidence=await component('InvitedTaskChat','InvitedTaskEvidence');
+const backgroundState=await component('InvitedTaskChat','invitedBackgroundState');
+test('only a current acknowledged grant for the original task can drive the visible progress observer',()=>{
+  const now=Date.now(),base={protocol:'shuduo-agent-event-driver/v1',taskId:selection.taskId,status:'ACTIVE',delivery:'ACKNOWLEDGED',expiresAt:now+60000};
+  assert.equal(backgroundState(base,selection.taskId,now),'ACTIVE');
+  for(const [fields,expected] of [
+    [{scopeBlocked:true},'PAUSED'],[{expiresAt:now},'PAUSED'],[{taskId:randomUUID()},'UNKNOWN'],
+    [{delivery:'UNCONFIRMED'},'UNKNOWN'],[{status:'INACTIVE'},'INACTIVE'],[{status:'NEEDS_CONFIRMATION'},'UNKNOWN']
+  ])assert.equal(backgroundState({...base,...fields},selection.taskId,now),expected);
+});
 const markup=value=>renderToStaticMarkup(createElement(Evidence,{value}));
 const pending={message:'统计虚构账户的可用现金',contextId:source.contextId,taskStatus:'QUEUED',attemptCount:0,
   evidenceState:'PENDING',evidenceSource:'UNCONFIRMED'};
@@ -50,7 +59,8 @@ test('the evidence panel renders the persisted request and SQL, identifying the 
   const html=markup(recorded);
   for(const text of [pending.message,recorded.revision.sql,source.revisionId,source.runId,'Apache Spark','核验结果','通过'])assert.ok(html.includes(text));
   const waiting=markup(pending);
-  assert.match(waiting,/任务尚在推进/);
+  assert.match(waiting,/正在等待下一条执行记录/);
+  assert.match(markup({...pending,taskStage:'WAITING_FOR_RUN'}),/等待 Spark 结果/);
   assert.doesNotMatch(waiting,/已保存的 SQL|运行批次|核验结果|通过/);
   const unknown=markup({...pending,evidenceState:'UNCONFIRMED'});
   assert.match(unknown,/原版本和运行依据尚待核对/);
