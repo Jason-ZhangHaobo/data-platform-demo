@@ -20,6 +20,8 @@ import { fundExecutionBody, fundExecutionReceiptMatches } from "../../src/v2/fun
 import type { FundExecutionBinding, FundPreparationReceipt } from "../../src/v2/fund-preparation-client.mjs";
 import {AgentSubmissionRecovery} from "./AgentSubmissionRecovery";
 import {initialAgentTaskId,loadHistoryAfterTarget,mergeTaskHistory,checkedAgentTask,checkedAgentRun} from "./agent-history-loading";
+import {chatEditorSource,clearChatEditorSource} from "./agent-chat-editor-location";
+import {readChatSqlDevelopment} from "./chat-sql-development";
 import {agentBackgroundAction,agentBackgroundLabel,agentTaskFinished,mayEditScopedTask} from "./agent-task-scope";
 import {AgentRepairAction} from "./AgentRepairAction";
 import {failedRunRepairAction} from './agent-repair-action';
@@ -94,6 +96,9 @@ export function AgentDevelopmentWorkbench(props: WorkbenchProps) {
 
 function DevelopmentWorkspace({ api, contexts: availableContexts, initialContextId, canWrite:originalCanWrite, canPublish, publicationTarget, ready, readinessReason, loading, privatePreview, runtimeMode, backgroundAvailable=false, fundPilotAvailable=false, readOnly:requestedReadOnly=false, taskOnly=false, targetTaskId, expectedSourceBinding,expectedManualSource,expectedSourceError,onLogin, onDirtyChange, onOpenServices }: WorkbenchProps) {
   const contexts=availableContexts.filter(context=>context.capabilities?.agentDevelopment!==false);
+  const chatSource=typeof location==='undefined'?undefined:chatEditorSource(location.href);
+  const [chatEditorError,setChatEditorError]=useState('');
+  const [chatEditorVerified,setChatEditorVerified]=useState(false);
   const fundContexts=availableContexts.filter(context=>context.capabilities?.fundPreparation===true);
   const [fundDirty,setFundDirty]=useState(false);
   const sourceReturnActive=Boolean(expectedSourceBinding||expectedManualSource||expectedSourceError),readOnly=requestedReadOnly||sourceReturnActive;
@@ -290,6 +295,14 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   }
   async function loadHistoryOnce() {
     setHistoryError("");setHistoryState("loading");
+    if(chatSource!==undefined){
+      if(chatSource&&(!taskOnly||targetTaskId===chatSource.taskId)&&!sourceReturnActive&&
+        (!publicationTarget||publicationTarget.taskId===chatSource.taskId)){
+        await selectTask(chatSource.taskId,false);
+      }else setChatEditorError('会话链接不完整，或当前窗口无法查看这项开发任务。');
+      if(alive.current)setHistoryState("deferred");
+      return;
+    }
     if(sourceReturnActive&&!expectedManualSource){
       if(expectedSourceError||!expectedSourceBinding||!validServiceSourceBinding(expectedSourceBinding)||expectedSourceBinding.sourceKind!=="AGENT"||
         !sourceBindingEnvironmentMatches(expectedSourceBinding,runtimeMode==="PUBLIC_INVITATION",runtimeMode)){
@@ -375,10 +388,11 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     }, 5000);
     return () => { active = false; clearInterval(timer); };
   }, [run?.id, run?.status, automatic]);
-  const rememberSelection = (id?: string) => {
+  const rememberSelection = (id?: string, keepChatSource=false) => {
     selectedId.current = id;
     setTaskReadFailure(undefined);
     const url = clearContextDerivation(location.href);
+    if(!keepChatSource)clearChatEditorSource(url);
     if (url.searchParams.get("task") !== id) clearAgentArchivePin(url);
     if (id) url.searchParams.set("task", id); else url.searchParams.delete("task");
     setDerivationActive(false);derivationActiveRef.current=false;setDerivationDraft(undefined);derivationRef.current=undefined;
@@ -394,7 +408,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const rememberManual = (revisionId: string, runId?: string, requestKey?: string, origin?:string) => {
     selectedId.current = undefined;
     restoredManual.current=JSON.stringify([revisionId,runId,requestKey]);
-    const url = manualRunLocation(location.href, {revisionId, runId, requestKey, originTaskId:expectedManualSource?undefined:origin});
+    const url = clearChatEditorSource(manualRunLocation(location.href, {revisionId, runId, requestKey, originTaskId:expectedManualSource?undefined:origin}));
     history.replaceState(null, "", url);
   };
   async function selectTask(id: string, protectDraft = true, backgroundFailure?: string) {
@@ -409,6 +423,24 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     setAutomatic(false); setBusy(true); setError(""); setRetryConsent(false); setTaskReadFailure(undefined);
     let readingRun = false;
     try {
+      if(chatSource?.taskId===id){
+        const proof=await readChatSqlDevelopment(api,chatSource.intentId,chatSource);
+        if(!isCurrent())return;
+        const [taskValue,runValue]=await Promise.all([api('/agent/tasks/'+id),api('/runs/'+chatSource.runId)]);
+        if(!isCurrent())return;
+        const current=checkedAgentTask<Task>(taskValue,id);
+        const actual=checkedAgentRun<Run>(runValue,{id,contextId:chatSource.contextId,revisionId:chatSource.revisionId,runId:chatSource.runId});
+        const last=current.attempts.at(-1);
+        if(current.contextId!==chatSource.contextId||current.revisionId!==chatSource.revisionId||current.sql!==proof.sql||
+          last?.revisionId!==chatSource.revisionId||last.runId!==chatSource.runId||
+          (current.runId!==undefined&&current.runId!==chatSource.runId)||current.status!==proof.taskStatus||
+          actual.agentTaskId!==id||actual.revisionHash!==chatSource.revisionHash||actual.status!==proof.runStatus)
+          throw Error('会话的代码版本与当前任务或运行回执不一致');
+        rememberSelection(id,true);accept(current);setContextId(chatSource.contextId);
+        if(!keepDraft){setDraft(proof.sql);setDiff(false);}
+        setBaseline(proof.sql);setBaselineRevisionId(chatSource.revisionId);setRun(actual);
+        setChatEditorError('');setChatEditorVerified(true);return;
+      }
       const current = checkedAgentTask<Task>(await api<unknown>(`/agent/tasks/${id}`),id);
       if (!isCurrent()) return;
       if(expectedSourceBinding){
@@ -438,7 +470,9 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
     } catch (e) {
       if (!isCurrent()) return;
       const message = e instanceof Error ? e.message : "暂时无法读取，请重试。";
-      if (sourceReturnActive) {
+      if(chatSource?.taskId===id){
+        setChatEditorVerified(false);setChatEditorError(message);setRun(undefined);
+      }else if (sourceReturnActive) {
         setReturnSourceError(message); setTask(undefined); setRun(undefined); setDraft(""); setBaseline(""); setBaselineRevisionId(undefined);
       } else if (readingRun) setRunRead({ state: "ERROR", message });
       else setTaskReadFailure({ id, message });
@@ -682,7 +716,7 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
         const key=crypto.randomUUID(), origin=task?.id ?? originTaskId;
         revisionRequest.current={key,sql:draft,contextId,originAgentTaskId:origin};
         setPendingSaveKey(key);
-        history.replaceState(null,"",manualSaveLocation(location.href,key,origin));
+        history.replaceState(null,"",clearChatEditorSource(manualSaveLocation(location.href,key,origin)));
         revision=await api<SavedRevision>("/revisions",{sql:draft,contextId,...(origin ? {originAgentTaskId:origin} : {})},{idempotencyKey:key});
         setPendingSaveKey(undefined); revisionRequest.current=undefined;
       }
@@ -762,7 +796,21 @@ function DevelopmentWorkspace({ api, contexts: availableContexts, initialContext
   const assistedChatReason=(task?.sourceKind==='MANUAL'||!task&&confirmedManualRevision.current?.source==='MANUAL')&&!derivationActive&&task?.status!=='SUCCEEDED'&&!manualSuccessReady&&
     !(run&&['FAILED','VALIDATION_FAILED'].includes(run.status)&&run.revisionId===baselineRevisionId&&!dirty)?'当前尚无可续改的成功辅助任务或可引用的失败批次；请先继续原任务，或在编辑器保存核验。新的修改意图保留，不会改作无来源的新任务。':'';
   const resultFields = run?.rows?.[0] ? Object.keys(run.rows[0]) : [];
+  const chatIntent=chatSource?.intentId;
+  useEffect(()=>{
+    if(!chatIntent||!chatEditorVerified)return;
+    const frame=requestAnimationFrame(()=>document.getElementById('agent-code')?.scrollIntoView({block:'start'}));
+    return ()=>cancelAnimationFrame(frame);
+  },[chatIntent,chatEditorVerified]);
+  if(chatSource!==undefined&&!chatEditorVerified)return <section className="agent-dev" aria-label="会话代码接管">
+    <h2>打开会话中的 SQL 版本</h2>
+    <p role={chatEditorError?'alert':'status'}>{chatEditorError||'正在核对原会话、任务与运行…'}</p>
+    {chatEditorError&&chatSource&&<button className="button" onClick={()=>void loadHistory()}>重新核对原会话</button>}
+    {chatIntent&&<a className="button" href={'?module=agent-center&chat_intent='+chatIntent+'#agent-chat'}>返回原对话</a>}
+  </section>;
   return <section className="agent-dev" aria-label="Agent 数据开发工作台">
+    {chatSource&&<div className="agent-dev-notice" aria-label="会话接管来源"><span>原对话 · 版本 {chatSource.revisionId.slice(0,8)} · 批次 {chatSource.runId.slice(0,8)}</span>
+      <a className="button" href={'?module=agent-center&chat_intent='+chatSource.intentId+'#agent-chat'}>返回原对话</a></div>}
     <header className="agent-dev-heading">
       <div>
         <div className="eyebrow"><Bot size={14} /> AGENT DEVELOPMENT</div>

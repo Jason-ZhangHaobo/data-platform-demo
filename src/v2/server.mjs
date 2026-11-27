@@ -39,6 +39,7 @@ import { MetadataStore } from "./store.mjs";
 import { callPrivateApplication, verifyPrivateApplicationTask,validatePrivateApplicationRequest } from "./private-application.mjs";
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
+import { storedChatSqlDevelopment } from "./chat-sql-development.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent, settleAgentDevelopmentResult } from "./durable-agent.mjs";
 import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,assertSqlRequirementPackageSource} from './sql-requirements.mjs';
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
@@ -727,14 +728,15 @@ export function createV2Server(options = {}) {
         .list("agent_tool_invocation", PROJECT)
         .filter((item) => item.intentId === intent.id),
       graphSteps = steps.map((step, index) => {
+        const stepHandoffs = handoffs.filter(item => item.destinationId === step.destinationId)
+          .sort((a,b) => String(a.createdAt).localeCompare(String(b.createdAt)));
         const approval = approvals
             .filter((item) => item.destinationId === step.destinationId)
             .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
             .at(-1),
-          handoff = handoffs
-            .filter((item) => item.destinationId === step.destinationId)
-            .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
-            .at(-1),
+          // An engineer opening the editor used to add a handoff note without a
+          // task. Preserve the actual SQL specialist link for those older chats.
+          handoff = (step.destinationId === "development" && stepHandoffs.findLast(item => item.specialistTaskId)) || stepHandoffs.at(-1),
           invocation = invocations
             .filter((item) => item.destinationId === step.destinationId)
             .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
@@ -777,6 +779,8 @@ export function createV2Server(options = {}) {
           risk: step.risk,
           objectiveHash: hash(step.objective),
           status,
+          ...(step.destinationId === "development" && specialist?.id === handoff?.specialistTaskId &&
+              ["SPARK_SQL","PYTHON"].includes(specialist?.language) ? {specialistLanguage:specialist.language} : {}),
           ...(approval
             ? { approvalId: approval.id, approvalStatus: approval.status }
             : {}),
@@ -4761,7 +4765,7 @@ export function createV2Server(options = {}) {
         );
       }
       const agentIntentGraphRoute = path.match(
-        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/graph$/,
+        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/(graph|development)$/,
       );
       if (agentIntentGraphRoute && method === "GET") {
         const intent = get("agent_intent", agentIntentGraphRoute[1]),
@@ -4774,7 +4778,18 @@ export function createV2Server(options = {}) {
           throw Object.assign(fail(403, "当前成员不能查看该Agent任务图"), {
             code: "PROJECT_PERMISSION_DENIED",
           });
-        return json(res, 200, agentIntentGraph(intent));
+        const graph=agentIntentGraph(intent);
+        if (agentIntentGraphRoute[2] === "development") {
+          if (url.searchParams.size) throw fail(422,"代码与批次由原对话定位，无需传入其他编号");
+          const step=graph.steps.find(item=>item.destinationId==="development");
+          return json(res,200,storedChatSqlDevelopment({intent,step,actor:workspaceReadActor(req),
+            read:(kind,id)=>store.get(kind,id,PROJECT),authorize:(task,revision,run)=>{
+              requireDurableAgentOwner(task,req);
+              requireDevelopmentOwner("revision",revision,req);
+              requireDevelopmentOwner("run",run,req);
+            }}));
+        }
+        return json(res, 200, graph);
       }
       const agentIntentCancelRoute = path.match(
         /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/cancel$/,

@@ -29,6 +29,7 @@ import {readReportIntent} from '../../src/v2/report-intent-client.mjs';
 import {AgentReportBatchPicker} from './AgentReportBatchPicker';
 import {appliedChatReport, chatBatchLocation, chatBatchTarget, readWealthBatch, sameReportSource, type ChatTarget} from './agent-report-chat';
 const CustomerAssetAnalysis=lazy(()=>import('./CustomerAssetAnalysis'));
+const ChatSqlDevelopment=lazy(()=>import('./ChatSqlDevelopment'));
 type Api = <T>(path: string, body?: unknown, options?:{idempotencyKey?:string}) => Promise<T>;
 type Risk = "LOW" | "MEDIUM" | "HIGH";
 type Destination = { id: string; label: string; action: string; risk: Risk };
@@ -71,7 +72,7 @@ type IntentTrace = {
 };
 type Handoff = { id: string; destinationId: string; status: string; objective: string; specialistTaskId?: string; specialistTaskKind?: string };
 type StepApproval = { id: string; destinationId: string; status: "APPROVED" | "BOUND" | "REVOKED"; risk: Risk; approvedAt: string; specialistTaskId?: string };
-type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistTaskId?: string; specialistTaskKind?: string; specialistStatus?: string; invocationId?: string; invocationStatus?: string; invocationAttempt?: number; invocationRecovery?: "NONE" | "WAIT" | "RETRY_BINDING" | "RETRY_REQUIRED"; executionEvidence?: string }[] };
+type IntentGraph = { intentId: string; completedCount: number; totalCount: number; completionScope: string; agentIndependentE2E: false; publicDeployed: false; steps: { destinationId: string; status: string; approvalStatus?: string; specialistTaskId?: string; specialistTaskKind?: string; specialistLanguage?: "SPARK_SQL" | "PYTHON"; specialistStatus?: string; invocationId?: string; invocationStatus?: string; invocationAttempt?: number; invocationRecovery?: "NONE" | "WAIT" | "RETRY_BINDING" | "RETRY_REQUIRED"; executionEvidence?: string }[] };
 type AgentTool = { id: string; label: string; risk: Risk; approvalRequired: boolean; createMode: string; createPath: string; detailPath: string; applyPath?: string; requiresDestination?: string; invokePath: string };
 type AgentToolCatalog = { version: "shuduo-agent-tools/v2"; contractDigest: string; tools: AgentTool[] };
 type AgentToolInvocation = { specialist: { id: string; status: string; detailPath: string }; handoff: Handoff; graph: IntentGraph };
@@ -84,6 +85,7 @@ type SpecialistActivity = {
   error?: string;
   applied?: boolean;
   boundPlan?: SourceReportPlan;
+  sqlGraph?: true;
 };
 
 const destinations: Destination[] = [
@@ -174,7 +176,7 @@ export function AgentCenter({
   currentPythonCode: string;
   developmentLanguage: "SQL" | "PYTHON";
   onDevelopmentLanguageChange: (language: "SQL" | "PYTHON") => void;
-  onOpenDestination: (id: string, handoffMessage?: string) => void;
+  onOpenDestination: (id: string, handoffMessage?: string, editorHref?: string) => void;
 }) {
   const [message, setMessage] = useState(""),
     [approvalMode, setApprovalMode] = useState<"PLAN_ONLY" | "REQUEST_APPROVAL">("REQUEST_APPROVAL"),
@@ -264,6 +266,13 @@ export function AgentCenter({
             item.specialistTaskId!,
           );
           try {
+            if(item.destinationId==='development'&&item.specialistLanguage==='SPARK_SQL'){
+              if(nextGraph.intentId!==selected.id||item.executionEvidence!=='SPECIALIST_TASK_LINKED'||item.specialistTaskKind!=='agent')
+                throw Error('对话与原开发任务的关联尚待核对。');
+              restored.development={destinationId:'development',id:item.specialistTaskId!,
+                status:item.specialistStatus??'UNKNOWN',getPath:`/agent/intents/${selected.id}/graph`,sqlGraph:true};
+              return;
+            }
             const result = await api<Record<string, unknown>>(getPath);
             if(item.destinationId==='reports'&&selected.reportSource&&selected.reportPlanningProfile==='MYSQL_HOLDINGS_CUSTOMER_ANALYSIS'){
               if(nextGraph.intentId!==selected.id||item.executionEvidence!=='SPECIALIST_TASK_LINKED'||result.id!==item.specialistTaskId)
@@ -374,6 +383,19 @@ export function AgentCenter({
       try{
         for(const item of pendingActivities){
           try{
+            if(item.sqlGraph&&task){
+              const next=await api<IntentGraph>(item.getPath);
+              if(!currentSelection())return;
+              const step=next.steps.find(s=>s.destinationId==='development');
+              if(next.intentId!==task.id||step?.specialistTaskId!==item.id||step.specialistLanguage!=='SPARK_SQL'||
+                step.executionEvidence!=='SPECIALIST_TASK_LINKED'||step.specialistTaskKind!=='agent')throw Error('原开发任务的关联尚待核对。');
+              const status=step.specialistStatus??'UNKNOWN';
+              if(status!==item.status){
+                setGraph(next);
+                setActivities(all=>({...all,development:{...item,status}}));
+              }
+              continue;
+            }
             const result=await api<Record<string,unknown>>(item.getPath);
             if(!currentSelection())return;
             const status=String(result.status??item.status);
@@ -391,7 +413,7 @@ export function AgentCenter({
           }catch(cause){
             if(!currentSelection())return;
             setActivities(all=>({...all,[item.destinationId]:{
-              ...item,status:item.boundPlan?'UNCONFIRMED':'FAILED',error:(cause as Error).message,
+              ...item,status:item.boundPlan||item.sqlGraph?'UNCONFIRMED':'FAILED',error:(cause as Error).message,
             }}));
           }
         }
@@ -521,6 +543,10 @@ export function AgentCenter({
         getPath = invocation.specialist.detailPath,
         created = invocation.specialist;
       if(ticket!==selectionEpoch.current)return;
+      if(step.destinationId==='development'&&invocation.graph.steps.some(s=>s.destinationId==='development'&&s.specialistLanguage==='SPARK_SQL')){
+        await loadTask(task);
+        return;
+      }
       setActivities((all) => ({
         ...all,
         [step.destinationId]: {
@@ -535,7 +561,8 @@ export function AgentCenter({
       setGraph(invocation.graph);
       setApprovals(await api<StepApproval[]>(`/agent/intents/${task.id}/approvals`));
       setHandoffs(await api<Handoff[]>(`/agent/intents/${task.id}/handoffs`));
-      if(ticket===selectionEpoch.current&&step.destinationId==='reports'&&task.reportPlanningProfile==='MYSQL_HOLDINGS_CUSTOMER_ANALYSIS')await loadTask(task);
+      if(ticket===selectionEpoch.current&&step.destinationId==='reports'&&task.reportPlanningProfile==='MYSQL_HOLDINGS_CUSTOMER_ANALYSIS')
+        await loadTask(task);
     } catch (cause) {
       if(ticket!==selectionEpoch.current)return;
       setActivities((all) => ({
@@ -658,6 +685,12 @@ export function AgentCenter({
     }finally{actionLock.current=false;setActionBusy(false);}
   };
 
+  const sqlStep=task&&graph?.intentId===task.id
+    ? graph.steps.find(s=>s.destinationId==='development'&&s.specialistLanguage==='SPARK_SQL') : undefined;
+  const readableSqlId=sqlStep?.executionEvidence==='SPECIALIST_TASK_LINKED'&&sqlStep.specialistTaskKind==='agent'&&
+    ['SUCCEEDED','FAILED','VALIDATION_FAILED','CANCELLED','INTERRUPTED'].includes(sqlStep.specialistStatus??'')
+    ? sqlStep.specialistTaskId : undefined;
+  const renderedSelection=selectionEpoch.current;
   const reportActivity=activities.reports;
   const chatPlan=wealthSource&&task?.reportSource&&sameReportSource(wealthSource,task.reportSource)&&
     sameReportSource(reportActivity?.boundPlan?.sourceBinding,wealthSource)?reportActivity.boundPlan:undefined;
@@ -679,7 +712,7 @@ export function AgentCenter({
     );
 
   return (
-    <div className="agent-os-v2" data-wealth-chat={Boolean(wealthSource)||undefined}>
+    <div className="agent-os-v2" data-wealth-chat={Boolean(wealthSource)||undefined} data-sql-chat={Boolean(readableSqlId)||undefined}>
       <aside className="agent-os-history-v2">
         <header><div><Sparkles size={17} /><strong>数舵 Data Agent</strong></div><button aria-label="新建Agent任务" disabled={busy||actionBusy} onClick={resetTask}><Plus size={16} /></button></header>
         <button className="agent-os-new-v2" disabled={busy||actionBusy} onClick={resetTask}><MessageSquare size={15} />新任务</button>
@@ -732,7 +765,7 @@ export function AgentCenter({
                     {approval && <div className="agent-os-activity-v2"><ShieldCheck size={12} /><span>{approval.status === "BOUND" ? "本次批准已绑定专业任务" : "步骤已批准，等待绑定任务"}</span><code>{approval.id.slice(0, 8)}</code></div>}
                     {proposal?.customerAnalysis?.kind==='MYSQL_HOLDINGS_CUSTOMER_ANALYSIS'&&<div className="agent-report-plan"><strong>{proposal.name}</strong><p>按客户与交易日核对总资产、持仓市值和证券数量。资产类别与行业分布按原冻结明细计算，占比分母为该客户的持仓市值。</p></div>}
                     {artifactRows.length > 0 && <details className="agent-os-artifact-v2"><summary>查看专业Agent产物</summary><div>{artifactRows.map((row) => <section key={row.label}><span>{row.label}</span>{Array.isArray(row.value) ? <div className="agent-os-artifact-tags-v2">{row.value.map((item) => <code key={item}>{item}</code>)}</div> : <p>{row.value}</p>}</section>)}</div></details>}
-                    <div className="agent-os-step-actions-v2">{task.status !== "CANCELLED" && task.approvalMode !== "PLAN_ONLY" && (!activity || retryable(activity.status)&&!activity.boundPlan) && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured || actionBusy || Boolean(wealthSource&&!verifiedBatch)}><Wrench size={13} />{retryable(activity?.status) ? "重新批准并重试" : "批准并执行此步骤"}</button>}{activity && pending(activity.status) && <button className="secondary" onClick={() => cancelSpecialist(step)} disabled={!canWrite || childCancelBusy === step.destinationId}><Clock3 size={12} />{childCancelBusy === step.destinationId ? "正在取消…" : "取消专业子任务"}</button>}{canApply && !activity.applied && !(activity?.error&&activity.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1') && <button disabled={!canWrite||actionBusy||Boolean(wealthSource&&(!verifiedBatch||activity.result?.requestBasisState!=='VERIFIED'||!sameReportSource(activity.result?.sourceBinding,wealthSource)))} onClick={() => applyDraft(step)}><Check size={13} />{activity?.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?'按审阅方案生成报表':'应用为草稿'}</button>}{activity?.applied && (activity.result?.planMode!=='PUBLISHED_SOURCE_REPORT_V1'||reportReceipt) && <span className="agent-os-applied-v2"><Check size={12} />{activity?.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?'报表已实际生成':'草稿已写入'}</span>}<button className="secondary" onClick={() => openProfessionalWorkspace(step)}><ExternalLink size={12} />记录接管并打开工作台</button></div>
+                    <div className="agent-os-step-actions-v2">{task.status !== "CANCELLED" && task.approvalMode !== "PLAN_ONLY" && (!activity || retryable(activity.status)&&!activity.boundPlan) && <button onClick={() => prepareStep(step)} disabled={!canWrite || !modelConfigured || actionBusy || Boolean(wealthSource&&!verifiedBatch)}><Wrench size={13} />{retryable(activity?.status) ? "重新批准并重试" : "批准并执行此步骤"}</button>}{activity && pending(activity.status) && <button className="secondary" onClick={() => cancelSpecialist(step)} disabled={!canWrite || childCancelBusy === step.destinationId}><Clock3 size={12} />{childCancelBusy === step.destinationId ? "正在取消…" : "取消专业子任务"}</button>}{canApply && !activity.applied && !(activity?.error&&activity.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1') && <button disabled={!canWrite||actionBusy||Boolean(wealthSource&&(!verifiedBatch||activity.result?.requestBasisState!=='VERIFIED'||!sameReportSource(activity.result?.sourceBinding,wealthSource)))} onClick={() => applyDraft(step)}><Check size={13} />{activity?.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?'按审阅方案生成报表':'应用为草稿'}</button>}{activity?.applied && (activity.result?.planMode!=='PUBLISHED_SOURCE_REPORT_V1'||reportReceipt) && <span className="agent-os-applied-v2"><Check size={12} />{activity?.result?.planMode==='PUBLISHED_SOURCE_REPORT_V1'?'报表已实际生成':'草稿已写入'}</span>}{!(step.destinationId==='development'&&sqlStep)&&<button className="secondary" disabled={graph?.intentId!==task.id} onClick={() => openProfessionalWorkspace(step)}><ExternalLink size={12} />记录接管并打开工作台</button>}</div>
                     {activity?.error&&activity.status!=='FAILED'&&<div role="alert">{activity.error}
                       <button className="button" disabled={busy||actionBusy} onClick={()=>void loadTask(task).catch(cause=>setError((cause as Error).message))}>查询原方案结果</button>
                     </div>}
@@ -743,6 +776,14 @@ export function AgentCenter({
                 {trace.length > 0 && <details className="agent-os-trace-v2"><summary>查看执行轨迹与证据</summary>{trace.map((item) => <div key={item.id}><span>{item.sequence}</span><strong>{item.kind === "MODEL_ROUTE" ? "需求理解与规划" : item.kind === "STEP_APPROVAL" ? "人工批准专业步骤" : item.kind === "INTENT_CANCELLED" ? "停止后续编排" : item.kind === "SPECIALIST_CANCELLED" ? "取消专业子任务" : "专业Agent任务绑定"}</strong><small>{item.output?.destinationId ?? "—"} · {item.execution} · {new Date(item.observedAt).toLocaleTimeString("zh-CN")}</small></div>)}</details>}
               </> : <p>{task.status === "INTERRUPTED" ? "服务重启时任务尚未完成；原始需求未持久化，请新建任务并重新描述目标。" : task.status === "CANCELLED" ? "后续编排已停止，历史证据仍保留。" : task.error ?? "Agent未能形成可执行计划。"}</p>}
             </div></article>
+            {task&&readableSqlId&&<Suspense fallback={<p role="status">正在加载 SQL 查看器…</p>}>
+              <ChatSqlDevelopment key={task.id+':'+readableSqlId+':'+sqlStep?.specialistStatus} api={api}
+                intentId={task.id} taskId={readableSqlId} canEdit={canWrite} isCurrent={()=>selectionEpoch.current===renderedSelection} onOpen={href=>{
+                  if(!task.reportSource)
+                    history.replaceState(null,'',location.pathname+'?module=agent-center&chat_intent='+encodeURIComponent(task.id)+'#agent-chat');
+                  onOpenDestination('development',undefined,href);
+                }}/>
+            </Suspense>}
             {chatPlan?.clarification&&<details className="agent-chat-clarification-history">
               <summary>本次方案的口径确认 · {chatPlan.clarification.depth} 轮</summary>
               <p>原需求：{chatPlan.clarification.originalRequest}</p>
@@ -766,6 +807,9 @@ export function AgentCenter({
             {appliedReport&&!fullAnalysis&&<a className="button" href={'?module=agent-center&report_request='+appliedReport.requestId}>查看原报表运行</a>}
           </>}
         </div>
+        {readableSqlId&&!message.trim()&&<footer className="chat-sql-footer">
+          <button className="button" onClick={resetTask} disabled={busy||actionBusy}>发起新需求</button>
+        </footer>}
         {task&&wealthSource?<footer className="chat-report-footer"><button className="button" onClick={()=>chooseBatch(wealthSource)} disabled={busy||actionBusy||!verifiedBatch}>用此批次提新需求</button></footer>:<footer className="agent-os-composer-v2">
           <textarea aria-label="向数舵 Data Agent 描述目标" placeholder={wealthSource?"描述这次资产报表的需求…":"描述你希望完成的目标，例如：接入持仓数据，生成T+1资产任务并发布服务…"} value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && sendAllowed) { event.preventDefault(); submit(); } }} maxLength={2000} />
           <div>{!wealthSource&&<div className="agent-os-context-v2"><span>@ 证券数据实验室</span><span><Code2 size={11} />{contextId}</span><span>{developmentLanguage === "PYTHON" ? "受限Python" : "Spark SQL"}</span><span>{approvalMode === "PLAN_ONLY" ? "只规划" : "请求批准"}</span></div>}<div className="agent-os-send-v2">{!wealthSource&&<select aria-label="数据开发语言" value={developmentLanguage} onChange={(event) => onDevelopmentLanguageChange(event.target.value as "SQL" | "PYTHON")}><option value="SQL">Spark SQL</option><option value="PYTHON">受限Python</option></select>}<select aria-label="Agent审批模式" value={approvalMode} onChange={(event) => setApprovalMode(event.target.value as typeof approvalMode)}><option value="REQUEST_APPROVAL">请求批准</option><option value="PLAN_ONLY">仅规划</option></select><button aria-label="发送给Data Agent" onClick={()=>void submit()} disabled={!sendAllowed}>{busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button></div></div>
