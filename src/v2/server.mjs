@@ -40,6 +40,7 @@ import { callPrivateApplication, verifyPrivateApplicationTask,validatePrivateApp
 import { publicDevelopmentRun, submitDurableDevelopment, reconcileDurableDevelopment } from "./durable-development.mjs";
 import { validationWithoutRawComparisons } from "./validation-details.mjs";
 import { storedChatSqlDevelopment } from "./chat-sql-development.mjs";
+import { chatSqlChanges, acceptChatChange, validateChatChangeInput, chatChangeRequestKey, chatChangeLedger } from "./chat-sql-changes.mjs";
 import { createDurableSqlAgent, durableSqlAgentMode, publicDurableAgent, settleAgentDevelopmentResult } from "./durable-agent.mjs";
 import {sqlRequirementReport,bindSqlRequirementRevision,sqlRequirementBinding,assertSqlRequirementPackageSource} from './sql-requirements.mjs';
 import {readSqlClarificationSource,resolveSqlClarification,assertSqlClarificationTask} from './sql-clarification.mjs';
@@ -1481,6 +1482,16 @@ export function createV2Server(options = {}) {
     const attemptedSession = /(?:^|;)\s*shuduo_session\s*(?:=|;|$)/.test(req.headers.cookie ?? "");
     if (local && !options.ingress && isLoopbackRequest(req) && !attemptedSession) return "local-engineer";
   };
+  const chatDevelopmentEvidence=(req,intent,graph=agentIntentGraph(intent))=>storedChatSqlDevelopment({
+    intent,step:graph.steps.find(step=>step.destinationId==="development"),actor:workspaceReadActor(req),
+    read:(kind,id)=>store.get(kind,id,PROJECT),authorize:(task,revision,run)=>{
+      requireDurableAgentOwner(task,req);
+      requireDevelopmentOwner("revision",revision,req);
+      requireDevelopmentOwner("run",run,req);
+    },
+  });
+  const chatChangeState=(req,evidence)=>chatSqlChanges({store,project:PROJECT,actor:workspaceReadActor(req),evidence,
+    authorizeChild:task=>requireDurableAgentOwner(task,req)});
   const publishedPlanContext=(source,actor,expectedHash)=>{
     if(!local)throw fail(403,'同源报表规划尚只在本机开发边界开放');
     const resolved=resolveLocalReportSource(source,actor);
@@ -4240,6 +4251,7 @@ export function createV2Server(options = {}) {
         const session=auth.sessionFromHeaders(req.headers);
         if(!local&&!session)throw fail(403,"请先以原任务创建者身份登录");
         const actorId=session?.user.id??"local-engineer",key=agentRequestLookup[1];
+        if(chatChangeRequestKey(key)&&actorId!==workspaceReadActor(req))throw fail(403,"请以创建口径变更的原项目身份读取");
         if (agentRequestLookup[2] && (local || url.searchParams.size))
           throw fail(local ? 403 : 422, "云端执行证据只接受原创建请求编号");
         const ids = new Set([
@@ -4765,7 +4777,7 @@ export function createV2Server(options = {}) {
         );
       }
       const agentIntentGraphRoute = path.match(
-        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/(graph|development)$/,
+        /^\/api\/v2\/agent\/intents\/([a-f0-9-]+)\/(graph|development|development\/changes)$/,
       );
       if (agentIntentGraphRoute && method === "GET") {
         const intent = get("agent_intent", agentIntentGraphRoute[1]),
@@ -4779,15 +4791,10 @@ export function createV2Server(options = {}) {
             code: "PROJECT_PERMISSION_DENIED",
           });
         const graph=agentIntentGraph(intent);
-        if (agentIntentGraphRoute[2] === "development") {
+        if (agentIntentGraphRoute[2] !== "graph") {
           if (url.searchParams.size) throw fail(422,"代码与批次由原对话定位，无需传入其他编号");
-          const step=graph.steps.find(item=>item.destinationId==="development");
-          return json(res,200,storedChatSqlDevelopment({intent,step,actor:workspaceReadActor(req),
-            read:(kind,id)=>store.get(kind,id,PROJECT),authorize:(task,revision,run)=>{
-              requireDurableAgentOwner(task,req);
-              requireDevelopmentOwner("revision",revision,req);
-              requireDevelopmentOwner("run",run,req);
-            }}));
+          const evidence=chatDevelopmentEvidence(req,intent,graph);
+          return json(res,200,agentIntentGraphRoute[2]==="development" ? evidence : chatChangeState(req,evidence));
         }
         return json(res, 200, graph);
       }
@@ -7414,6 +7421,8 @@ export function createV2Server(options = {}) {
           suppliedCode = body.code ?? body.sql;
         if (ingressChannel === "HTTP" && developmentAccess?.requestDigest)
           assertDevelopmentTaskCreation(developmentAccess, auth.sessionFromHeaders(req.headers), store, PROJECT, text(req.headers["idempotency-key"], 1, 100), language, developmentNow(), body);
+        if (body.chatChange!==undefined || chatChangeRequestKey(req.headers["idempotency-key"]))
+          validateChatChangeInput(body,req.headers["idempotency-key"]);
         const fundRequest = body.fundPreparation !== undefined;
         const cloudFundRequest=fundRequest && !local && ingressChannel==="HTTP" && fundPilotReady;
         let syncSelection;
@@ -7473,6 +7482,19 @@ export function createV2Server(options = {}) {
         const actorId = language === "SPARK_SQL"
           ? auth.sessionFromHeaders(req.headers)?.user.id ?? (local ? "local-engineer" : undefined)
           : local ? "local-engineer" : auth.sessionFromHeaders(req.headers)?.user.id;
+        let chatSubmission;
+        if (body.chatChange!==undefined) {
+          const requestId=req.headers["idempotency-key"];
+          const evidence=chatDevelopmentEvidence(req,get("agent_intent",body.chatChange.intentId));
+          const state=chatChangeState(req,evidence);
+          chatSubmission=acceptChatChange({state,evidence,requestId,contextId:body.contextId,message,
+            currentSql:suppliedCode,derivation:body.derivation});
+          if(chatSubmission.existing) {
+            const task=get("agent",chatSubmission.existing.taskId);
+            requireDurableAgentOwner(task,req);
+            return json(res,202,exposeDurableTask(task));
+          }
+        }
         const resolveFundExecution = () => (cloudFundRequest?cloudFundPreparations:fundPreparations).bindExecution(body.fundPreparation, actorId,
           { contextId: context.id, message, requestKey: req.headers["idempotency-key"] });
         const fundPreparation = fundRequest ? resolveFundExecution() : undefined;
@@ -7498,6 +7520,7 @@ export function createV2Server(options = {}) {
           }
           const created = await durableAgent.create({ message, currentSql: currentCode, contextId: context.id,
             actorId,
+            ...(chatSubmission?{chatSubmission}:{}),
             ...(cloudFundRequest ? {fundPreparation,mode} : {}),
             requestBound: ingressChannel === "HTTP" && Boolean(developmentAccess?.requestDigest),
             idempotencyKey: text(req.headers["idempotency-key"], 1, 100), ...repair, ...(derivedFrom ? {derivation:body.derivation} : {}),...(repairBasis?{repairComparison:repairBasis.binding}:{}),...(body.assistedContinuation!==undefined?{assistedContinuation:body.assistedContinuation}:{}),...(body.manualContinuation!==undefined?{manualContinuation:body.manualContinuation}:{}),...(body.clarification!==undefined?{clarification:body.clarification}:{}) });
@@ -7539,14 +7562,16 @@ export function createV2Server(options = {}) {
                 ...(repairBasis?{sourceRunId:body.sourceRunId,repairComparison:repairBasis.binding}:{}),
                 ...(clarification?{clarification:clarification.digest}:{}),
               }));
-        const existingAgent = store.deduplicatedId(PROJECT + ":agent:" + key);
+        const creationKey = chatSubmission ? chatChangeLedger(PROJECT,actorId,key) : PROJECT + ":agent:" + key;
+        const existingAgent = store.deduplicatedId(creationKey);
         if (existingAgent) requireDurableAgentOwner(get("agent", existingAgent), req);
         const dedup = store.deduplicate(
-          PROJECT + ":agent:" + key,
-          signature,
+          creationKey,
+          chatSubmission?.signature ?? signature,
           () =>
             store.create("agent", PROJECT, {
               submittedBy: language==='SPARK_SQL'?actorId:local ? "local-engineer" : auth.sessionFromHeaders(req.headers).user.id,
+              ...(chatSubmission?{chatChange:chatSubmission.marker}:{}),
               message,
               language,
               contextId: context.id,

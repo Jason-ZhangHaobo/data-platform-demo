@@ -1,4 +1,5 @@
 import { checkedSyncSqlOutputSchema } from './sync-sql-output-schema-client.mjs';
+import { checkedDerivedComparison } from './derived-comparison-client.mjs';
 
 const uuid = v => typeof v === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v), hash = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const record = v => v && typeof v === 'object' && !Array.isArray(v), input = v => record(v) && ['VERIFIED', 'UNRECORDED', 'UNCONFIRMED'].includes(v.state) && (v.state !== 'VERIFIED' || hash(v.inputHash) && hash(v.schemaHash));
@@ -63,9 +64,17 @@ export async function readRunComparisonCandidates(client, args) {
         throw Error('需要当前确切运行编号');
     return checkedRunComparisonCandidates(await client.request('/runs/' + args.runId + '/comparison-candidates'), args);
 }
-export async function readComparisonSql(client, { comparison }) {
-    const ids = [comparison.baseline, comparison.current];
-    if (ids.some(s => s.binding !== 'VERIFIED' || !uuid(s.revisionId) || !hash(s.revisionHash)))
+export async function readComparisonSql(client, { comparison, derived }) {
+    let ids;
+    if (derived) {
+        if (comparison || checkedDerivedComparison(derived,{taskId:derived.taskId}).state !== 'MATCHED')
+            throw Error('口径变更的两次运行尚待核对');
+        ids = [derived.parent,derived.child];
+    } else {
+        ids = [comparison?.baseline,comparison?.current];
+        if (ids.some(s => s?.binding !== 'VERIFIED')) throw Error('原代码摘要未确认，不能读取差异');
+    }
+    if (ids.some(s => !uuid(s.revisionId) || !hash(s.revisionHash)))
         throw Error('原代码摘要未确认，不能读取差异');
     const revisions = await Promise.all(ids.map(s => client.request('/revisions/' + s.revisionId)));
     for (const [rIndex, r] of revisions.entries()) {

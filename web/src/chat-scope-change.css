@@ -1,0 +1,35 @@
+.chat-scope-change {
+  display:grid; gap:12px; min-width:0; max-width:840px; margin:16px auto;
+  padding:16px; border:1px solid #c8d7c8; border-radius:10px; color:#293e32; background:#fcfdf9;
+}
+.chat-scope-change header,.chat-change-buttons,.chat-change-refs,.chat-change-footer {display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.chat-scope-change h3,.chat-scope-change h4,.chat-scope-change p,.chat-scope-change dl,.chat-scope-change dd {margin:0}
+.chat-scope-change h3 {font-size:15px}
+.chat-scope-change h4,.chat-change-result header {font-size:14px}
+.chat-scope-change label,.chat-change-review,.chat-change-result,.chat-change-form {display:grid;gap:8px;min-width:0}
+.chat-scope-change label {font-size:12px;font-weight:600}
+.chat-scope-change p,.chat-scope-change dl,.chat-change-refs {font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.chat-change-form textarea,.chat-scope-change select {
+  box-sizing:border-box;width:100%;min-width:0;max-width:100%;padding:9px 10px;color:#253d2e;
+  background:white;border:1px solid #c6d4c8;border-radius:6px;font:inherit;line-height:1.5;
+}
+.chat-change-form textarea {min-height:58px;resize:vertical}
+.chat-scope-change .button {width:fit-content;display:inline-flex;align-items:center;gap:6px}
+.chat-change-form>.button,.chat-change-buttons>.button:first-child {background:#235d45;color:white;border-color:#235d45}
+.chat-change-form>.button:disabled,.chat-change-buttons>.button:disabled {opacity:.55}
+.chat-change-review dl {display:grid;gap:3px;padding:10px;background:#edf3eb;border-radius:6px}
+.chat-change-review dt,.chat-change-refs {color:#526857;font-size:12px}
+.chat-change-review dd+dt {margin-top:6px}
+.chat-change-result header>span {font-size:12px;color:#42644f}
+.chat-change-result {border-top:1px solid #d5e1d5;padding-top:12px}
+.chat-change-result .derived-amount-panel {margin:0}
+.chat-change-result .run-comparison-code-v2 {min-width:0;margin:0}
+.chat-change-result .run-comparison-sql-editor-v2 {min-width:0;max-width:100%}
+.chat-change-footer {justify-content:flex-end;padding:8px clamp(16px,5vw,60px)}
+@media(max-width:600px){
+  .agent-os-chat-v2:has(.chat-scope-change) {flex:1 0 auto}
+  .agent-os-thread-v2:has(.chat-scope-change) {padding:12px 8px;overflow:visible}
+  .chat-scope-change {padding:12px}
+  .chat-scope-change .derived-amount-panel {padding:.5rem}
+  .chat-change-footer {padding:6px 12px}
+}

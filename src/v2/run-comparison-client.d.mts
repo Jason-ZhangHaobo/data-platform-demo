@@ -1,4 +1,5 @@
 import type { SyncSqlOutputSchema } from './sync-sql-output-schema-client.mjs';
+import type { DerivedResultComparison } from './derived-comparison-client.mjs';
 
 export type ComparisonInput = {
     state: string;
@@ -144,9 +145,9 @@ export function readRunComparisonCandidates(client: Client, args: {
     contextId?: string;
     snapshotHash?: string;
 }): Promise<RunComparisonCandidates>;
-export function readComparisonSql(client: Client, args: {
-    comparison: SqlRunComparison;
-}): Promise<{
+export type SqlComparisonSelection = {comparison:SqlRunComparison;derived?:never} |
+    {derived:Extract<DerivedResultComparison,{state:'MATCHED'}>;comparison?:never};
+export function readComparisonSql(client: Client, args: SqlComparisonSelection): Promise<{
     baselineSql: string;
     currentSql: string;
 }>;

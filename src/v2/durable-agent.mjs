@@ -160,7 +160,7 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     contextId:task.contextId,currentSql:task.initialSql??task.currentSql,binding});
   const continuationBasis=task=>resolveAssistedContinuation({store,project,actorId:task.submittedBy??task.actorId,binding:task.assistedContinuation,contextId:task.contextId,currentSql:task.initialSql??task.currentSql});
   const manualBasis=task=>resolveManualContinuation({store,project,actorId:task.submittedBy??task.actorId,binding:task.manualContinuation,contextId:task.contextId,currentSql:task.initialSql??task.currentSql});
-  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError, derivation, repairComparison, assistedContinuation, manualContinuation, clarification:clarificationRef, requestBound = false, fundPreparation, mode="LIVE_MODEL" }) {
+  async function create({ message, currentSql, contextId, actorId, idempotencyKey, sourceRunId, sourceError, derivation, repairComparison, assistedContinuation, manualContinuation, clarification:clarificationRef, requestBound = false, fundPreparation, mode="LIVE_MODEL", chatSubmission }) {
     assertExecutionScope(undefined);
     if (!getContext(contextId) || typeof message !== "string" || !message.trim() || message.length > 2000 ||
         typeof currentSql !== "string" || (!fundPreparation && !currentSql.trim()) || currentSql.length > 20000 ||
@@ -192,8 +192,9 @@ export function createDurableSqlAgent({ store, project, runner, generator, persi
     const manual=manualContinuation===undefined?undefined:manualBasis({actorId,manualContinuation,contextId,currentSql});
     const family=validationFamily(contextId);
     const signature = digest({ message, currentSql, contextId, ...(fundPreparation ? {fundPreparation} : {}), ...(sourceRunId ? { sourceRunId, sourceError } : {}), ...(derivedFrom ? {derivation:derivedFrom} : {}),...(basis?{repairComparison:basis.binding}:{}),...(continuation?{assistedContinuation:continuation.binding}:{}),...(manual?{manualContinuation:manual.binding}:{}),...(clarification?{clarification:clarification.digest}:{}) });
-    const result = store.deduplicate(`${project}:durable-agent:${actorId}:${idempotencyKey}`, signature, () =>
+    const result = store.deduplicate(`${project}:durable-agent:${actorId}:${idempotencyKey}`, chatSubmission?.signature ?? signature, () =>
       store.create("agent", project, { message, sql: currentSql, initialSql: currentSql, sourceRunId, language: "SPARK_SQL", contextId,
+        ...(chatSubmission?{chatChange:chatSubmission.marker}:{}),
         ...(requestBound ? {requestBound:true} : {}),
         ...(fundPreparation ? {fundPreparation} : {}),
         ...(clarification?{clarification,...clarificationAttribution({clarification})}:derivedFrom?clarificationAttribution(store.get('agent',derivedFrom.taskId,project)):{}),

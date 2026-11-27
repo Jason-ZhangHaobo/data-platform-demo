@@ -13,6 +13,27 @@
 
 ## API、CLI 与 MCP
 
+### 在原开发对话中提出修改
+
+1. 在成功的原生 SQL 开发步骤打开「修改业务口径」，输入修改需求，核对目标口径。同一套测试数据有对应口径时，页面优先展示这项选择。例如「只统计股票持仓和现金，保留只有现金的客户」可以沿用原持仓和业务日期。
+2. 点击「审阅口径变更」，查看原 SQL 版本、原批次和目标定义。点击「确认修改并运行」后，Agent 从这份 SQL 创建独立任务并校验新结果。
+3. 在原对话查看各客户的前后金额、持仓、现金和证券数。展开「查看两版SQL（只读）」可核对实际保存的代码差异。可以继续打开派生任务查看运行详情。新任务有独立版本和运行批次，后续发布须审阅新交付包。
+
+在全品类持仓切换为股票持仓的虚构测试中，客户 001 的持仓市值从 1,500 元降至 1,000 元，现金保持 300 元，证券数从 2 只变为 1 只。口径内资产从 1,800 元变为 1,300 元。客户 002 的口径内资产保持 950 元。隔离验证中，意图路由由测试提供方返回，两次 SQL 均由 Codex 会话根据实际模型请求现场生成，经本机 Spark 3.5.9 各自通过五项断言。正式环境的模型接入和自主完成率按独立评测统计。
+
+CLI 可以先读取已保存的变更与目标选项，再提交已审阅的请求。
+
+```sh
+shuduo agent chat-changes --id INTENT_ID
+shuduo agent change-chat-scope --id INTENT_ID --source-run-id ORIGINAL_RUN_ID \
+  --context stock-cash-t1 --message "只统计股票持仓和现金，保留仅有现金的客户" \
+  --request-id NEXT_REQUEST_ID --confirm
+```
+
+`ORIGINAL_RUN_ID` 和 `NEXT_REQUEST_ID` 分别取自首次读取的 `binding.runId` 与 `nextRequestId`。两者共同约束本次修改。对应的 MCP 工具为 `agent_chat_scope_changes` 和 `agent_change_chat_scope`。GET `/agent/intents/:id/development/changes` 从原会话找回已受理请求。查阅记录和金额只使用已保存结果。请求的收费结果未知时需先对账原编号，旧编号只对应原需求和口径。
+
+### 从已知开发版本创建派生任务
+
 沿用 `POST /api/v2/agent/tasks`，新增可选来源对象：
 
 ```json

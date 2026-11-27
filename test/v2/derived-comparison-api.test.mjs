@@ -8,6 +8,7 @@ import { V2Client } from '../../src/v2/client.mjs';
 import { runV2Cli } from '../../bin/shuduo.mjs';
 import { handleV2Mcp } from '../../bin/shuduo-mcp.mjs';
 import { checkedDerivedComparison, readDerivedComparison } from '../../src/v2/derived-comparison-client.mjs';
+import { readComparisonSql } from '../../src/v2/run-comparison-client.mjs';
 import { seedContextDerivation } from './fixtures/agent-context-derivation.mjs';
 
 test('owner reads the same saved parent and child via invited HTTP, CLI and MCP', async t => {
@@ -55,6 +56,8 @@ test('owner reads the same saved parent and child via invited HTTP, CLI and MCP'
     ['CLIENT-001','1800.00','2300.00','500.00'], ['CLIENT-002','950.00','950.00','0.00']
   ]);
   assert.equal(receipt.totals.after.total_assets,'3250.00');
+  assert.deepEqual(await readComparisonSql(client,{derived:receipt}),{baselineSql:parent.sql,currentSql:child.sql});
+  await assert.rejects(readComparisonSql({request:async path=>({...await client.request(path),sql:'SELECT 9'})},{derived:receipt}));
   let cli;
   assert.equal(await runV2Cli(['agent','compare-derived','--id',child.task.id], {}, {
     client, output: value => {cli=JSON.parse(value);}, error: () => {}
@@ -76,6 +79,7 @@ test('owner reads the same saved parent and child via invited HTTP, CLI and MCP'
   await assert.rejects(client.request(path+'?parentId='+parent.task.id), e=>e.status===422);
   const unrelated=await readDerivedComparison(client,{taskId:parent.task.id});
   assert.equal(unrelated.reason,'NOT_DERIVED');
+  await assert.rejects(readComparisonSql({request:()=>assert.fail('Unexpected SQL read')},{derived:unrelated}),/待核对/);
   assert.equal(Object.hasOwn(unrelated,'rows'),false);
   assert.equal(snapshot(),start);
   assert.equal(executions,0);
